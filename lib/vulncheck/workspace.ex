@@ -447,10 +447,12 @@ defmodule VulnCheck.Workspace do
 
     cond do
       found == nil ->
+        cmd = compile_hint(build_root, lib, preferred)
+
         {nil, nil,
          [
-           "no compiled build found under #{build_root}/ (compile the project first); " <>
-             "reachability analysis is limited"
+           "no compiled build for #{preferred} under #{build_root}/; " <>
+             "run `#{cmd}` (reachability analysis is limited)"
          ]}
 
       found == preferred ->
@@ -461,6 +463,14 @@ defmodule VulnCheck.Workspace do
          ["#{build_root}/#{preferred} not found; analyzing #{build_root}/#{found} instead"]}
     end
   end
+
+  defp compile_hint("build", "erlang", _preferred), do: "gleam build"
+
+  defp compile_hint("_build", "lib", preferred),
+    do: "MIX_ENV=#{preferred} mix compile"
+
+  defp compile_hint(build_root, _lib, preferred),
+    do: "compile #{preferred} under #{build_root}/"
 
   defp existing_ebin(nil, _app), do: []
 

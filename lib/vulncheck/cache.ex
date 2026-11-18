@@ -121,8 +121,14 @@ defmodule VulnCheck.Cache do
   @doc """
   Fetches and decodes a resource, publishing its body and metadata together
   only after validation succeeds. Returns the decoded value, refresh
-  status and metadata. Options include `:http_client`, `:http_opts`,
-  `:offline`, `:ttl`, `:immutable`, `:force`, `:allow_stale` and `:max_age`.
+  status (`:network | :cached | :revalidated | :stale`) and metadata. Options
+  include `:http_client`, `:http_opts`, `:offline`, `:ttl`, `:immutable`,
+  `:force`, `:allow_stale` and `:max_age`.
+
+  When `:force` is `true` and the refresh fails with a transient or 5xx error,
+  `allow_stale: true` (the default) falls back to the last verified copy with
+  status `:stale` and records `"refresh_error"` in metadata; pass
+  `allow_stale: false` to fail instead.
   """
   @spec fetch_validated(String.t(), String.t(), Config.t(), keyword(), function()) ::
           {:ok, term(), fetch_status(), map()} | {:error, term()}
