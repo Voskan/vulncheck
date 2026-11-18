@@ -408,6 +408,14 @@ defmodule VulnCheck.Solver do
           []
         )
 
+      advisory.symbol_gaps and (package_reachable? or started?(index, package)) ->
+        potentially(
+          :missing_symbol_granularity,
+          "some affected version blocks for #{pkg} lack function or module information",
+          nil,
+          []
+        )
+
       routines != [] ->
         unreachable(
           :function_not_called,

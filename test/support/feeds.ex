@@ -122,6 +122,8 @@ defmodule VulnCheck.Test.Feeds do
   end
 
   def cve_record(cve, package, routines, opts \\ []) do
+    versions = Keyword.get(opts, :versions, [])
+
     modules =
       Keyword.get_lazy(opts, :modules, fn ->
         routines |> Enum.map(fn r -> r |> String.split(":") |> hd() end) |> Enum.uniq()
@@ -153,12 +155,12 @@ defmodule VulnCheck.Test.Feeds do
           "affected" => [
             %{
               "collectionURL" => "https://repo.hex.pm",
-              "defaultStatus" => "unaffected",
+              "defaultStatus" => if(versions == [], do: "unknown", else: "unaffected"),
               "modules" => modules,
               "packageName" => package,
               "packageURL" => "pkg:hex/#{package}",
               "programRoutines" => Enum.map(routines, &%{"name" => &1}),
-              "versions" => Keyword.get(opts, :versions, [])
+              "versions" => versions
             }
           ],
           "descriptions" => [%{"lang" => "en", "value" => Keyword.get(opts, :description, "")}],

@@ -356,6 +356,19 @@ defmodule VulnCheck.SolverTest do
     assert List.last(finding.trace).mfa == finding.target_mfa
   end
 
+  test "a used package stays potentially reachable when only some symbol blocks are known", ctx do
+    finding =
+      one(
+        ctx,
+        advisory("A-4", "sol_parsers",
+          symbol_gaps: true,
+          affected_routines: [mfa("Elixir.SolFix.Parsers.MULTIPART", "parse", 1)]
+        )
+      )
+
+    assert %Finding{verdict: :potentially_reachable, reason: :missing_symbol_granularity} = finding
+  end
+
   test "adapter_not_configured for an unused Tesla adapter", ctx do
     finding =
       one(

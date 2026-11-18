@@ -89,7 +89,10 @@ defmodule VulnCheck.Feeds.EefCna do
       cve ->
         with {:ok, record} <-
                fetch_record(cve, config, Keyword.put(opts, :modified_at, advisory.modified_at)) do
-          {:ok, apply_record(advisory, record)}
+          case apply_record(advisory, record) do
+            %Advisory{enriched: true} = enriched -> {:ok, enriched}
+            _ -> {:error, :no_matching_affected_product}
+          end
         end
     end
   end
@@ -102,24 +105,35 @@ defmodule VulnCheck.Feeds.EefCna do
   @spec apply_record(Advisory.t(), map()) :: Advisory.t()
   def apply_record(%Advisory{} = advisory, record) do
     cna = get_in_map(record, ["containers", "cna"])
-    entries = cna |> list("affected") |> Enum.filter(&matches_package?(&1, advisory.package))
+    package = advisory.source_package || advisory.package
+    products = cna |> list("affected") |> Enum.filter(&matches_package?(&1, package))
+    entries = Enum.filter(products, &applies_to_version?(&1, advisory.checked_version))
 
-    routines =
-      entries
-      |> Enum.flat_map(&list(&1, "programRoutines"))
-      |> Enum.flat_map(fn
-        %{"name" => name} when is_binary(name) -> parse_routine(name)
-        name when is_binary(name) -> parse_routine(name)
-        _ -> []
-      end)
-      |> Enum.uniq()
+    case entries do
+      [] -> advisory
+      _ -> enrich_product(advisory, cna, products, entries)
+    end
+  end
 
-    modules =
-      entries
-      |> Enum.flat_map(&list(&1, "modules"))
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(&MFA.normalize_module/1)
-      |> Enum.uniq()
+  defp enrich_product(advisory, cna, products, entries) do
+    blocks = Enum.map(entries, &symbols/1)
+    routines = blocks |> Enum.flat_map(& &1.routines) |> Enum.uniq()
+    modules = blocks |> Enum.flat_map(& &1.modules) |> Enum.uniq()
+    all_routines = Enum.uniq(advisory.affected_routines ++ routines)
+    all_modules = Enum.uniq(advisory.affected_modules ++ modules)
+
+    symbol_gaps =
+      advisory.symbol_gaps or
+        (length(blocks) > 1 and
+           ((all_routines != [] and Enum.any?(blocks, &(&1.routines == []))) or
+              (all_modules != [] and Enum.any?(blocks, &(&1.routines == [] and &1.modules == [])))))
+
+    symbol_source =
+      cond do
+        routines == [] -> advisory.symbol_source
+        all_routines == routines -> :cve
+        true -> :osv_and_cve
+      end
 
     {score, vector, label} = metrics(cna)
 
@@ -143,7 +157,7 @@ defmodule VulnCheck.Feeds.EefCna do
 
     ranges =
       if advisory.version_ranges == [] and advisory.affected_versions == [] do
-        Enum.flat_map(entries, &Semver.from_cve_affected/1)
+        Enum.flat_map(products, &Semver.from_cve_affected/1)
       else
         advisory.version_ranges
       end
@@ -160,9 +174,10 @@ defmodule VulnCheck.Feeds.EefCna do
 
     %{
       advisory
-      | affected_routines: if(routines != [], do: routines, else: advisory.affected_routines),
-        affected_modules: Enum.uniq(advisory.affected_modules ++ modules),
-        symbol_source: if(routines != [], do: :cve, else: advisory.symbol_source),
+      | affected_routines: all_routines,
+        affected_modules: all_modules,
+        symbol_source: symbol_source,
+        symbol_gaps: symbol_gaps,
         cvss_score: cvss_score,
         cvss_vector: cvss_vector,
         severity: severity,
@@ -172,6 +187,32 @@ defmodule VulnCheck.Feeds.EefCna do
         otp_constraints: otp_constraints(advisory, descriptions),
         enriched: true
     }
+  end
+
+  defp applies_to_version?(_entry, nil), do: true
+
+  defp applies_to_version?(entry, version) do
+    Enum.any?(Semver.from_cve_affected(entry), &Semver.in_range?(version, &1)) or
+      not Semver.valid?(version)
+  end
+
+  defp symbols(entry) do
+    routines =
+      entry
+      |> list("programRoutines")
+      |> Enum.flat_map(fn
+        %{"name" => name} when is_binary(name) -> parse_routine(name)
+        name when is_binary(name) -> parse_routine(name)
+        _ -> []
+      end)
+
+    modules =
+      entry
+      |> list("modules")
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&MFA.normalize_module/1)
+
+    %{routines: routines, modules: modules}
   end
 
   defp otp_constraints(%Advisory{otp_constraints_conflict: true}, _descriptions), do: nil
@@ -188,16 +229,21 @@ defmodule VulnCheck.Feeds.EefCna do
     do: if(score > own, do: {score, vector}, else: {own, own_vector})
 
   defp matches_package?(entry, package) when is_map(entry) do
-    names =
-      [entry["packageName"], entry["product"]]
-      |> Enum.filter(&is_binary/1)
-      |> Enum.map(&String.downcase/1)
+    package = String.downcase(package)
 
-    purl = entry["packageURL"]
+    case entry["packageURL"] do
+      "pkg:hex/" <> path ->
+        [name | _] = String.split(path, ~r/[@?#]/, parts: 2)
+        name |> URI.decode() |> String.downcase() == package
 
-    String.downcase(package) in names or
-      (is_binary(purl) and
-         String.downcase(purl) |> String.starts_with?("pkg:hex/#{String.downcase(package)}"))
+      "pkg:" <> _other ->
+        false
+
+      _ ->
+        Enum.any?([entry["packageName"], entry["product"]], fn name ->
+          is_binary(name) and String.downcase(name) == package
+        end)
+    end
   end
 
   defp matches_package?(_entry, _package), do: false

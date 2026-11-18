@@ -57,6 +57,8 @@ defmodule VulnCheck.Types.Advisory do
     :id,
     aliases: [],
     package: "",
+    source_package: nil,
+    checked_version: nil,
     summary: "",
     details: "",
     severity: :unknown,
@@ -71,6 +73,8 @@ defmodule VulnCheck.Types.Advisory do
     fixed_versions: [],
     affected_modules: [],
     affected_routines: [],
+    affected_blocks: [],
+    symbol_gaps: false,
     otp_constraints: nil,
     otp_constraints_conflict: false,
     retirement: nil,
@@ -82,6 +86,8 @@ defmodule VulnCheck.Types.Advisory do
           id: String.t(),
           aliases: [String.t()],
           package: String.t(),
+          source_package: String.t() | nil,
+          checked_version: String.t() | nil,
           summary: String.t(),
           details: String.t(),
           severity: severity(),
@@ -96,10 +102,19 @@ defmodule VulnCheck.Types.Advisory do
           fixed_versions: [String.t()],
           affected_modules: [String.t()],
           affected_routines: [MFA.t()],
+          affected_blocks: [
+            %{
+              ranges: [VersionRange.t()],
+              versions: [String.t()],
+              modules: [String.t()],
+              routines: [MFA.t()]
+            }
+          ],
+          symbol_gaps: boolean(),
           otp_constraints: String.t() | nil,
           otp_constraints_conflict: boolean(),
           retirement: Retirement.t() | nil,
-          symbol_source: :cve | :osv | :text | nil,
+          symbol_source: :cve | :osv | :osv_and_cve | :text | nil,
           enriched: boolean()
         }
 

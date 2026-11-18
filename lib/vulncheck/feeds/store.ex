@@ -86,7 +86,16 @@ defmodule VulnCheck.Feeds.Store do
       index
       |> Map.get(package.hex_name || package.name, [])
       |> Enum.filter(&Semver.affected?(package.version, &1))
-      |> Enum.map(&%{&1 | package: package.name})
+      |> Enum.map(fn advisory ->
+        scoped = OSV.scope_symbols(advisory, package.version)
+
+        %{
+          scoped
+          | package: package.name,
+            source_package: advisory.source_package || advisory.package,
+            checked_version: package.version
+        }
+      end)
     end)
   end
 
@@ -140,6 +149,11 @@ defmodule VulnCheck.Feeds.Store do
   defp enrich_warning(advisory, :offline_cache_missing) do
     "no cached CVE 5.1 record for #{Advisory.cve_id(advisory) || advisory.id} " <>
       "(offline); function-level symbols unavailable"
+  end
+
+  defp enrich_warning(advisory, :no_matching_affected_product) do
+    "CVE 5.1 record for #{Advisory.cve_id(advisory) || advisory.id} has no matching product " <>
+      "for #{advisory.package}; using the OSV evidence"
   end
 
   defp enrich_warning(advisory, reason) do

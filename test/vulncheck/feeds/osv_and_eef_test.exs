@@ -5,7 +5,7 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
   alias VulnCheck.{Cache, Config}
   alias VulnCheck.Feeds.{CVSS, EefCna, OSV, Store, TextHints}
   alias VulnCheck.Test.{Feeds, HTTPServer, Tmp}
-  alias VulnCheck.Types.{Advisory, MFA, Package, Workspace}
+  alias VulnCheck.Types.{Advisory, Finding, MFA, Package, Workspace}
 
   doctest VulnCheck.Feeds.CVSS
   doctest VulnCheck.Feeds.TextHints
@@ -259,6 +259,77 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
   end
 
   describe "EefCna.apply_record/2" do
+    test "preserves Hex identity under a lock alias and scopes symbols to the installed version" do
+      [advisory] =
+        OSV.parse_record(%{
+          "id" => "CVE-2026-1",
+          "affected" =>
+            for version <- ["1.0.0", "2.0.0"] do
+              %{
+                "package" => %{"ecosystem" => "Hex", "name" => "fixture"},
+                "versions" => [version],
+                "ecosystem_specific" => %{
+                  "affected_functions" => ["Fixture.osv_#{hd(String.split(version, "."))}/0"]
+                }
+              }
+            end
+        })
+
+      pkg = %Package{
+        name: "local_alias",
+        hex_name: "fixture",
+        version: "1.0.0",
+        source: :hex,
+        scope: :prod
+      }
+
+      ws = %{workspace([]) | packages: %{pkg.name => pkg}}
+      assert [matched] = Store.match(OSV.index([advisory]), ws)
+      assert matched.package == "local_alias"
+      assert matched.source_package == "fixture"
+      assert matched.affected_routines == [MFA.new("Fixture", "osv_1", 0)]
+
+      product = fn purl, version, function ->
+        %{
+          "packageURL" => purl,
+          "defaultStatus" => "unaffected",
+          "versions" => [%{"version" => version, "status" => "affected"}],
+          "programRoutines" => [%{"name" => "Fixture.#{function}/0"}]
+        }
+      end
+
+      entries = [
+        product.("pkg:hex/fixture_extra", "1.0.0", "foreign"),
+        product.("pkg:hex/fixture", "2.0.0", "other_version"),
+        product.("pkg:hex/fixture@1.0.0?repository_url=example", "1.0.0", "cna")
+      ]
+
+      record = %{"containers" => %{"cna" => %{"affected" => entries}}}
+      enriched = EefCna.apply_record(matched, record)
+      assert enriched.enriched
+      assert enriched.symbol_source == :osv_and_cve
+
+      assert enriched.affected_routines == [
+               MFA.new("Fixture", "osv_1", 0),
+               MFA.new("Fixture", "cna", 0)
+             ]
+
+      finding = %Finding{
+        advisory_id: enriched.id,
+        package: pkg.name,
+        installed_version: pkg.version,
+        severity: :unknown,
+        verdict: :potentially_reachable,
+        reason: :missing_beam_debug_info
+      }
+
+      assert VulnCheck.Explain.format(%{
+               advisories: [enriched],
+               local: %{workspace: ws, findings: [finding]},
+               warnings: []
+             }) =~ "Installed: local_alias 1.0.0"
+    end
+
     test "adds metrics, CWEs, OTP constraints and CVE version ranges" do
       advisory = %Advisory{id: "CVE-2026-1", package: "hex_core"}
 
@@ -280,7 +351,7 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
 
       other_package = EefCna.apply_record(%Advisory{id: "CVE-2026-1", package: "other"}, record)
       assert other_package.affected_routines == []
-      assert EefCna.apply_record(advisory, %{}).enriched
+      refute EefCna.apply_record(advisory, %{}).enriched
     end
 
     test "keeps the highest score of the merged records and the CVE record" do

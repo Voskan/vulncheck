@@ -11,7 +11,7 @@ defmodule VulnCheck.Feeds.OSV do
 
   alias VulnCheck.{Cache, Config, Semver}
   alias VulnCheck.Feeds.{CVSS, Merge, TextHints}
-  alias VulnCheck.Types.{Advisory, MFA}
+  alias VulnCheck.Types.{Advisory, MFA, VersionRange}
 
   @default_url "https://osv-vulnerabilities.storage.googleapis.com/Hex/all.zip"
   @cache_file "osv_hex_all.zip"
@@ -91,12 +91,15 @@ defmodule VulnCheck.Feeds.OSV do
       affected |> map() |> Map.get("package") |> map() |> Map.get("name")
     end)
     |> Enum.map(fn {package, entries} ->
-      ranges = Enum.flat_map(entries, &Semver.from_osv_ranges(&1["ranges"]))
-      versions = entries |> Enum.flat_map(&list(&1, "versions")) |> Enum.filter(&is_binary/1)
+      blocks = Enum.map(entries, &affected_block/1)
+      ranges = Enum.flat_map(blocks, & &1.ranges)
+      versions = Enum.flat_map(blocks, & &1.versions)
+      ranges = include_unbounded_blocks(blocks, ranges, versions)
       {entry_score, entry_vector} = entries |> Enum.flat_map(&list(&1, "severity")) |> cvss()
       score = score || entry_score
       vector = vector || entry_vector
-      {modules, routines} = ecosystem_symbols(entries)
+      modules = blocks |> Enum.flat_map(& &1.modules) |> Enum.uniq()
+      routines = blocks |> Enum.flat_map(& &1.routines) |> Enum.uniq()
 
       severity =
         case Advisory.severity_from_score(score) do
@@ -108,6 +111,7 @@ defmodule VulnCheck.Feeds.OSV do
         id: id,
         aliases: record |> list("aliases") |> Enum.filter(&is_binary/1),
         package: package,
+        source_package: package,
         summary: summary,
         details: details,
         severity: severity,
@@ -128,6 +132,7 @@ defmodule VulnCheck.Feeds.OSV do
         fixed_versions: Semver.fixed_versions(ranges),
         affected_modules: modules,
         affected_routines: routines,
+        affected_blocks: blocks,
         symbol_source: if(routines != [], do: :osv),
         otp_constraints:
           string_or_nil(database["otp_constraints"]) ||
@@ -138,6 +143,47 @@ defmodule VulnCheck.Feeds.OSV do
   end
 
   def parse_record(_), do: []
+
+  @doc "Restricts structured symbols to the affected blocks for a locked version."
+  @spec scope_symbols(Advisory.t(), String.t()) :: Advisory.t()
+  def scope_symbols(%Advisory{affected_blocks: []} = advisory, _version), do: advisory
+
+  def scope_symbols(%Advisory{} = advisory, version) do
+    blocks =
+      Enum.filter(advisory.affected_blocks, &Semver.affected?(version, &1.ranges, &1.versions))
+
+    modules = blocks |> Enum.flat_map(& &1.modules) |> Enum.uniq()
+    routines = blocks |> Enum.flat_map(& &1.routines) |> Enum.uniq()
+
+    %{
+      advisory
+      | affected_modules: modules,
+        affected_routines: routines,
+        symbol_source: if(routines != [], do: :osv),
+        symbol_gaps:
+          (routines != [] and Enum.any?(blocks, &(&1.routines == []))) or
+            (modules != [] and Enum.any?(blocks, &(&1.routines == [] and &1.modules == [])))
+    }
+  end
+
+  defp affected_block(entry) do
+    {modules, routines} = ecosystem_symbols([entry])
+
+    %{
+      ranges: Semver.from_osv_ranges(entry["ranges"]),
+      versions: entry |> list("versions") |> Enum.filter(&is_binary/1),
+      modules: modules,
+      routines: routines
+    }
+  end
+
+  defp include_unbounded_blocks(_blocks, [], []), do: []
+
+  defp include_unbounded_blocks(blocks, ranges, _versions) do
+    if Enum.any?(blocks, &(&1.ranges == [] and &1.versions == [])),
+      do: [%VersionRange{} | ranges],
+      else: ranges
+  end
 
   defp hex_package?(%{"package" => %{"ecosystem" => ecosystem, "name" => name}})
        when is_binary(name),

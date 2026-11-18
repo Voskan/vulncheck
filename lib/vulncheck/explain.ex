@@ -241,16 +241,26 @@ defmodule VulnCheck.Explain do
     lines =
       advisories
       |> Enum.uniq_by(& &1.package)
-      |> Enum.map(fn advisory ->
-        case Map.get(ws.packages, advisory.package) do
-          nil ->
-            "  #{advisory.package}: not locked by this project"
+      |> Enum.flat_map(fn advisory ->
+        source_package = advisory.source_package || advisory.package
 
-          package ->
-            case Enum.find(findings, &(&1.package == advisory.package)) do
-              nil -> "  #{advisory.package} #{package.version}: installed version is not affected"
-              finding -> finding_lines(finding)
-            end
+        packages =
+          ws.packages
+          |> Map.values()
+          |> Enum.filter(&((&1.hex_name || &1.name) == source_package))
+          |> Enum.sort_by(& &1.name)
+
+        case packages do
+          [] ->
+            ["  #{advisory.package}: not locked by this project"]
+
+          packages ->
+            Enum.map(packages, fn package ->
+              case Enum.find(findings, &(&1.package == package.name)) do
+                nil -> "  #{package.name} #{package.version}: installed version is not affected"
+                finding -> finding_lines(finding)
+              end
+            end)
         end
       end)
 

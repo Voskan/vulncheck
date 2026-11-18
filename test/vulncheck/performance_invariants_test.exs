@@ -151,8 +151,8 @@ defmodule VulnCheck.PerformanceInvariantsTest do
     assert length(parsed) == 500
     advisory = hd(parsed)
     assert advisory.enriched
-    assert advisory.symbol_source == :cve
-    assert length(advisory.affected_routines) == 2
+    assert advisory.symbol_source == :osv_and_cve
+    assert length(advisory.affected_routines) == 5
     assert length(advisory.affected_modules) == 3
     assert Enum.all?(advisory.affected_routines, &is_binary(&1.module))
     assert Enum.all?(advisory.affected_routines, &is_binary(&1.function))

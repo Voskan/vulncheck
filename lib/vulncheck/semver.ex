@@ -104,20 +104,23 @@ defmodule VulnCheck.Semver do
   considered affected.
   """
   @spec affected?(String.t(), Advisory.t()) :: boolean()
-  def affected?(version, %Advisory{version_ranges: [], affected_versions: []})
-      when is_binary(version),
-      do: true
+  def affected?(version, %Advisory{} = advisory),
+    do: affected?(version, advisory.version_ranges, advisory.affected_versions)
 
-  def affected?(version, %Advisory{} = advisory) do
+  @doc "Checks a single source's numbered intervals and explicit versions."
+  @spec affected?(String.t(), [VersionRange.t()], [String.t()]) :: boolean()
+  def affected?(_version, [], []), do: true
+
+  def affected?(version, ranges, versions) do
     cond do
       not valid?(version) ->
         true
 
-      Enum.any?(advisory.affected_versions, &(not valid?(&1) or compare(&1, version) == :eq)) ->
+      Enum.any?(versions, &(not valid?(&1) or compare(&1, version) == :eq)) ->
         true
 
       true ->
-        Enum.any?(advisory.version_ranges, &in_range?(version, &1))
+        Enum.any?(ranges, &in_range?(version, &1))
     end
   end
 
