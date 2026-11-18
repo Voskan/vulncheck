@@ -7,11 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for 1.0.0
-- Multi-language BEAM lockfile ingestion (`mix.lock`, `rebar.lock`, Gleam `manifest.toml`) with umbrella project support and `:prod` vs `:dev`/`:test` environment scoping.
-- Dual-source vulnerability intelligence combining OSV.dev Hex bulk feeds with Erlang Ecosystem Foundation (EEF) CNA CVE 5.1 `programRoutines` function-level metadata and Hex.pm package retirement advisories.
-- Parallel `.beam` bytecode analyzer extracting Erlang Abstract Format (`:abstract_code`) post-macro call graphs with exact `file:line` call-site locations and SHA-256 incremental disk caching.
-- BEAM-aware entrypoint and dispatch model covering OTP `.app` supervision trees, `Phoenix`/`Plug` pipelines, `GenServer`/`Oban`/`Broadway` behaviour callbacks, consolidated Elixir protocols, and configured runtime HTTP/DB adapters.
-- Three-tier soundness-preserving reachability solver (`REACHABLE`, `POTENTIALLY_REACHABLE`, `UNREACHABLE`) with shortest-path call-chain witnesses and OTP/Elixir runtime version gating.
-- Enterprise reporting and compliance outputs: ANSI Terminal, JSON, Markdown, SARIF 2.1.0 with `codeFlows`, GitHub Step Summary & Annotations, GitLab Dependency Scanning, CycloneDX 1.6 SBOM, and OpenVEX v0.2.0 (`vulnerable_code_not_in_execute_path`).
-- Standalone `vulncheck` escript and Mix tasks (`mix vulncheck`, `mix vulncheck.init`, `mix vulncheck.explain`, `mix vulncheck.feeds`) plus GitHub Action (`action.yml`) and air-gapped offline bundle mode.
+## [1.0.0] - 2026-11-18
+
+First stable release.
+
+### Added
+
+- Lockfile ingestion for Mix (`mix.lock`, umbrella projects), rebar3 (`rebar.lock`) and Gleam (`manifest.toml`), with the production dependency closure separated from `:dev`/`:test`-only packages.
+- Advisory data from the OSV.dev Hex feed, enriched with Erlang Ecosystem Foundation CNA CVE 5.1 records (`programRoutines`, `modules`, CVSS, CWE, OTP constraints), plus Hex.pm retirement checks. Feeds are cached with ETag revalidation and can be exported to and imported from offline bundles.
+- Parallel `.beam` analysis of post-macro abstract code with exact `file:line` call sites, a SHA-256 keyed summary cache, and fallbacks for modules compiled without debug info.
+- Entrypoint model for OTP applications and supervision trees, Plug and Phoenix pipelines, LiveView, GenServer, GenStage, Broadway and Oban callbacks, consolidated protocols and runtime-configured adapters (Tesla, Swoosh, Ecto, Phoenix.PubSub, Finch, Req), plus `extra_entrypoints` for release tasks and RPC targets (suggested by `mix vulncheck.init`).
+- Three-tier solver (`reachable`, `potentially_reachable`, `unreachable`) with twelve reason codes, shortest call-chain witnesses and OTP version gating. Dynamic dispatch, missing debug info and missing symbol data never produce an unreachable verdict.
+- Reports: terminal, JSON, Markdown, SARIF 2.1.0 with `codeFlows`, GitHub annotations and step summaries, GitLab Code Quality, CycloneDX 1.6 SBOM and OpenVEX v0.2.0, all deterministic.
+- Governed suppressions in `.vulncheck.ignore` (reason, expiry, stale-entry warnings), JSON baselines, `--diff` against a Git ref and `--forbid-new-suppressions`.
+- `mix vulncheck`, `mix vulncheck.init`, `mix vulncheck.explain` and `mix vulncheck.feeds`, a standalone escript, a composite GitHub Action, pre-commit hooks and a container image.
+- Reproducible benchmarks and atom-table guarantees: external data never creates atoms and warm scans never re-read unchanged `.beam` files.
+
+[Unreleased]: https://github.com/Voskan/vulncheck/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Voskan/vulncheck/releases/tag/v1.0.0

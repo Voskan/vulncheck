@@ -8,58 +8,122 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
 
 ```json
 {
+  "duration_ms": 142,
+  "findings": [
+    {
+      "advisory_id": "EEF-CVE-2026-101028",
+      "aliases": [
+        "CVE-2026-101028"
+      ],
+      "cvss_score": 7.5,
+      "cwes": [
+        "CWE-863"
+      ],
+      "fingerprint": "159f0146487b7b5140153f9b6a77bb94432c2ec3383d3cf47abcd1b8f6d04010",
+      "fixed_versions": [
+        "3.34.6"
+      ],
+      "installed_version": "3.34.2",
+      "package": "ash",
+      "package_scope": "prod",
+      "reason": "call_chain_proven",
+      "reason_detail": "",
+      "recommended_fix": "3.34.6",
+      "references": [
+        "https://cna.erlef.org/cves/CVE-2026-101028.html"
+      ],
+      "severity": "high",
+      "summary": "Ash.count, Ash.exists and Ash.aggregate skip related resources' read policies",
+      "suppressed": false,
+      "suppression_expired": false,
+      "suppression_expires": null,
+      "suppression_reason": null,
+      "target_mfa": "Ash.Actions.Aggregate.run/4",
+      "trace": [
+        {
+          "file": "lib/my_fintech_web/controllers/report_controller.ex",
+          "kind": "entrypoint",
+          "line": 41,
+          "mfa": "MyFintechWeb.ReportController.index/2"
+        },
+        {
+          "file": "lib/my_fintech/ledger.ex",
+          "kind": "static_call",
+          "line": 112,
+          "mfa": "MyFintech.Ledger.count_filtered_entries/2"
+        },
+        {
+          "file": "deps/ash/lib/ash.ex",
+          "kind": "static_call",
+          "line": 1184,
+          "mfa": "Ash.count/2"
+        },
+        {
+          "file": "deps/ash/lib/ash/actions/aggregate.ex",
+          "kind": "static_call",
+          "line": 29,
+          "mfa": "Ash.Actions.Aggregate.run/4"
+        }
+      ],
+      "verdict": "reachable"
+    },
+    {
+      "advisory_id": "EEF-CVE-2026-103502",
+      "aliases": [
+        "CVE-2026-103502"
+      ],
+      "cvss_score": 5.9,
+      "cwes": [],
+      "fingerprint": "32cebf59e14a9377e324c49c74ac8afa420d4be22093b3ae7279d4965a75c265",
+      "fixed_versions": [
+        "0.10.2"
+      ],
+      "installed_version": "0.10.0",
+      "package": "hex_core",
+      "package_scope": "prod",
+      "reason": "otp_version_unaffected",
+      "reason_detail": "requires OTP <= 25; running OTP 27.2",
+      "recommended_fix": "0.10.2",
+      "references": [],
+      "severity": "medium",
+      "summary": "hex_core verifies registry signatures with an outdated default on old OTP releases",
+      "suppressed": false,
+      "suppression_expired": false,
+      "suppression_expires": null,
+      "suppression_reason": null,
+      "target_mfa": ":hex_core.default_config/0",
+      "trace": [],
+      "verdict": "unreachable"
+    }
+  ],
+  "generated_at": "2026-11-18T09:00:00Z",
+  "policy_violations": [],
   "schema_version": "1.0.0",
+  "summary": {
+    "expired_suppressions": 0,
+    "noise_reduction_percent": 50,
+    "potentially_reachable": 0,
+    "reachable": 1,
+    "retired": 0,
+    "suppressed": 0,
+    "total": 2,
+    "unreachable": 1
+  },
+  "target": {
+    "elixir_version": "1.18.2",
+    "env": "prod",
+    "lockfile": "mix.lock",
+    "non_prod_packages_count": 19,
+    "otp_release": "27.2",
+    "prod_packages_count": 74,
+    "project_name": "my_fintech_api",
+    "project_type": "mix"
+  },
   "tool": {
     "name": "vulncheck",
     "version": "1.0.0"
   },
-  "target": {
-    "project_name": "my_fintech_api",
-    "project_type": "mix",
-    "env": "prod",
-    "elixir_version": "1.18.2",
-    "otp_release": "27",
-    "prod_packages_count": 74,
-    "non_prod_packages_count": 19
-  },
-  "summary": {
-    "reachable": 1,
-    "potentially_reachable": 1,
-    "unreachable": 9,
-    "retired": 0,
-    "suppressed": 0
-  },
-  "findings": [
-    {
-      "advisory_id": "EEF-CVE-2026-101028",
-      "aliases": ["CVE-2026-101028", "GHSA-xj24-8f5c-pp5p"],
-      "package": "ash",
-      "installed_version": "3.34.2",
-      "fixed_versions": ["3.34.6"],
-      "severity": "high",
-      "cvss_score": 7.5,
-      "verdict": "reachable",
-      "reason": "call_chain_proven",
-      "target_mfa": "Ash.Actions.Aggregate.run/4",
-      "trace": [
-        {
-          "mfa": "MyFintechWeb.ReportController.index/2",
-          "file": "lib/my_fintech_web/controllers/report_controller.ex",
-          "line": 41
-        },
-        {
-          "mfa": "MyFintech.Ledger.count_filtered_entries/2",
-          "file": "lib/my_fintech/ledger.ex",
-          "line": 112
-        },
-        {
-          "mfa": "Ash.Actions.Aggregate.run/4",
-          "file": "deps/ash/lib/ash/actions/aggregate.ex",
-          "line": 29
-        }
-      ]
-    }
-  ]
+  "warnings": []
 }
 ```
 
@@ -70,9 +134,10 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
 Designed for **GitHub Code Scanning** (`github/codeql-action/upload-sarif`):
 
 - Each unique advisory maps to a `reportingDescriptor` in `tool.driver.rules` with `security-severity` populated from CVSS so GitHub displays accurate `Critical` / `High` / `Medium` / `Low` badges.
-- `primaryLocation` points to the **first call site inside the user's own repository** (or `mix.lock` line when triggered via OTP daemon supervision), ensuring GitHub annotates pull requests directly on the relevant code.
+- The primary location is the **last call site in the project's own code** before the trace enters the dependency (or the package's line in the lockfile when no project frame is involved, e.g. an active OTP daemon), so GitHub annotates pull requests on the code that makes the vulnerable call.
 - `codeFlows[].threadFlows[].locations` encodes the complete multi-hop call trace from entrypoint to vulnerable dependency routine.
 - `UNREACHABLE` advisories are omitted by default (or emitted with `level: "none"` when `--show-unreachable` is passed).
+- `partialFingerprints.primaryLocationLineHash` carries the finding fingerprint (stable across runs), so Code Scanning tracks alerts across commits instead of reopening them.
 
 ---
 
@@ -85,9 +150,12 @@ Compliance frameworks (SOC 2, PCI DSS v4.0, ISO 27001, EU CRA) increasingly requ
 | VulnCheck Verdict & Reason | OpenVEX `status` | OpenVEX `justification` |
 | :--- | :--- | :--- |
 | `REACHABLE` | `"affected"` | — (`action_statement` lists fixed version) |
-| `POTENTIALLY_REACHABLE` | `"under_investigation"` | — |
+| `POTENTIALLY_REACHABLE` | `"under_investigation"` | — (`status_notes` explains the reason) |
 | `UNREACHABLE` (`function_not_called`, `module_not_loaded`, `adapter_not_configured`, `otp_app_not_started`) | `"not_affected"` | `"vulnerable_code_not_in_execute_path"` |
 | `UNREACHABLE` (`non_prod_dependency`, `otp_version_unaffected`) | `"not_affected"` | `"vulnerable_code_not_present"` |
+| Suppressed in `.vulncheck.ignore` (reachable or potentially reachable, not expired) | `"not_affected"` | `"inline_mitigations_already_exist"` |
+
+Retired Hex releases are a package lifecycle status rather than a vulnerability and are not emitted as VEX statements. The document `@id` is derived from the content, so identical reports produce byte-identical documents.
 
 ---
 
@@ -96,4 +164,6 @@ Compliance frameworks (SOC 2, PCI DSS v4.0, ISO 27001, EU CRA) increasingly requ
 Generates a standards-compliant CycloneDX 1.6 Bill of Materials for the BEAM release:
 - Component `purl` identifiers in canonical Hex format (`pkg:hex/phoenix@1.7.18`), plus git commit refs for git dependencies.
 - `scope: "required"` for `:prod` runtime packages and `scope: "excluded"` for `:dev`/`:test`-only dependencies.
-- Full `dependencies` graph reflecting `.app` and `mix.lock` edges, plus embedded `vulnerabilities[].analysis` blocks matching the reachability verdict.
+- A `dependencies` graph built from the lockfile's dependency edges, with the project's direct dependencies (from `mix.exs`, `rebar.config` or `gleam.toml`) as the root component's `dependsOn`.
+- `vulnerabilities[].analysis` blocks matching the reachability verdict: `exploitable` (reachable, with the call chain in `detail`, plus `response: ["update"]` when a fixed version exists), `in_triage` (potentially reachable), `not_affected` with `code_not_reachable` or `code_not_present` (unreachable), and `not_affected` with `protected_by_mitigating_control` for active suppressions. Retired releases are not listed as vulnerabilities.
+- SHA-256 component hashes from the lockfile checksums and a deterministic `serialNumber`, so identical scans produce identical SBOMs.

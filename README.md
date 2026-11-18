@@ -35,7 +35,7 @@ At the same time, **a naive static call graph is unsafe on the BEAM**: HTTP serv
   - `POTENTIALLY_REACHABLE` — Package runs as an active OTP daemon/supervisor child, participates in an unresolved `apply/3` boundary, or lacks symbol-level CVE granularity while loaded in `:prod`.
   - `UNREACHABLE` — Mathematically excluded (`function_not_called`, `module_not_loaded`, `adapter_not_configured`, `otp_app_not_started`, `non_prod_dependency`, or `otp_version_unaffected`).
 - **Multi-Language BEAM Support:** Works as `mix vulncheck` inside Elixir / Umbrella projects and as a standalone `vulncheck` escript for Erlang (`rebar3`) and Gleam (`manifest.toml`) builds.
-- **Compliance & CI Ready:** Outputs ANSI Terminal reports, deterministic JSON, Markdown, **SARIF 2.1.0 (`codeFlows`)**, GitHub Actions annotations & Step Summaries, GitLab Dependency Scanning JSON, **CycloneDX 1.6 SBOM**, and **OpenVEX v0.2.0** (`vulnerable_code_not_in_execute_path`).
+- **Compliance & CI Ready:** Outputs ANSI Terminal reports, deterministic JSON, Markdown, **SARIF 2.1.0 (`codeFlows`)**, GitHub Actions annotations & Step Summaries, GitLab Code Quality reports, **CycloneDX 1.6 SBOM**, and **OpenVEX v0.2.0** (`vulnerable_code_not_in_execute_path`).
 
 ---
 
@@ -87,30 +87,30 @@ vulncheck --project-dir /path/to/service
 
 ```text
 VulnCheck 1.0.0 — BEAM Reachability Vulnerability Audit
-Target: my_fintech_api (Elixir 1.18.2 / OTP 27.2, env: prod)
+Target: my_fintech_api (mix, Elixir 1.18.2 / OTP 27.2, env: prod)
 Lockfile: 74 prod packages (19 dev/test excluded) · Scan time: 142 ms (cached)
 
 [REACHABLE] CVE-2026-101028 (HIGH · CVSS 7.5) — ash 3.34.2 (fix: >= 3.34.6)
   Summary: Ash.count, Ash.exists and Ash.aggregate skip related resources' read policies
   Target:  Ash.Actions.Aggregate.run/4
   Trace:
-    1. MyFintechWeb.Router.call/2                 (lib/my_fintech_web/router.ex:18)
-    2. MyFintechWeb.ReportController.index/2      (lib/my_fintech_web/controllers/report_controller.ex:41)
-    3. MyFintech.Ledger.count_filtered_entries/2  (lib/my_fintech/ledger.ex:112)
-    4. Ash.count/2 -> Ash.Actions.Aggregate.run/4 (deps/ash/lib/ash/actions/aggregate.ex:29)
+    1. MyFintechWeb.ReportController.index/2     (lib/my_fintech_web/controllers/report_controller.ex:41)
+    2. MyFintech.Ledger.count_filtered_entries/2 (lib/my_fintech/ledger.ex:112)
+    3. Ash.count/2                               (deps/ash/lib/ash.ex:1184)
+    4. Ash.Actions.Aggregate.run/4               (deps/ash/lib/ash/actions/aggregate.ex:29)
 
 [POTENTIALLY REACHABLE] CVE-2026-54892 (MEDIUM · CVSS 6.5) — plug 1.16.2 (fix: >= 1.16.4)
   Summary: Quadratic-time nested parameter decoding in Plug.Conn.Query
-  Reason:  Active HTTP pipeline plug via MyFintechWeb.Endpoint (Plug.Parsers :urlencoded enabled)
+  Reason:  plug runs inside the HTTP pipeline started by MyFintechWeb.Endpoint (active_network_daemon)
 
-Suppressed as UNREACHABLE (9 advisories — pass --show-unreachable for details):
-  • 5 in hackney 1.20.1   (adapter_not_configured: Tesla configured with Tesla.Adapter.Mint)
-  • 2 in plug 1.16.2      (function_not_called: Plug.Parsers :multipart disabled in Endpoint)
-  • 1 in hex_core 0.10.0  (otp_version_unaffected: requires OTP <= 25; running OTP 27.2)
-  • 1 in meck 0.9.2       (non_prod_dependency: restricted to :test)
+Suppressed as UNREACHABLE (6 advisories — pass --show-unreachable for details):
+  • 3 in hackney 1.20.1  (adapter_not_configured: Tesla is configured with Tesla.Adapter.Mint)
+  • 1 in hex_core 0.10.0 (otp_version_unaffected: requires OTP <= 25; running OTP 27.2)
+  • 1 in meck 0.9.2      (non_prod_dependency: meck is only used in :test)
+  • 1 in plug 1.16.2     (function_not_called: Plug.Parsers.MULTIPART.init/1 is never called)
 
-Summary: 1 reachable, 1 potentially reachable, 9 unreachable (82% noise reduction)
-Exit code: 1 (threshold: --fail-on potentially_reachable)
+Summary: 1 reachable, 1 potentially reachable, 6 unreachable (75% noise reduction)
+Exit code: 1 (threshold: --fail-on potentially_reachable, --min-severity low)
 ```
 
 ---
@@ -144,6 +144,9 @@ on: [push, pull_request]
 jobs:
   vulncheck:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # SARIF upload to Code Scanning
     steps:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1

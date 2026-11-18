@@ -19,7 +19,7 @@ On the BEAM, four runtime mechanisms invoke functions without a direct static `M
 
 ## Three-Tier Verdict Taxonomy
 
-Every advisory matching a package version in the lockfile receives exactly one of three verdicts:
+Every advisory matching a package version in the lockfile receives exactly one of three verdicts. A fourth, `RETIRED` (reason `package_retired`), reports a locked release that its maintainers retired on Hex.pm (severity follows the retirement reason: `security` is high, `invalid` medium, `deprecated` and `renamed` low); it is a package lifecycle status and is excluded from SBOM vulnerabilities and VEX statements.
 
 ### 1. `REACHABLE` (High-Confidence Proof of Execution Path)
 
@@ -32,7 +32,7 @@ Assigned when **both** conditions hold:
 ### 2. `POTENTIALLY_REACHABLE` (Conservative Soundness Boundary)
 
 Assigned when static non-reachability **cannot** be proven safely:
-- **Network / Runtime Daemon Exposure:** The vulnerable package is an active OTP server/listener in the production application tree (e.g., `:bandit`, `:cowboy`, `:cowlib`, `:ranch`, `:thousand_island`, `:ssl`) and the vulnerable module belongs to its active protocol stack.
+- **Network / Runtime Daemon Exposure:** The vulnerable package is an active OTP server/listener in the production application tree (`:bandit`, `:cowboy`, `:cowlib`, `:ranch`, `:thousand_island`, `:grpc`, `:plug_cowboy`) and the vulnerable module belongs to its active protocol stack.
 - **Unresolved Dynamic Dispatch:** A reachable module invokes `apply(mod_var, fun_var, args)` where target module/function candidates cannot be narrowed away from the vulnerable module, and the vulnerable dependency's OTP application is loaded in `:prod`.
 - **Missing Symbol Granularity:** An upstream advisory lacks `programRoutines` and module-level hints, and at least one function in the vulnerable package is reachable in `:prod`.
 - **Missing `.beam` Debug Info:** A dependency `.beam` was compiled with `debug_info` stripped, preventing call-graph traversal inside that dependency.
@@ -44,9 +44,9 @@ Assigned **only** when `vulncheck` establishes a concrete, auditable proof of no
 | Reason Code | Proof Condition | Real-World Example |
 | :--- | :--- | :--- |
 | `non_prod_dependency` | Package is outside the `:prod` runtime closure (`only: [:dev, :test]` or build-time only). | CVE in `meck` or `ex_doc`. |
-| `otp_version_unaffected` | Advisory explicitly restricts vulnerability to an OTP/Elixir range excluding the target runtime. | `EEF-CVE-2026-103502` (`hex_core` on OTP $\le$ 25 when running on OTP 27). |
+| `otp_version_unaffected` | Advisory explicitly restricts the vulnerability to an OTP release range that excludes the target runtime (`--otp-version` or the running VM). | `EEF-CVE-2026-103502` (`hex_core` on OTP $\le$ 25 when running on OTP 27). |
 | `otp_app_not_started` | Transitive dependency is neither in the `:prod` release boot tree nor referenced by any reachable module/config. | Unused transitive HTTP client pulled as optional dep. |
-| `adapter_not_configured` | Package is an optional adapter (`Tesla.Adapter.Hackney`, `Swoosh.Adapters.*`) and neither project config nor `.beam` constants reference that adapter module. | 26 `hackney` CVEs when project uses `Finch` / `Mint`. |
+| `adapter_not_configured` | Package is an optional adapter (`Tesla.Adapter.Hackney`, `Swoosh.Adapters.*`) and neither project config nor `.beam` constants reference that adapter module. | `hackney` advisories when Tesla is configured with `Tesla.Adapter.Mint` or `Tesla.Adapter.Finch`. |
 | `module_not_loaded` | Advisory specifies affected modules (`modules` / `programRoutines`), no dynamic `apply/3` escapes toward the package, and zero functions in the affected module are reachable. | `Plug.Parsers.MULTIPART` CVE when `Plug.Parsers` is compiled with `parsers: [:json]` only. |
 | `function_not_called` | Advisory specifies exact `programRoutines` MFAs, `.beam` debug chunks are intact across the call boundary, no unresolved `apply/3` targets the module, and none of the vulnerable MFAs appear in the reachable closure. | `Ash.count/2` (`Ash.Actions.Aggregate.run/4`) CVE when app only uses `Ash.read/2` and `Ash.create/2`. |
 
