@@ -446,4 +446,19 @@ defmodule VulnCheck.Beam.ExtractorTest do
     refute DynamicCall.arity_compatible?(two, 1)
     assert DynamicCall.arity_compatible?(two, 3)
   end
+
+  test "loader enforces file count and byte size limits without crashing", ctx do
+    limited = Loader.load_dirs([{"pkg", ctx.ebin}], cache: false, max_beam_files: 2)
+    assert map_size(limited.modules) == 2
+    assert limited.stats.failed > 0
+
+    assert Enum.any?(limited.artifact_issues, fn {_pkg, msg} ->
+             msg =~ "beam_file_limit_exceeded"
+           end)
+
+    too_large = Loader.load_dirs([{"pkg", ctx.ebin}], cache: false, max_beam_bytes: 16)
+    assert too_large.modules == %{}
+    assert too_large.stats.failed == too_large.stats.beams
+    assert Enum.any?(too_large.artifact_issues, fn {_pkg, msg} -> msg =~ "beam_too_large" end)
+  end
 end

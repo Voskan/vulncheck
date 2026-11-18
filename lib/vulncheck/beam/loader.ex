@@ -18,6 +18,8 @@ defmodule VulnCheck.Beam.Loader do
   alias VulnCheck.Workspace.AppFile
 
   @max_beam_bytes 64 * 1024 * 1024
+  @default_beam_timeout 15_000
+  @default_max_beam_files 20_000
 
   # Cached summaries are decoded with `binary_to_term(bin, [:safe])`, which
   # only accepts atoms that already exist. Every atom a summary holds is
@@ -147,9 +149,10 @@ defmodule VulnCheck.Beam.Loader do
           path <- dir |> Path.join("*.beam") |> Path.wildcard() |> Enum.sort(),
           do: {package, path}
 
-    indexed = Enum.with_index(files)
-
     concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
+    timeout = Keyword.get(opts, :beam_timeout, @default_beam_timeout)
+    max_files = Keyword.get(opts, :max_beam_files, @default_max_beam_files)
+    {accepted, overflow} = Enum.split(files, max_files)
 
     initial = %{
       modules: %{},
@@ -158,16 +161,27 @@ defmodule VulnCheck.Beam.Loader do
       stats: %{beams: 0, cached: 0, analyzed: 0, without_debug_info: 0, failed: 0}
     }
 
-    indexed
-    |> Task.async_stream(
-      fn {{package, path}, index} -> {index, {package, path, load_file(path, opts)}} end,
-      max_concurrency: concurrency,
-      ordered: false,
-      timeout: :infinity
-    )
-    |> Enum.map(fn {:ok, value} -> value end)
-    |> Enum.sort_by(&elem(&1, 0))
-    |> Enum.map(&elem(&1, 1))
+    analyzed =
+      accepted
+      |> Task.async_stream(
+        fn {_package, path} -> load_file(path, opts) end,
+        max_concurrency: concurrency,
+        ordered: true,
+        timeout: timeout,
+        on_timeout: :kill_task
+      )
+      |> Enum.zip(accepted)
+      |> Enum.map(fn
+        {{:ok, value}, {package, path}} -> {package, path, value}
+        {{:exit, reason}, {package, path}} -> {package, path, {:error, {:worker_exit, reason}}}
+      end)
+
+    overflow_results =
+      Enum.map(overflow, fn {package, path} ->
+        {package, path, {:error, {:beam_file_limit_exceeded, max_files}}}
+      end)
+
+    (analyzed ++ overflow_results)
     |> Enum.reduce(initial, fn
       {package, path, {:ok, summary, origin}}, acc ->
         summary = %{summary | package: package, beam_path: path}
@@ -214,8 +228,10 @@ defmodule VulnCheck.Beam.Loader do
   @spec load_file(String.t(), keyword()) ::
           {:ok, ModuleSummary.t(), :cached | :analyzed} | {:error, term()}
   def load_file(path, opts \\ []) do
+    max_bytes = Keyword.get(opts, :max_beam_bytes, @max_beam_bytes)
+
     with {:ok, %File.Stat{size: size}} <- File.stat(path),
-         :ok <- if(size <= @max_beam_bytes, do: :ok, else: {:error, :beam_too_large}),
+         :ok <- if(size <= max_bytes, do: :ok, else: {:error, :beam_too_large}),
          {:ok, bytes} <- File.read(path) do
       analyze_binary(bytes, Keyword.put(opts, :beam_path, path))
     end

@@ -64,7 +64,7 @@ runs:
     - name: Cache advisory feeds
       uses: actions/cache@v4
       with:
-        path: ~/.cache/vulncheck
+        path: ~/.cache/vulncheck/feeds
         key: vulncheck-feeds-${{ github.run_id }}
         restore-keys: vulncheck-feeds-
 

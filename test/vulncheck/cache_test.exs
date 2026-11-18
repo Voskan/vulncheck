@@ -194,6 +194,16 @@ defmodule VulnCheck.CacheTest do
       :ok = Cache.put_beam(config, other, summary)
       File.cp!(Path.join(Cache.beam_dir(config), other <> ".etf"), path)
       assert :miss = Cache.get_beam(config, sha)
+
+      bad_schema = %VulnCheck.Types.ModuleSummary{module: 123}
+      File.write!(path, :erlang.term_to_binary({:vulncheck_beam, 3, sha, bad_schema}))
+      assert :miss = Cache.get_beam(config, sha)
+
+      bad_edges = %VulnCheck.Types.ModuleSummary{module: "Elixir.Demo", edges: [:not_an_edge]}
+      File.write!(path, :erlang.term_to_binary({:vulncheck_beam, 3, sha, bad_edges}))
+      assert :miss = Cache.get_beam(config, sha)
+
+      assert :miss = Cache.get_beam(config, "../escape")
     end
   end
 
