@@ -1,22 +1,113 @@
-# Expected verdicts and pre-graph package baselines for the real-world validation corpus.
+# Expected verdicts and pre-graph package baselines for the 5 real-world validation projects.
+# Derived from scanning pinned lockfiles against the offline OSV + EEF CNA snapshot and
+# reviewed against docs/REACHABILITY_MODEL.md.
 %{
   verdicts: [
-    # (a) Phoenix API on Bandit with Plug.Parsers [:json]
+    # (a) phoenix_bandit: Plug API started via Bandit child spec with Plug.Parsers [:json]
+    # Bandit handlers & hpax are reachable from the started Bandit supervision/request pipeline;
+    # 9 Bandit advisories without concrete static trace remain active_network_daemon.
+    {"phoenix_bandit", "EEF-CVE-2026-105659", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-105660", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-108525", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-113436", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-115269", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-39804", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-39805", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-39807", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-42786", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-42788", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-74836", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-58226", :reachable, :call_chain_proven},
     {"phoenix_bandit", "EEF-CVE-2026-54892", :reachable, :call_chain_proven},
-    # (b) Plug + Cowboy with multipart
+    {"phoenix_bandit", "EEF-CVE-2026-56813", :reachable, :call_chain_proven},
+    {"phoenix_bandit", "EEF-CVE-2026-108529", :potentially_reachable, :active_network_daemon},
+    {"phoenix_bandit", "EEF-CVE-2026-109584", :potentially_reachable, :active_network_daemon},
+    {"phoenix_bandit", "EEF-CVE-2026-110314", :potentially_reachable, :active_network_daemon},
+    {"phoenix_bandit", "EEF-CVE-2026-110499", :potentially_reachable, :active_network_daemon},
+    {"phoenix_bandit", "EEF-CVE-2026-111101", :potentially_reachable, :active_network_daemon},
+    {"phoenix_bandit", "EEF-CVE-2026-116078", :potentially_reachable, :active_network_daemon},
+    {"phoenix_bandit", "EEF-CVE-2026-39803", :potentially_reachable, :active_network_daemon},
+    {"phoenix_bandit", "EEF-CVE-2026-75484", :potentially_reachable, :active_network_daemon},
+    # 3 Plug advisories guarded conservatively by dynamic apply/3 in Plug/Bandit
+    {"phoenix_bandit", "EEF-CVE-2026-8468", :potentially_reachable, :unresolved_dynamic_dispatch},
+    {"phoenix_bandit", "EEF-CVE-2026-120287", :potentially_reachable, :unresolved_dynamic_dispatch},
+    {"phoenix_bandit", "EEF-CVE-2026-56814", :potentially_reachable, :unresolved_dynamic_dispatch},
+
+    # (b) plug_cowboy_multipart: Plug + Cowboy with [:urlencoded, :multipart]
     {"plug_cowboy_multipart", "EEF-CVE-2026-54892", :reachable, :call_chain_proven},
-    # (c) Tesla + Mint with transitive unused hackney
-    {"tesla_mint_hackney", "GHSA-3w5p-5r3w-6r2p", :unreachable, :adapter_not_configured},
-    # (d) Umbrella of 3 apps with shared mix.lock
+    {"plug_cowboy_multipart", "EEF-CVE-2026-56813", :reachable, :call_chain_proven},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-8468", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-120287", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-56814", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-32688", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-8466", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-65624", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "GHSA-w4f7-4cxr-rv3c", :potentially_reachable,
+     :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-113431", :potentially_reachable,
+     :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-43966", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-43968", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-43969", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-43970", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-43971", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-59248", :potentially_reachable, :active_network_daemon},
+    {"plug_cowboy_multipart", "EEF-CVE-2026-7790", :potentially_reachable, :active_network_daemon},
+
+    # (c) tesla_mint_hackney: Tesla configured with Tesla.Adapter.Mint + transitive hackney
+    {"tesla_mint_hackney", "EEF-CVE-2026-58226", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-48861", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-48862", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-49753", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-49754", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-56810", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-58229", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-59246", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-59249", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-82672", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-82728", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-91043", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-92103", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-94194", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-48596", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-48597", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-48598", :reachable, :call_chain_proven},
+    {"tesla_mint_hackney", "EEF-CVE-2026-47071", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"tesla_mint_hackney", "EEF-CVE-2026-47076", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"tesla_mint_hackney", "GHSA-vq52-99r9-h5pw", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"tesla_mint_hackney", "GHSA-9fm9-hp7p-53mf", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"tesla_mint_hackney", "EEF-CVE-2026-48594", :unreachable, :function_not_called},
+    {"tesla_mint_hackney", "EEF-CVE-2026-48595", :unreachable, :function_not_called},
+    {"tesla_mint_hackney", "EEF-CVE-2026-47075", :unreachable, :function_not_called},
+    {"tesla_mint_hackney", "EEF-CVE-2026-47069", :unreachable, :function_not_called},
+
+    # (d) umbrella_three_apps: 3-app Mix umbrella sharing mix.lock (80% noise reduction)
     {"umbrella_three_apps", "EEF-CVE-2026-54892", :reachable, :call_chain_proven},
-    # (e) rebar3 project with hackney
-    {"rebar3_hackney", "GHSA-3w5p-5r3w-6r2p", :potentially_reachable, :active_network_daemon}
+    {"umbrella_three_apps", "EEF-CVE-2026-8468", :unreachable, :function_not_called},
+    {"umbrella_three_apps", "EEF-CVE-2026-120287", :unreachable, :function_not_called},
+    {"umbrella_three_apps", "EEF-CVE-2026-56814", :unreachable, :function_not_called},
+    {"umbrella_three_apps", "EEF-CVE-2026-56813", :unreachable, :function_not_called},
+
+    # (e) rebar3_hackney: Erlang rebar3 app calling hackney:get/1
+    {"rebar3_hackney", "EEF-CVE-2026-47076", :reachable, :call_chain_proven},
+    {"rebar3_hackney", "EEF-CVE-2026-47069", :reachable, :call_chain_proven},
+    {"rebar3_hackney", "EEF-CVE-2026-47071", :potentially_reachable, :unresolved_dynamic_dispatch},
+    {"rebar3_hackney", "EEF-CVE-2026-47075", :potentially_reachable, :unresolved_dynamic_dispatch},
+    {"rebar3_hackney", "GHSA-vq52-99r9-h5pw", :potentially_reachable, :unresolved_dynamic_dispatch},
+    {"rebar3_hackney", "GHSA-9fm9-hp7p-53mf", :potentially_reachable, :unresolved_dynamic_dispatch}
   ],
   packages: [
     {"phoenix_bandit", "plug", "1.15.2"},
     {"phoenix_bandit", "bandit", "1.5.0"},
     {"plug_cowboy_multipart", "plug", "1.15.2"},
-    {"plug_cowboy_multipart", "cowboy", "2.12.0"},
+    {"plug_cowboy_multipart", "cowboy", "2.10.0"},
     {"tesla_mint_hackney", "tesla", "1.8.0"},
     {"tesla_mint_hackney", "mint", "1.5.2"},
     {"tesla_mint_hackney", "hackney", "1.18.1"},

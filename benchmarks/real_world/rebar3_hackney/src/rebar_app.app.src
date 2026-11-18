@@ -1,0 +1,7 @@
+{application, rebar_app,
+ [{description, "Validation fixture"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications, [kernel, stdlib, hackney]},
+  {env, []},
+  {modules, []}]}.

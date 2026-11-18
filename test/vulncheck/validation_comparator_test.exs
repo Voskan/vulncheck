@@ -5,7 +5,7 @@ defmodule VulnCheck.ValidationComparatorTest do
 
   alias VulnCheck.Bench.ValidationComparator
 
-  test "computes precision, recall, noise reduction and detects mismatches or missing findings" do
+  test "computes precision, recall, noise reduction and detects mismatches, missing and unexpected findings" do
     expected = [
       {"proj_a", "EEF-CVE-2026-54892", :reachable, :call_chain_proven},
       {"proj_a", "GHSA-unused", :unreachable, :adapter_not_configured}
@@ -42,11 +42,44 @@ defmodule VulnCheck.ValidationComparatorTest do
     assert ok.noise_reduction_percent == 50.0
     assert ok.package_missing == []
 
-    summary = ValidationComparator.summarize([ok])
-    assert summary.passed?
+    summary1 = ValidationComparator.summarize([ok], expected)
+    summary2 = ValidationComparator.summarize([ok], expected)
+    assert summary1 == summary2
+    assert summary1.passed?
 
-    assert ValidationComparator.to_markdown(summary) =~
-             "| `proj_a` | 2/2 | 100.0% | 100.0% | 50.0% (1/2) | PASS |"
+    md1 = ValidationComparator.to_markdown(summary1)
+    md2 = ValidationComparator.to_markdown(summary2)
+    assert md1 == md2
+    assert md1 =~ "| `proj_a` | 2/2 | 100.0% | 100.0% | 50.0% (1/2) | PASS |"
+
+    # Unexpected finding fails the run
+    extra_report =
+      Map.update!(exact_report, "findings", fn list ->
+        list ++
+          [
+            %{
+              "advisory_id" => "EEF-CVE-2026-EXTRA",
+              "package" => "plug",
+              "installed_version" => "1.15.2",
+              "verdict" => "reachable",
+              "reason" => "call_chain_proven"
+            }
+          ]
+      end)
+
+    extra = ValidationComparator.compare("proj_a", extra_report, expected, expected_pkgs)
+    refute extra.passed?
+    assert [%{advisory_id: "EEF-CVE-2026-EXTRA"}] = extra.unexpected
+
+    # Missing expected project fails summarize/2
+    missing_proj =
+      ValidationComparator.summarize(
+        [ok],
+        expected ++ [{"proj_b", "CVE-1", :reachable, :call_chain_proven}]
+      )
+
+    refute missing_proj.passed?
+    assert Enum.any?(missing_proj.projects, &(&1.project == "proj_b" and not &1.passed?))
 
     # Missed expected actionable finding lowers recall and fails
     missed_report = %{"findings" => Enum.drop(exact_report["findings"], 1)}

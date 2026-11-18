@@ -65,6 +65,8 @@ defmodule VulnCheck.Bench.ValidationComparator do
 
     %{
       project: project,
+      status: :ok,
+      error: nil,
       total_expected: length(project_verdicts),
       total_actual: total_actual,
       matched: length(matched),
@@ -83,30 +85,80 @@ defmodule VulnCheck.Bench.ValidationComparator do
         total_actual: total_actual
       },
       package_missing: pkg_missing,
-      passed?: mismatches == [] and missing == []
+      passed?: mismatches == [] and missing == [] and unexpected == [] and pkg_missing == []
     }
   end
 
-  @spec summarize([map()]) :: map()
-  def summarize(results) do
-    tot_expected = Enum.sum(Enum.map(results, & &1.total_expected))
-    tot_actual = Enum.sum(Enum.map(results, & &1.total_actual))
-    tot_matched = Enum.sum(Enum.map(results, & &1.matched))
-    tot_unreach = Enum.sum(Enum.map(results, & &1.unreachable))
+  @spec failed_project(String.t(), String.t(), [expected_verdict()]) :: map()
+  def failed_project(project, error, expected_verdicts) do
+    project_verdicts =
+      Enum.filter(expected_verdicts, fn {proj, _id, _v, _r} -> proj == project end)
 
-    act_matched = Enum.sum(Enum.map(results, & &1.denominators.actionable_matched))
-    act_actual = Enum.sum(Enum.map(results, & &1.denominators.actionable_actual))
-    act_expected = Enum.sum(Enum.map(results, & &1.denominators.actionable_expected))
+    actionable_expected = Enum.count(project_verdicts, fn {_, _, v, _} -> v != :unreachable end)
 
     %{
-      projects: results,
+      project: project,
+      status: :error,
+      error: error,
+      total_expected: length(project_verdicts),
+      total_actual: 0,
+      matched: 0,
+      mismatches: [],
+      missing:
+        Enum.map(project_verdicts, fn {_, id, v, r} ->
+          %{
+            advisory_id: id,
+            expected_verdict: Atom.to_string(v),
+            expected_reason: Atom.to_string(r)
+          }
+        end),
+      unexpected: [],
+      unreachable: 0,
+      noise_reduction_percent: 0.0,
+      precision_percent: 0.0,
+      recall_percent: 0.0,
+      denominators: %{
+        actionable_matched: 0,
+        actionable_actual: 0,
+        actionable_expected: actionable_expected,
+        unreachable: 0,
+        total_actual: 0
+      },
+      package_missing: [],
+      passed?: false
+    }
+  end
+
+  @spec summarize([map()], [expected_verdict()]) :: map()
+  def summarize(results, expected_verdicts \\ []) do
+    seen_projects = MapSet.new(results, & &1.project)
+
+    missing_projects =
+      expected_verdicts
+      |> Enum.map(&elem(&1, 0))
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(seen_projects, &1))
+      |> Enum.map(&failed_project(&1, "project was not executed", expected_verdicts))
+
+    all_results = results ++ missing_projects
+    tot_expected = Enum.sum(Enum.map(all_results, & &1.total_expected))
+    tot_actual = Enum.sum(Enum.map(all_results, & &1.total_actual))
+    tot_matched = Enum.sum(Enum.map(all_results, & &1.matched))
+    tot_unreach = Enum.sum(Enum.map(all_results, & &1.unreachable))
+
+    act_matched = Enum.sum(Enum.map(all_results, & &1.denominators.actionable_matched))
+    act_actual = Enum.sum(Enum.map(all_results, & &1.denominators.actionable_actual))
+    act_expected = Enum.sum(Enum.map(all_results, & &1.denominators.actionable_expected))
+
+    %{
+      projects: all_results,
       total_expected: tot_expected,
       total_actual: tot_actual,
       matched: tot_matched,
       precision_percent: percent(act_matched, act_actual),
       recall_percent: percent(act_matched, act_expected),
       noise_reduction_percent: percent(tot_unreach, tot_actual),
-      passed?: Enum.all?(results, & &1.passed?)
+      passed?: Enum.all?(all_results, & &1.passed?)
     }
   end
 
