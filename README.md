@@ -164,6 +164,7 @@ jobs:
 - [BEAM Reachability Model & Soundness Guarantees](docs/REACHABILITY_MODEL.md)
 - [Configuration, Suppressions & CI/CD Guide](docs/CONFIGURATION_AND_CI.md)
 - [Output Schemas: JSON, SARIF 2.1.0, CycloneDX 1.6 & OpenVEX v0.2.0](docs/OUTPUT_FORMATS.md)
+- [Performance & Memory Benchmarks](docs/BENCHMARKS.md)
 
 ---
 

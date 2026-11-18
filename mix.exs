@@ -80,7 +80,8 @@ defmodule VulnCheck.MixProject do
         "docs/ARCHITECTURE.md",
         "docs/REACHABILITY_MODEL.md",
         "docs/CONFIGURATION_AND_CI.md",
-        "docs/OUTPUT_FORMATS.md"
+        "docs/OUTPUT_FORMATS.md",
+        "docs/BENCHMARKS.md"
       ],
       groups_for_modules: [
         "Public API": [VulnCheck, VulnCheck.CLI, VulnCheck.Config],

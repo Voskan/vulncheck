@@ -14,9 +14,16 @@ defmodule VulnCheck.Beam.Loader do
 
   alias VulnCheck.{Cache, Config}
   alias VulnCheck.Beam.AbstractWalker
-  alias VulnCheck.Types.{ModuleSummary, Workspace}
+  alias VulnCheck.Types.{CallEdge, DynamicCall, MFA, ModuleSummary, Workspace}
 
   @max_beam_bytes 64 * 1024 * 1024
+
+  # Cached summaries are decoded with `binary_to_term(bin, [:safe])`, which
+  # only accepts atoms that already exist. Every atom a summary holds is
+  # defined by one of these modules, and modules load lazily, so they are
+  # loaded before the first decode; otherwise a fresh VM would treat its
+  # first cache hits as misses.
+  @summary_modules [ModuleSummary, CallEdge, DynamicCall, MFA, AbstractWalker]
 
   @type result :: %{
           modules: %{String.t() => ModuleSummary.t()},
@@ -68,6 +75,8 @@ defmodule VulnCheck.Beam.Loader do
   """
   @spec load_dirs([{String.t() | nil, String.t()}], keyword()) :: result()
   def load_dirs(dirs, opts \\ []) do
+    Enum.each(@summary_modules, &Code.ensure_loaded!/1)
+
     files =
       for {package, dir} <- dirs,
           path <- dir |> Path.join("*.beam") |> Path.wildcard() |> Enum.sort(),
