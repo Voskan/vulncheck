@@ -71,6 +71,7 @@ defmodule VulnCheck.Types.Advisory do
     affected_routines: [],
     otp_constraints: nil,
     retirement: nil,
+    symbol_source: nil,
     enriched: false
   ]
 
@@ -94,6 +95,7 @@ defmodule VulnCheck.Types.Advisory do
           affected_routines: [MFA.t()],
           otp_constraints: String.t() | nil,
           retirement: Retirement.t() | nil,
+          symbol_source: :cve | :osv | :text | nil,
           enriched: boolean()
         }
 
