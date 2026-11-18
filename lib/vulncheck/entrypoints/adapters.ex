@@ -93,7 +93,7 @@ defmodule VulnCheck.Entrypoints.Adapters do
         _ -> %{}
       end
 
-    present = workspace.packages |> Map.values() |> Enum.filter(&(&1.scope != :non_prod))
+    present = workspace.packages |> Map.values() |> Enum.filter(&(&1.scope == :prod))
     present_names = MapSet.new(present, & &1.name)
     referenced = MapSet.new(config_refs ++ code_refs)
 

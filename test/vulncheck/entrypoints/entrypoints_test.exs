@@ -625,6 +625,125 @@ defmodule VulnCheck.Entrypoints.EntrypointsTest do
     assert Entrypoints.daemon_packages() |> Enum.member?("bandit")
   end
 
+  test "phoenix_pubsub is active when the project starts it and exposes cluster message handlers" do
+    root = Tmp.mkdir!("ep-pubsub")
+
+    Beams.compile!(ebin(root, "phoenix_pubsub"), [
+      {"pubsub.ex",
+       """
+       defmodule Phoenix.PubSub do
+         def child_spec(opts), do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+         def start_link(_opts), do: {:ok, self()}
+       end
+
+       defmodule Phoenix.PubSub.PG2Worker do
+         use GenServer
+         def init(state), do: {:ok, state}
+         def handle_info({:forward_to_local, message}, state), do: {:noreply, dispatch(message, state)}
+         def dispatch(message, state), do: [message | state]
+         def debug_dump(state), do: state
+       end
+       """}
+    ])
+
+    Beams.write_app!(ebin(root, "phoenix_pubsub"), "phoenix_pubsub")
+    pubsub = package("phoenix_pubsub", ebin(root, "phoenix_pubsub"))
+    worker = "Elixir.Phoenix.PubSub.PG2Worker"
+
+    Beams.compile!(ebin(root, "ep_idle"), [
+      {"app.ex", "defmodule EpFix.IdleApp do\n  def start(_, _), do: :ok\nend\n"}
+    ])
+
+    Beams.write_app!(ebin(root, "ep_idle"), "ep_idle",
+      applications: [:phoenix_pubsub],
+      mod: "Elixir.EpFix.IdleApp"
+    )
+
+    {model, _graph, reachable} = analyze(workspace(root, ["ep_idle"], [pubsub]))
+    assert model.active_daemon_packages == []
+    refute mfa(worker, "handle_info", 2) in reachable
+
+    Beams.compile!(ebin(root, "ep_chat"), [
+      {"app.ex",
+       """
+       defmodule EpFix.ChatApp do
+         def start(_, _) do
+           Supervisor.start_link([{Phoenix.PubSub, name: EpFix.PubSub}], strategy: :one_for_one)
+         end
+       end
+       """}
+    ])
+
+    Beams.write_app!(ebin(root, "ep_chat"), "ep_chat",
+      applications: [:phoenix_pubsub],
+      mod: "Elixir.EpFix.ChatApp"
+    )
+
+    {model, _graph, reachable} = analyze(workspace(root, ["ep_chat"], [pubsub]))
+    assert model.active_daemon_packages == ["phoenix_pubsub"]
+
+    assert [%Entrypoint{mfa: handler, activation: activation}] =
+             Enum.filter(model.roots, &(&1.kind == :daemon))
+
+    assert handler == mfa(worker, "handle_info", 2)
+    assert %TraceHop{kind: :daemon_activation, note: "starts Phoenix.PubSub"} = activation
+    assert mfa(worker, "dispatch", 2) in reachable
+    refute mfa(worker, "debug_dump", 1) in reachable
+  end
+
+  test "the daemon and protocol client lists of the documentation match the code" do
+    docs = Path.expand("../../../docs", __DIR__)
+    model = File.read!(Path.join(docs, "REACHABILITY_MODEL.md"))
+    architecture = File.read!(Path.join(docs, "ARCHITECTURE.md"))
+
+    row = fn category ->
+      [line] = Regex.run(~r/^\| #{category} \| ([^|]+) \|/m, model, capture: :all_but_first)
+      ~r/`([a-z_]+)`/ |> Regex.scan(line, capture: :all_but_first) |> List.flatten() |> Enum.sort()
+    end
+
+    assert Enum.sort(row.("Servers") ++ row.("Cluster messaging")) == Entrypoints.daemon_packages()
+    assert row.("Protocol clients") == Entrypoints.protocol_clients()
+
+    for package <- Entrypoints.daemon_packages() ++ Entrypoints.protocol_clients() do
+      assert architecture =~ "`#{package}`"
+    end
+  end
+
+  test "protocol clients are the receive functions of locked production clients" do
+    assert Entrypoints.protocol_clients() == ["finch", "gun", "mint"]
+    root = Tmp.mkdir!("ep-client")
+
+    Beams.compile!(ebin(root, "mint"), [
+      {"mint.ex",
+       """
+       defmodule Mint.HTTP do
+         def request(conn, _method, _path, _headers, _body), do: {:ok, conn, make_ref()}
+         def stream(conn, message), do: {conn, message}
+         def recv(conn, _bytes, _timeout), do: {:ok, conn, []}
+       end
+       """}
+    ])
+
+    Beams.write_app!(ebin(root, "mint"), "mint")
+    Beams.compile!(ebin(root, "ep_c"), [{"c.ex", "defmodule EpFix.C do\n  def go, do: :ok\nend\n"}])
+    Beams.write_app!(ebin(root, "ep_c"), "ep_c")
+
+    {model, _graph, _reachable} =
+      analyze(workspace(root, ["ep_c"], [package("mint", ebin(root, "mint"))]))
+
+    assert Enum.map(model.client_roots, &{MFA.format(&1.mfa), &1.kind, &1.source}) == [
+             {"Mint.HTTP.recv/3", :protocol_client, "mint"},
+             {"Mint.HTTP.stream/2", :protocol_client, "mint"}
+           ]
+
+    refute Enum.any?(model.roots, &(&1.kind == :protocol_client))
+
+    {model, _graph, _reachable} =
+      analyze(workspace(root, ["ep_c"], [package("mint", ebin(root, "mint"), scope: :build_only)]))
+
+    assert model.client_roots == []
+  end
+
   test "roots the project does not call carry the place that activates them" do
     root = Tmp.mkdir!("ep-activation")
 

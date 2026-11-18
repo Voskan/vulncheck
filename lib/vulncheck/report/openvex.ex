@@ -10,7 +10,8 @@ defmodule VulnCheck.Report.OpenVEX do
   | reachable | `affected` (with `action_statement`) | — |
   | potentially reachable | `under_investigation` | — |
   | unreachable: function not called, module not loaded, adapter not configured, OTP application not started | `not_affected` | `vulnerable_code_not_in_execute_path` |
-  | unreachable: non-production dependency, OTP version unaffected | `not_affected` | `vulnerable_code_not_present` |
+  | unreachable: build-time only dependency (`runtime: false`) | `not_affected` | `vulnerable_code_not_in_execute_path` |
+  | unreachable: development or test dependency, OTP version unaffected | `not_affected` | `vulnerable_code_not_present` |
   | suppressed in `.vulncheck.ignore` (reachable or potentially reachable) | `not_affected` | `inline_mitigations_already_exist` |
 
   Retired releases are a package lifecycle status, not a vulnerability, and
@@ -110,8 +111,8 @@ defmodule VulnCheck.Report.OpenVEX do
   def status(%Finding{verdict: :potentially_reachable} = f),
     do: %{"status" => "under_investigation", "status_notes" => impact(f)}
 
-  def status(%Finding{verdict: :unreachable, reason: reason} = f)
-      when reason in @not_in_execute_path do
+  def status(%Finding{verdict: :unreachable, reason: reason, package_scope: scope} = f)
+      when reason in @not_in_execute_path or scope == :build_only do
     %{
       "status" => "not_affected",
       "justification" => "vulnerable_code_not_in_execute_path",

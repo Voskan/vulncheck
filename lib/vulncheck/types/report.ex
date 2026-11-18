@@ -8,6 +8,10 @@ defmodule VulnCheck.Types.TraceHop do
   place in the project that makes the entrypoint live, with `note` saying
   how. Its `mfa` is `nil` when that place is not a function (a `.app` file
   or a configuration file).
+
+  An `:incoming_data` hop marks a receive function of a protocol client
+  (`Mint.HTTP2.stream/2`, ...): the chain before it reaches the client
+  from the project, the chain after it processes what servers send back.
   """
 
   @enforce_keys [:mfa]
@@ -16,6 +20,7 @@ defmodule VulnCheck.Types.TraceHop do
   @type kind ::
           :daemon_activation
           | :config_activation
+          | :incoming_data
           | :entrypoint
           | :static_call
           | :macro_expanded
@@ -110,7 +115,7 @@ defmodule VulnCheck.Types.Finding do
           suppression_reason: String.t() | nil,
           suppression_expired: boolean(),
           suppression_expires: String.t() | nil,
-          package_scope: :prod | :non_prod
+          package_scope: :prod | :build_only | :non_prod
         }
 
   @verdicts [:reachable, :potentially_reachable, :retired, :unreachable]

@@ -148,9 +148,43 @@ defmodule VulnCheck.WorkspaceTest do
       Tmp.write!(dir, "mix.lock", @mix_lock)
 
       assert {:ok, ws} = Workspace.load(config(dir, ["--env", "test"]))
-      assert ws.packages["credo"].scope == :prod
-      # credo depends on file_system, so it joins the :test closure too
-      assert ws.packages["file_system"].scope == :prod
+      scopes = Map.new(ws.packages, fn {name, pkg} -> {name, pkg.scope} end)
+
+      # credo is part of the test environment but declared runtime: false;
+      # its own dependencies only serve it
+      assert scopes["credo"] == :build_only
+      assert scopes["bunt"] == :build_only
+      assert scopes["file_system"] == :build_only
+      # needed by credo and by the runtime closure: stays :prod
+      assert scopes["jason"] == :prod
+      assert scopes["plug"] == :prod
+    end
+
+    test "runtime: false dependencies and their own dependencies are build-time only" do
+      dir = Tmp.mkdir!("mix-runtime-false")
+
+      Tmp.write!(
+        dir,
+        "mix.exs",
+        String.replace(
+          @mix_exs,
+          ~s({:credo, "~> 1.7", only: [:dev, :test], runtime: false}),
+          ~s({:credo, "~> 1.7", runtime: false})
+        )
+      )
+
+      Tmp.write!(dir, "mix.lock", @mix_lock)
+
+      assert {:ok, ws} = Workspace.load(config(dir))
+      scopes = Map.new(ws.packages, fn {name, pkg} -> {name, pkg.scope} end)
+
+      assert scopes["credo"] == :build_only
+      assert scopes["bunt"] == :build_only
+      # file_system is also a :dev dependency; build-time use wins
+      assert scopes["file_system"] == :build_only
+      assert scopes["jason"] == :prod
+      assert ws.packages["credo"] in VulnCheck.Types.Workspace.non_prod_packages(ws)
+      refute ws.packages["credo"] in VulnCheck.Types.Workspace.prod_packages(ws)
     end
 
     test "uses compiled ebin directories with a build fallback and .app applications" do

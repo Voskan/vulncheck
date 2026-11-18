@@ -579,6 +579,146 @@ defmodule VulnCheck.Integration.SoundnessCorpusTest do
     assert finding.reason == :adapter_not_configured
   end
 
+  # -- 4B. protocol clients ---------------------------------------------------
+
+  @tesla_mint %{
+    name: "tesla",
+    version: "1.11.0",
+    deps: [{"mint", true}],
+    optional_applications: [:mint],
+    ex: [
+      {"lib/tesla.ex",
+       """
+       defmodule Tesla do
+         def get(url) do
+           adapter = Application.get_env(:tesla, :adapter, Tesla.Adapter.Httpc)
+           adapter.call(%{url: url}, [])
+         end
+       end
+
+       defmodule Tesla.Adapter.Httpc do
+         def call(env, _opts), do: {:ok, env}
+       end
+
+       defmodule Tesla.Adapter.Mint do
+         def call(env, _opts) do
+           {:ok, conn} = Mint.HTTP.connect(:https, env.url, 443)
+           Mint.HTTP.request(conn, "GET", "/", [], nil)
+         end
+       end
+       """}
+    ]
+  }
+
+  @mint %{
+    name: "mint",
+    version: "1.6.2",
+    top_level: false,
+    ex: [
+      {"lib/mint/http.ex",
+       """
+       defmodule Mint.HTTP do
+         def connect(scheme, host, port), do: Mint.HTTP2.connect(scheme, host, port)
+         def request(conn, method, path, headers, body),
+           do: Mint.HTTP2.request(conn, method, path, headers, body)
+
+         def stream(conn, message), do: Mint.HTTP2.stream(conn, message)
+       end
+       """},
+      {"lib/mint/http2.ex",
+       """
+       defmodule Mint.HTTP2 do
+         def connect(scheme, host, port), do: {:ok, %{scheme: scheme, host: host, port: port}}
+         def request(conn, _method, _path, _headers, _body), do: {:ok, conn, make_ref()}
+
+         def stream(conn, {:ssl, _socket, data}) do
+           handle_new_data(conn, data)
+         end
+
+         defp handle_new_data(conn, data) do
+           {conn, Mint.HTTP2.Frame.decode_next(data, 16_384)}
+         end
+       end
+
+       defmodule Mint.HTTP2.Frame do
+         def decode_next(data, max_frame_size), do: {:ok, binary_part(data, 0, max_frame_size)}
+       end
+       """}
+    ]
+  }
+
+  defp billing!(config) do
+    mix_project!("billing",
+      mod: "Billing.Application",
+      applications: [:tesla],
+      packages: [@tesla_mint, @mint],
+      files: [{"config/config.exs", "import Config\n" <> config}],
+      ex: [
+        {"lib/billing.ex",
+         """
+         defmodule Billing.Application do
+           def start(_type, _args), do: Billing.Client.fetch("https://api.example.com")
+         end
+
+         defmodule Billing.Client do
+           def fetch(url), do: Tesla.get(url)
+         end
+         """}
+      ]
+    )
+  end
+
+  test "4B: data received by a Mint connection the project opens is reachable" do
+    report = "config :tesla, adapter: Tesla.Adapter.Mint\n" |> billing!() |> scan!()
+    finding = finding!(report, "EEF-CVE-2026-60109")
+
+    assert {finding.verdict, finding.reason} == {:reachable, :daemon_call_chain}
+    assert finding.severity == :high
+    assert finding.cvss_score == 8.7
+    assert finding.reason_detail =~ "Mint.HTTP2.stream/2"
+
+    # The configured adapter is a root; the chain continues into the
+    # receive function of the connection the adapter opens.
+    assert [%TraceHop{kind: :config_activation, file: "config/config.exs", line: 2} | chain] =
+             finding.trace
+
+    assert Enum.map(chain, &{MFA.format(&1.mfa), &1.kind}) == [
+             {"Tesla.Adapter.Mint.call/2", :entrypoint},
+             {"Mint.HTTP.connect/3", :static_call},
+             {"Mint.HTTP2.stream/2", :incoming_data},
+             {"Mint.HTTP2.handle_new_data/2", :static_call},
+             {"Mint.HTTP2.Frame.decode_next/2", :static_call}
+           ]
+
+    receiver = Enum.find(finding.trace, &(&1.kind == :incoming_data))
+    assert receiver.note == "processes data received by the mint client"
+
+    json = report |> VulnCheck.Report.JSON.render(%Config{format: :json}) |> JSON.decode!()
+    [reported] = Enum.filter(json["findings"], &(&1["advisory_id"] == "EEF-CVE-2026-60109"))
+    hop = Enum.find(reported["trace"], &(&1["kind"] == "incoming_data"))
+    assert hop["mfa"] == "Mint.HTTP2.stream/2"
+    assert hop["note"] == "processes data received by the mint client"
+  end
+
+  test "4B: a locked Mint client the project never uses stays unreachable" do
+    report = billing!("") |> scan!()
+    finding = finding!(report, "EEF-CVE-2026-60109")
+
+    assert report.workspace.packages["mint"].scope == :prod
+    assert finding.verdict == :unreachable
+    assert finding.reason == :adapter_not_configured
+    assert finding.trace == []
+
+    root =
+      mix_project!("inventory",
+        packages: [%{@mint | top_level: true}],
+        ex: [{"lib/inventory.ex", "defmodule Inventory do\n  def count, do: 0\nend\n"}]
+      )
+
+    finding = root |> scan!() |> finding!("EEF-CVE-2026-60109")
+    assert {finding.verdict, finding.reason} == {:unreachable, :otp_app_not_started}
+  end
+
   # -- 5. dev/test isolation ---------------------------------------------------
 
   test "5: a test-only dependency is unreachable" do
@@ -593,6 +733,50 @@ defmodule VulnCheck.Integration.SoundnessCorpusTest do
     assert finding.package_scope == :non_prod
     assert finding.verdict == :unreachable
     assert finding.reason == :non_prod_dependency
+  end
+
+  test "5: a runtime: false dependency is build-time only, its runtime dependencies are not" do
+    root =
+      mix_project!("catalog",
+        packages: [
+          %{
+            name: "meck",
+            version: "0.9.2",
+            runtime: false,
+            deps: [{"shared_util", false}, {"build_util", false}]
+          },
+          %{name: "jason", version: "1.4.4", deps: [{"shared_util", false}]},
+          %{name: "shared_util", version: "1.0.0", top_level: false},
+          %{name: "build_util", version: "1.0.0", top_level: false}
+        ],
+        ex: [{"lib/catalog.ex", "defmodule Catalog do\n  def list, do: []\nend\n"}]
+      )
+
+    report = scan!(root)
+    scopes = Map.new(report.workspace.packages, fn {name, package} -> {name, package.scope} end)
+
+    assert scopes == %{
+             "meck" => :build_only,
+             "build_util" => :build_only,
+             "shared_util" => :prod,
+             "jason" => :prod
+           }
+
+    finding = finding!(report, "EEF-CVE-2026-60104")
+    assert {finding.verdict, finding.reason} == {:unreachable, :non_prod_dependency}
+    assert finding.package_scope == :build_only
+    assert finding.reason_detail =~ "build-time only (runtime: false)"
+
+    vex =
+      report
+      |> VulnCheck.Report.OpenVEX.render(%Config{format: :openvex})
+      |> JSON.decode!()
+
+    [statement] =
+      Enum.filter(vex["statements"], &(&1["vulnerability"]["name"] == "CVE-2026-60104"))
+
+    assert statement["status"] == "not_affected"
+    assert statement["justification"] == "vulnerable_code_not_in_execute_path"
   end
 
   # -- 6. OTP release gating ---------------------------------------------------

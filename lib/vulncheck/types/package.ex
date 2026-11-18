@@ -3,11 +3,14 @@ defmodule VulnCheck.Types.Package do
   A locked dependency of the scanned project.
 
   `scope` separates the production runtime closure (`:prod`) from packages that
-  are only present for development, testing or documentation (`:non_prod`).
+  are only present for development, testing or documentation (`:non_prod`)
+  and packages only needed to build the production release (`:build_only`:
+  declared with `runtime: false`, and their dependencies that no runtime
+  dependency needs).
   """
 
   @type source_kind :: :hex | :git | :path | :stdlib
-  @type dep_scope :: :prod | :non_prod
+  @type dep_scope :: :prod | :build_only | :non_prod
 
   @enforce_keys [:name, :version, :source, :scope]
   defstruct [
@@ -102,12 +105,15 @@ defmodule VulnCheck.Types.Workspace do
     packages |> Map.values() |> Enum.filter(&(&1.scope == :prod)) |> Enum.sort_by(& &1.name)
   end
 
-  @doc "Returns the packages that are excluded from the production closure."
+  @doc """
+  Returns the packages that are excluded from the production closure
+  (development, test and build-time only dependencies).
+  """
   @spec non_prod_packages(t()) :: [Package.t()]
   def non_prod_packages(%__MODULE__{packages: packages}) do
     packages
     |> Map.values()
-    |> Enum.filter(&(&1.scope == :non_prod))
+    |> Enum.filter(&(&1.scope != :prod))
     |> Enum.sort_by(& &1.name)
   end
 end

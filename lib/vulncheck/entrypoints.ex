@@ -13,8 +13,16 @@ defmodule VulnCheck.Entrypoints do
       (`:library_export`),
     * start functions and callbacks of modules named in `config/*.exs`
       (`:entrypoint`),
-    * protocol handlers of active network daemons (`:daemon`),
+    * protocol handlers of active network daemons (`:daemon`): servers
+      (`bandit`, `cowboy`, `ranch`, `thousand_island`, `grpc`, ...) whose
+      application starts at boot or that the project names, and the cluster
+      message handlers of `phoenix_pubsub` when the project starts a PubSub,
     * `extra_entrypoints` from the configuration (`:extra`).
+
+  Protocol clients (`mint`, `gun`, `finch`) contribute conditional roots
+  (`client_roots`): the functions that process data received from servers.
+  The solver only uses them once a function of the client package is
+  reachable, that is, once the project opens connections with it.
 
   Roots the project does not call itself carry an activation hop
   (`VulnCheck.Types.Entrypoint`): a daemon's protocol handlers point to the
@@ -29,7 +37,8 @@ defmodule VulnCheck.Entrypoints do
   alias VulnCheck.Entrypoints.{Adapters, Behaviours, OtpApp}
   alias VulnCheck.Types.{Entrypoint, EntrypointModel, MFA, ModuleSummary, TraceHop, Workspace}
 
-  @daemon_packages ~w(bandit cowboy cowlib ranch thousand_island grpc plug_cowboy)
+  @daemon_packages ~w(bandit cowboy cowboy_telemetry cowlib grpc phoenix_pubsub plug_cowboy ranch
+                      thousand_island)
   @daemon_behaviours ~w(ranch_protocol cowboy_stream cowboy_handler cowboy_websocket cowboy_middleware
                         Elixir.ThousandIsland.Handler Elixir.Bandit.HTTPTransport Elixir.WebSock)
   @daemon_modules %{
@@ -38,12 +47,45 @@ defmodule VulnCheck.Entrypoints do
     "cowboy" => "cowboy",
     "ranch" => "ranch",
     "Elixir.ThousandIsland" => "thousand_island",
-    "Elixir.GRPC.Server.Supervisor" => "grpc"
+    "Elixir.GRPC.Server.Supervisor" => "grpc",
+    "Elixir.Phoenix.PubSub" => "phoenix_pubsub"
+  }
+
+  # Daemons that only run when the project starts them: phoenix_pubsub
+  # boots with an empty supervisor, and only a PubSub started in the
+  # project's supervision tree joins the cluster.
+  @started_by_project ~w(phoenix_pubsub)
+
+  # Cluster message handlers: GenServer `handle_info/2` callbacks of the
+  # package receive what other nodes broadcast.
+  @message_daemons ~w(phoenix_pubsub)
+  @genserver_behaviours ~w(Elixir.GenServer gen_server)
+
+  # Functions of protocol clients that process data received from servers
+  # (module => function names, any arity).
+  @protocol_clients %{
+    "mint" => %{
+      "Elixir.Mint.HTTP" => ~w(stream recv),
+      "Elixir.Mint.HTTP1" => ~w(stream recv),
+      "Elixir.Mint.HTTP2" => ~w(stream recv)
+    },
+    "gun" => %{
+      "gun_http" => ~w(handle),
+      "gun_http2" => ~w(handle),
+      "gun_ws" => ~w(handle)
+    },
+    "finch" => %{
+      "Elixir.Finch.HTTP2.Pool" => ~w(connected connected_read_only disconnected)
+    }
   }
 
   @doc "Packages treated as network-facing daemons."
   @spec daemon_packages() :: [String.t()]
   def daemon_packages, do: @daemon_packages
+
+  @doc "Protocol client packages whose receive functions become roots once they are used."
+  @spec protocol_clients() :: [String.t()]
+  def protocol_clients, do: @protocol_clients |> Map.keys() |> Enum.sort()
 
   @doc """
   Builds the entrypoint model and returns the call graph extended with the
@@ -79,6 +121,7 @@ defmodule VulnCheck.Entrypoints do
       inactive_adapter_packages: adapters.inactive,
       resolved_dynamic_modules: synthetic.resolved_dynamic_modules,
       resolved_dynamic_calls: synthetic.resolved_dynamic_calls,
+      client_roots: client_roots(workspace, graph),
       active_plug_parsers: synthetic.active_plug_parsers,
       boot_tree_known: otp.boot_tree_known,
       notes: otp.notes ++ adapters.notes
@@ -172,14 +215,43 @@ defmodule VulnCheck.Entrypoints do
 
     for summary <- graph.modules |> Map.values() |> Enum.sort_by(& &1.module),
         MapSet.member?(daemons, summary.package),
-        Enum.any?(summary.behaviours, &(&1 in @daemon_behaviours)),
-        {function, arity} <- summary.exports,
-        function not in ["module_info", "__info__"] do
+        {function, arity} <- daemon_handlers(summary) do
       %Entrypoint{
         mfa: %MFA{module: summary.module, function: function, arity: arity},
         kind: :daemon,
         source: summary.package,
         activation: Map.get(activations, summary.package)
+      }
+    end
+  end
+
+  defp daemon_handlers(%ModuleSummary{package: package} = summary)
+       when package in @message_daemons do
+    if Enum.any?(summary.behaviours, &(&1 in @genserver_behaviours)),
+      do: Enum.filter(summary.exports, &(&1 == {"handle_info", 2})),
+      else: []
+  end
+
+  defp daemon_handlers(%ModuleSummary{} = summary) do
+    if Enum.any?(summary.behaviours, &(&1 in @daemon_behaviours)),
+      do:
+        Enum.reject(summary.exports, fn {function, _} -> function in ["module_info", "__info__"] end),
+      else: []
+  end
+
+  defp client_roots(workspace, graph) do
+    production = workspace |> Workspace.prod_packages() |> MapSet.new(& &1.name)
+
+    for {package, receivers} <- Enum.sort(@protocol_clients),
+        MapSet.member?(production, package),
+        {module, functions} <- Enum.sort(receivers),
+        {:ok, %ModuleSummary{package: ^package} = summary} <- [Map.fetch(graph.modules, module)],
+        {function, arity} <- summary.exports,
+        function in functions do
+      %Entrypoint{
+        mfa: %MFA{module: module, function: function, arity: arity},
+        kind: :protocol_client,
+        source: package
       }
     end
   end
@@ -315,6 +387,7 @@ defmodule VulnCheck.Entrypoints do
       for app <- started,
           %{name: name} <- [Map.get(by_app, app)],
           name in @daemon_packages,
+          name not in @started_by_project,
           do: name
 
     referenced =

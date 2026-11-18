@@ -3,6 +3,11 @@ defmodule VulnCheck.Solver do
   Classifies every matched advisory as `:reachable`, `:potentially_reachable`,
   `:unreachable` or `:retired` (see `docs/REACHABILITY_MODEL.md`).
 
+  Protocol clients (`mint`, `gun`, `finch`) receive data on the
+  connections the project opens: once a function of a client package is
+  reachable, the traversal continues from the client's receive functions,
+  and their chains continue the chain that reaches the client.
+
   A single breadth-first traversal from the entrypoints computes the
   reachable functions and a parent edge for each of them, so the shortest
   witness trace of any reachable function is rebuilt in time proportional
@@ -18,7 +23,8 @@ defmodule VulnCheck.Solver do
   Decision order for an advisory of package `pkg`:
 
     1. retired release → `:retired`
-    2. `pkg` outside the production closure → `:non_prod_dependency`
+    2. `pkg` outside the production closure (development, test or
+       build-time only) → `:non_prod_dependency`
     3. runtime OTP release outside the affected range → `:otp_version_unaffected`
     4. an affected routine is reachable → `:reachable` with a trace
        (`:daemon_call_chain` when the chain starts at a daemon's protocol
@@ -96,7 +102,8 @@ defmodule VulnCheck.Solver do
       :atom_modules,
       :started,
       :app_by_package,
-      :activations
+      :activations,
+      :client_anchors
     ]
   end
 
@@ -106,10 +113,13 @@ defmodule VulnCheck.Solver do
   @spec index(Workspace.t(), CallGraph.t(), EntrypointModel.t(), Config.t()) :: %Index{}
   def index(%Workspace{} = workspace, %CallGraph{} = graph, %EntrypointModel{} = model, config) do
     {daemon_roots, proven_roots} = Enum.split_with(model.roots, &(&1.kind == :daemon))
-    parents = bfs(graph, [Enum.map(proven_roots, & &1.mfa), Enum.map(daemon_roots, & &1.mfa)])
-    reachable = parents |> Map.keys() |> MapSet.new()
-
     package_of = Map.new(graph.modules, fn {name, summary} -> {name, summary.package} end)
+    parents = bfs(graph, [Enum.map(proven_roots, & &1.mfa), Enum.map(daemon_roots, & &1.mfa)])
+
+    {parents, client_anchors} =
+      activate_clients(graph, model.client_roots, package_of, parents, %{})
+
+    reachable = parents |> Map.keys() |> MapSet.new()
 
     modules_by_package =
       graph.modules
@@ -165,7 +175,8 @@ defmodule VulnCheck.Solver do
           %Entrypoint{activation: %TraceHop{} = hop, mfa: mfa} <- model.roots,
           into: %{},
           do: {mfa, hop}
-        )
+        ),
+      client_anchors: client_anchors
     }
   end
 
@@ -266,6 +277,12 @@ defmodule VulnCheck.Solver do
     cond do
       package.scope == :non_prod ->
         unreachable(:non_prod_dependency, "#{pkg} is not part of the production dependency closure")
+
+      package.scope == :build_only ->
+        unreachable(
+          :non_prod_dependency,
+          "#{pkg} is build-time only (runtime: false); it is not part of the production release"
+        )
 
       not Semver.otp_affected?(otp, advisory.otp_constraints) ->
         unreachable(
@@ -418,6 +435,18 @@ defmodule VulnCheck.Solver do
   end
 
   defp proven(routine, trace) do
+    case Enum.find(trace, &(&1.kind == :incoming_data)) do
+      %TraceHop{mfa: receiver} ->
+        {:reachable, :daemon_call_chain,
+         "#{MFA.format(routine)} is called from #{MFA.format(receiver)}, which processes " <>
+           "data that servers send on the connections the project opens", routine, trace}
+
+      nil ->
+        direct(routine, trace)
+    end
+  end
+
+  defp direct(routine, trace) do
     {:reachable, :call_chain_proven, "#{MFA.format(routine)} is called from an entrypoint", routine,
      trace}
   end
@@ -513,6 +542,48 @@ defmodule VulnCheck.Solver do
 
   # -- traversal ---------------------------------------------------------------------
 
+  # Receive functions of protocol clients whose package is reachable become
+  # roots; each is anchored to the reachable function of its package closest
+  # to an entrypoint (the call that opens connections). Repeated until no
+  # further client package becomes reachable.
+  defp activate_clients(graph, clients, package_of, parents, anchors) do
+    packages = clients |> Enum.map(& &1.source) |> MapSet.new()
+
+    nearest =
+      Enum.reduce(parents, %{}, fn {%MFA{module: module} = mfa, {_parent, depth}}, acc ->
+        package = Map.get(package_of, module)
+
+        if MapSet.member?(packages, package) do
+          Map.update(acc, package, {depth, mfa}, &min(&1, {depth, mfa}))
+        else
+          acc
+        end
+      end)
+
+    fresh =
+      for %Entrypoint{mfa: mfa, source: package} <- clients,
+          not Map.has_key?(parents, mfa),
+          {:ok, {depth, anchor}} <- [Map.fetch(nearest, package)],
+          do: {mfa, package, anchor, depth}
+
+    if fresh == [] do
+      {parents, anchors}
+    else
+      parents =
+        Enum.reduce(fresh, parents, fn {mfa, _package, _anchor, depth}, acc ->
+          Map.put(acc, mfa, {:root, depth + 1})
+        end)
+
+      anchors =
+        Enum.reduce(fresh, anchors, fn {mfa, package, anchor, _depth}, acc ->
+          Map.put(acc, mfa, {anchor, package})
+        end)
+
+      parents = bfs_loop(graph, :queue.from_list(Enum.map(fresh, &elem(&1, 0))), parents)
+      activate_clients(graph, clients, package_of, parents, anchors)
+    end
+  end
+
   # Root groups are traversed in order; a later group only reaches
   # functions that no earlier group reached.
   defp bfs(graph, root_groups) do
@@ -563,9 +634,24 @@ defmodule VulnCheck.Solver do
           %TraceHop{mfa: hop, file: display_path(index, hop, file), line: line, kind: kind}
         end)
 
-      case Map.fetch(index.activations, hd(mfas)) do
-        {:ok, activation} -> [activation | hops]
-        :error -> hops
+      cond do
+        Map.has_key?(index.client_anchors, hd(mfas)) ->
+          {anchor, package} = Map.fetch!(index.client_anchors, hd(mfas))
+          [receiver | rest] = hops
+
+          receiver = %{
+            receiver
+            | kind: :incoming_data,
+              note: "processes data received by the #{package} client"
+          }
+
+          trace(index, anchor) ++ [receiver | rest]
+
+        Map.has_key?(index.activations, hd(mfas)) ->
+          [Map.fetch!(index.activations, hd(mfas)) | hops]
+
+        true ->
+          hops
       end
     else
       []
@@ -624,7 +710,7 @@ defmodule VulnCheck.Solver do
       target_mfa: target,
       trace: trace,
       fingerprint: Finding.fingerprint(advisory.id, package.name, verdict, target),
-      package_scope: if(package.scope == :non_prod, do: :non_prod, else: :prod)
+      package_scope: package.scope
     }
   end
 end

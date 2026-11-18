@@ -278,8 +278,8 @@ defmodule VulnCheck.Report.CycloneDX do
   def analysis(%Finding{verdict: :potentially_reachable} = f),
     do: %{"state" => "in_triage", "detail" => detail(f)}
 
-  def analysis(%Finding{verdict: :unreachable, reason: reason} = f)
-      when reason in @not_in_execute_path,
+  def analysis(%Finding{verdict: :unreachable, reason: reason, package_scope: scope} = f)
+      when reason in @not_in_execute_path or scope == :build_only,
       do: %{
         "state" => "not_affected",
         "justification" => "code_not_reachable",

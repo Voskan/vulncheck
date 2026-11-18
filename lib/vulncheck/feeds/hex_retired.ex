@@ -138,13 +138,17 @@ defmodule VulnCheck.Feeds.HexRetired do
   """
   @spec to_finding(Advisory.t(), Package.t()) :: Finding.t()
   def to_finding(%Advisory{retirement: %Retirement{} = retirement} = advisory, %Package{} = package) do
-    scope = if package.scope == :non_prod, do: :non_prod, else: :prod
+    scope = package.scope
 
     detail =
       "release #{retirement.version} of #{package.name} is retired on Hex.pm " <>
         "(#{retirement.reason})" <>
         if(retirement.message != "", do: ": #{retirement.message}", else: "") <>
-        if(scope == :non_prod, do: "; non-production dependency", else: "")
+        case scope do
+          :non_prod -> "; non-production dependency"
+          :build_only -> "; build-time only dependency"
+          :prod -> ""
+        end
 
     %Finding{
       advisory_id: advisory.id,

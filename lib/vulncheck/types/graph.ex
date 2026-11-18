@@ -97,6 +97,7 @@ defmodule VulnCheck.Types.Entrypoint do
           | :adapter
           | :extra
           | :entrypoint
+          | :protocol_client
 
   @type t :: %__MODULE__{
           mfa: VulnCheck.Types.MFA.t(),
@@ -192,6 +193,7 @@ defmodule VulnCheck.Types.EntrypointModel do
             inactive_adapter_packages: %{},
             resolved_dynamic_modules: %{},
             resolved_dynamic_calls: MapSet.new(),
+            client_roots: [],
             active_plug_parsers: [],
             boot_tree_known: true,
             notes: []
@@ -205,6 +207,7 @@ defmodule VulnCheck.Types.EntrypointModel do
           inactive_adapter_packages: %{String.t() => String.t()},
           resolved_dynamic_modules: %{String.t() => [String.t()]},
           resolved_dynamic_calls: MapSet.t(VulnCheck.Types.DynamicCall.t()),
+          client_roots: [VulnCheck.Types.Entrypoint.t()],
           active_plug_parsers: [String.t()] | :all,
           boot_tree_known: boolean(),
           notes: [String.t()]

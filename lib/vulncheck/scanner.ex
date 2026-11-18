@@ -118,7 +118,7 @@ defmodule VulnCheck.Scanner do
     needed? =
       Enum.any?(advisories, fn advisory ->
         is_nil(advisory.retirement) and
-          match?(%{scope: scope} when scope != :non_prod, workspace.packages[advisory.package])
+          match?(%{scope: :prod}, workspace.packages[advisory.package])
       end)
 
     if needed? do

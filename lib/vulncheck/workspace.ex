@@ -5,7 +5,9 @@ defmodule VulnCheck.Workspace do
 
   It detects the project type, parses the lockfile without evaluating code,
   computes the production dependency closure (packages reachable only from
-  `:dev`/`:test` dependencies become `:non_prod`) and locates compiled `ebin`
+  `:dev`/`:test` dependencies become `:non_prod`, packages reachable only
+  from `runtime: false` dependencies become `:build_only`) and locates
+  compiled `ebin`
   directories, falling back from the requested build environment to the other
   available ones.
   """
@@ -66,20 +68,25 @@ defmodule VulnCheck.Workspace do
   end
 
   @doc """
-  Assigns `:prod` / `:non_prod` scopes. Packages reachable from production
-  roots are `:prod`; packages reachable only from non-production roots are
-  `:non_prod`; packages reachable from neither stay `:prod` (fail-safe).
+  Assigns `:prod` / `:build_only` / `:non_prod` scopes. Packages reachable
+  from production roots are `:prod`; packages reachable otherwise only from
+  build-time roots (`runtime: false` dependencies of the production
+  closure) are `:build_only`; packages reachable only from non-production
+  roots are `:non_prod`; packages reachable from none stay `:prod`
+  (fail-safe).
   """
-  @spec assign_scopes(%{String.t() => Package.t()}, [String.t()], [String.t()]) ::
+  @spec assign_scopes(%{String.t() => Package.t()}, [String.t()], [String.t()], [String.t()]) ::
           %{String.t() => Package.t()}
-  def assign_scopes(packages, prod_roots, non_prod_roots) do
+  def assign_scopes(packages, prod_roots, non_prod_roots, build_roots \\ []) do
     prod = closure(packages, prod_roots)
+    build = closure(packages, build_roots)
     non_prod = closure(packages, non_prod_roots)
 
     Map.new(packages, fn {name, package} ->
       scope =
         cond do
           MapSet.member?(prod, name) -> :prod
+          MapSet.member?(build, name) -> :build_only
           MapSet.member?(non_prod, name) -> :non_prod
           true -> :prod
         end
@@ -101,7 +108,7 @@ defmodule VulnCheck.Workspace do
 
       {build_env, build_dir, warnings} = choose_build(info.root, "_build", "lib", config.env)
 
-      {prod_roots, non_prod_roots, path_packages, parsed?} =
+      {prod_roots, non_prod_roots, build_roots, path_packages, parsed?} =
         collect_mix_roots(projects ++ root_extra(type, root_project), env, MapSet.new(root_apps))
 
       root_ebins = Enum.flat_map(root_apps, &existing_ebin(build_dir, &1))
@@ -116,7 +123,7 @@ defmodule VulnCheck.Workspace do
         end
 
       packages = Map.merge(path_packages, locked)
-      direct_deps = direct_deps(prod_roots ++ non_prod_roots, packages)
+      direct_deps = direct_deps(prod_roots ++ non_prod_roots ++ build_roots, packages)
 
       prod_roots =
         if parsed?, do: prod_roots ++ app_roots, else: Map.keys(packages)
@@ -127,7 +134,7 @@ defmodule VulnCheck.Workspace do
           {name, %{package | ebin_dir: first_existing_ebin(build_dir, package.otp_app || name)}}
         end)
         |> enrich_deps_from_app_files()
-        |> assign_scopes(prod_roots, non_prod_roots)
+        |> assign_scopes(prod_roots, non_prod_roots, build_roots)
 
       warnings =
         if parsed?,
@@ -278,30 +285,39 @@ defmodule VulnCheck.Workspace do
   defp root_extra(_type, _root_project), do: []
 
   defp collect_mix_roots(projects, env, sibling_apps) do
-    initial = {[], [], %{}, true, MapSet.new()}
+    initial = {%{prod: [], non_prod: [], build_only: []}, %{}, true, MapSet.new()}
 
-    {prod, non_prod, path_packages, parsed?, _seen} =
+    {roots, path_packages, parsed?, _seen} =
       Enum.reduce(projects, initial, fn project, acc ->
         collect_project(project, env, sibling_apps, :prod, acc)
       end)
 
-    {Enum.uniq(prod), Enum.uniq(non_prod), path_packages, parsed?}
+    {Enum.uniq(roots.prod), Enum.uniq(roots.non_prod), Enum.uniq(roots.build_only), path_packages,
+     parsed?}
   end
 
-  defp collect_project(project, env, siblings, inherited, {prod, non_prod, paths, parsed?, seen}) do
+  # A dependency inherits the scope of the project declaring it, narrowed
+  # by its `only:` environments and `runtime: false`.
+  defp dep_scope(dep, env, inherited) do
+    cond do
+      inherited == :non_prod or not env_matches?(dep.only, env) -> :non_prod
+      inherited == :build_only or dep.runtime == false -> :build_only
+      true -> :prod
+    end
+  end
+
+  defp collect_project(project, env, siblings, inherited, {roots, paths, parsed?, seen}) do
     parsed? = parsed? and project.deps_parsed
     seen = MapSet.put(seen, project.file)
 
-    Enum.reduce(project.deps, {prod, non_prod, paths, parsed?, seen}, fn dep, acc ->
-      {prod, non_prod, paths, parsed?, seen} = acc
-      scope = if inherited == :prod and env_matches?(dep.only, env), do: :prod, else: :non_prod
+    Enum.reduce(project.deps, {roots, paths, parsed?, seen}, fn dep, acc ->
+      {roots, paths, parsed?, seen} = acc
+      scope = dep_scope(dep, env, inherited)
 
-      {prod, non_prod} =
-        cond do
-          dep.in_umbrella or MapSet.member?(siblings, dep.name) -> {prod, non_prod}
-          scope == :prod -> {[dep.name | prod], non_prod}
-          true -> {prod, [dep.name | non_prod]}
-        end
+      roots =
+        if dep.in_umbrella or MapSet.member?(siblings, dep.name),
+          do: roots,
+          else: Map.update!(roots, scope, &[dep.name | &1])
 
       if dep.path do
         dep_path = Path.expand(dep.path, Path.dirname(project.file))
@@ -309,7 +325,7 @@ defmodule VulnCheck.Workspace do
 
         cond do
           MapSet.member?(seen, mix_file) ->
-            {prod, non_prod, paths, parsed?, seen}
+            {roots, paths, parsed?, seen}
 
           File.regular?(mix_file) ->
             case MixProject.parse_file(mix_file) do
@@ -329,18 +345,18 @@ defmodule VulnCheck.Workspace do
                   env,
                   siblings,
                   scope,
-                  {prod, non_prod, Map.put(paths, dep.name, package), parsed?, seen}
+                  {roots, Map.put(paths, dep.name, package), parsed?, seen}
                 )
 
               {:error, _} ->
-                {prod, non_prod, paths, false, seen}
+                {roots, paths, false, seen}
             end
 
           true ->
-            {prod, non_prod, paths, parsed?, seen}
+            {roots, paths, parsed?, seen}
         end
       else
-        {prod, non_prod, paths, parsed?, seen}
+        {roots, paths, parsed?, seen}
       end
     end)
   end

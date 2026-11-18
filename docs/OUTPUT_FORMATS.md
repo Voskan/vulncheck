@@ -136,7 +136,9 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
 
 When several sources describe one vulnerability (the CNA record, the EEF and GitHub OSV records), the highest score wins, so no source lowers the severity reported by another. A computed v4.0 score is scored with the vector's Threat and Environmental metrics when the vector carries them (CVSS-BT, CVSS-BE, CVSS-BTE). Scores map to severities on the CVSS scale: `none` for 0.0, `low` for 0.1–3.9, `medium` for 4.0–6.9, `high` for 7.0–8.9 and `critical` for 9.0–10.0. `none` counts as `low` for `--min-severity`. `unknown` is left only for advisories without any CVSS data or qualitative label, and it counts as `critical`.
 
-`trace[].kind` is how each hop was reached: `entrypoint` for the root, then `static_call`, `macro_expanded`, `behaviour_callback`, `supervisor_child`, `dynamic_apply` or `imports`. A chain whose root the project does not call itself (`reason: "daemon_call_chain"`, or a module named in the configuration) starts with a step 0 hop of kind `daemon_activation` or `config_activation`. That hop points to the project code, configuration line or `.app` file that makes the root live, and has a `note` such as `"starts Bandit"`. Its `mfa` is `null` when it points to a file rather than a function. Only activation hops carry `note`.
+`trace[].kind` is how each hop was reached: `entrypoint` for the root, then `static_call`, `macro_expanded`, `behaviour_callback`, `supervisor_child`, `dynamic_apply` or `imports`. A chain whose root the project does not call itself (`reason: "daemon_call_chain"`, or a module named in the configuration) starts with a step 0 hop of kind `daemon_activation` or `config_activation`. That hop points to the project code, configuration line or `.app` file that makes the root live, and has a `note` such as `"starts Bandit"`. Its `mfa` is `null` when it points to a file rather than a function. A chain into a protocol client the project uses (`mint`, `gun`, `finch`) contains a hop of kind `incoming_data`: the client function that processes data received from the server, with the note `"processes data received by the mint client"`. Only activation and `incoming_data` hops carry `note`.
+
+`package_scope` is `prod`, `build_only` (a `runtime: false` dependency or a package only such dependencies need) or `non_prod` (`only: [:dev, :test]`).
 
 `context_routines` lists functions that the advisory names on the vulnerable path but that belong to Erlang/OTP, Elixir or another dependency (for example `List.delete/2` in an HTTP/2 advisory). They explain the advisory and are never used as reachability targets.
 
@@ -166,7 +168,8 @@ Compliance frameworks (SOC 2, PCI DSS v4.0, ISO 27001, EU CRA) increasingly requ
 | `REACHABLE` | `"affected"` | — (`action_statement` lists fixed version) |
 | `POTENTIALLY_REACHABLE` | `"under_investigation"` | — (`status_notes` explains the reason) |
 | `UNREACHABLE` (`function_not_called`, `module_not_loaded`, `adapter_not_configured`, `otp_app_not_started`) | `"not_affected"` | `"vulnerable_code_not_in_execute_path"` |
-| `UNREACHABLE` (`non_prod_dependency`, `otp_version_unaffected`) | `"not_affected"` | `"vulnerable_code_not_present"` |
+| `UNREACHABLE` (`non_prod_dependency` of a build-time only package, `runtime: false`) | `"not_affected"` | `"vulnerable_code_not_in_execute_path"` |
+| `UNREACHABLE` (`non_prod_dependency` of a `:dev`/`:test` package, `otp_version_unaffected`) | `"not_affected"` | `"vulnerable_code_not_present"` |
 | Suppressed in `.vulncheck.ignore` (reachable or potentially reachable, not expired) | `"not_affected"` | `"inline_mitigations_already_exist"` |
 
 Retired Hex releases are a package lifecycle status rather than a vulnerability and are not emitted as VEX statements. The document `@id` is derived from the content, so identical reports produce byte-identical documents.

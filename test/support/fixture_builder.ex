@@ -11,6 +11,7 @@ defmodule VulnCheck.Test.FixtureBuilder do
   #   optional_applications         `.app` optional applications
   #   deps                          [{name, optional?}] recorded in the lockfile
   #   only                          mix.exs `only:` restriction (e.g. :test); nothing is compiled
+  #   runtime                       false for a mix.exs `runtime: false` dependency
   #   strip                         strip debug info from the compiled modules
   #   top_level                     listed in mix.exs deps (default true)
 
@@ -29,10 +30,12 @@ defmodule VulnCheck.Test.FixtureBuilder do
       packages
       |> Enum.filter(&Map.get(&1, :top_level, true))
       |> Enum.map_join(", ", fn pkg ->
-        case Map.get(pkg, :only) do
-          nil -> ~s({:#{pkg.name}, "~> #{pkg.version}"})
-          env -> ~s({:#{pkg.name}, "~> #{pkg.version}", only: #{inspect(env)}})
-        end
+        options =
+          [only: Map.get(pkg, :only), runtime: Map.get(pkg, :runtime)]
+          |> Enum.reject(&is_nil(elem(&1, 1)))
+          |> Enum.map_join(fn {key, value} -> ", #{key}: #{inspect(value)}" end)
+
+        ~s({:#{pkg.name}, "~> #{pkg.version}"#{options}})
       end)
 
     mod = Keyword.get(opts, :mod)
