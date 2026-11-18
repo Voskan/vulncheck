@@ -267,7 +267,7 @@ defmodule VulnCheck.Beam.ExtractorTest do
 
     [entry | _] = Path.wildcard(Path.join(VulnCheck.Cache.beam_dir(config), "*.etf"))
 
-    assert {:vulncheck_beam, 1, _, %ModuleSummary{}} =
+    assert {:vulncheck_beam, 2, _, %ModuleSummary{}} =
              :erlang.binary_to_term(File.read!(entry), [:safe])
   end
 

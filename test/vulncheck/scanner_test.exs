@@ -134,7 +134,11 @@ defmodule VulnCheck.ScannerTest do
              "Plug.Conn.Query.decode/4"
            ]
 
-    assert [_, %{file: "_build/prod/lib/shop/src/shop.ex", line: 4} | _] = plug.trace
+    assert [
+             %{file: "_build/prod/lib/shop/src/shop.ex", line: 4},
+             %{file: "_build/prod/lib/shop/src/shop.ex", line: 14},
+             %{file: "_build/prod/lib/plug/src/query.ex", line: 2}
+           ] = plug.trace
 
     assert %Finding{package: "ash", verdict: :unreachable, reason: :function_not_called} = ash
     assert ash.fixed_versions == ["3.34.6"]

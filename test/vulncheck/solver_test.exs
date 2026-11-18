@@ -242,11 +242,14 @@ defmodule VulnCheck.SolverTest do
              {"SolFix.Ash.Actions.Read.run/2", :static_call}
            ]
 
-    assert [%TraceHop{file: nil, line: nil} | rest] = finding.trace
-
-    assert rest
-           |> Enum.filter(&(&1.kind == :static_call))
-           |> Enum.all?(&(is_binary(&1.file) and is_integer(&1.line)))
+    # each hop shows the call site inside that function; the target shows its definition
+    [start, start_link, handle_call, read, run] = finding.trace
+    assert {start.file, start.line} == {"_build/prod/lib/sol_app/src/app.ex", 5}
+    assert {start_link.file, start_link.line} == {nil, nil}
+    assert handle_call.line == 19
+    assert read.line == 2
+    assert {run.file, run.line} == {"_build/prod/lib/sol_ash/src/ash.ex", 7}
+    assert %TraceHop{kind: :static_call} = run
 
     assert finding.fingerprint ==
              Finding.fingerprint("A-1", "sol_ash", :reachable, finding.target_mfa)

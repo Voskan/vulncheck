@@ -300,7 +300,7 @@ defmodule VulnCheck.Solver do
             if(call.file, do: " at #{call.file}:#{call.line}", else: "") <>
             " that may reach #{pkg}",
           nil,
-          trace(index, call.caller)
+          trace(index, call.caller, {call.file, call.line})
         )
 
       routines == [] and modules == [] and package_reachable? ->
@@ -435,17 +435,54 @@ defmodule VulnCheck.Solver do
 
   defp depth(index, mfa), do: index.parents |> Map.fetch!(mfa) |> elem(1)
 
-  defp trace(index, %MFA{} = mfa) do
-    if Map.has_key?(index.parents, mfa), do: rebuild(index.parents, mfa, []), else: []
+  # Trace hops are presented as "function (location)": every hop carries
+  # the call site inside that function that leads to the next hop, and the
+  # last hop carries the definition of the target (or `last` when given).
+  # Paths inside dependencies are shown under `deps/<package>/`.
+  defp trace(index, %MFA{} = mfa, last \\ nil) do
+    if Map.has_key?(index.parents, mfa) do
+      {mfas, edges} = path(index.parents, mfa, [], [])
+      kinds = [:entrypoint | Enum.map(edges, & &1.kind)]
+      sites = Enum.map(edges, &{&1.file, &1.line}) ++ [last || definition(index, mfa)]
+
+      [mfas, kinds, sites]
+      |> Enum.zip()
+      |> Enum.map(fn {hop, kind, {file, line}} ->
+        %TraceHop{mfa: hop, file: display_path(index, hop, file), line: line, kind: kind}
+      end)
+    else
+      []
+    end
   end
 
-  defp rebuild(parents, mfa, acc) do
+  defp path(parents, mfa, mfas, edges) do
     case Map.fetch!(parents, mfa) do
-      {:root, _} ->
-        [%TraceHop{mfa: mfa, kind: :entrypoint} | acc]
+      {:root, _} -> {[mfa | mfas], edges}
+      {%CallEdge{from: from} = edge, _} -> path(parents, from, [mfa | mfas], [edge | edges])
+    end
+  end
 
-      {%CallEdge{from: from, file: file, line: line, kind: kind}, _} ->
-        rebuild(parents, from, [%TraceHop{mfa: mfa, file: file, line: line, kind: kind} | acc])
+  defp definition(index, %MFA{module: module, function: function, arity: arity}) do
+    case Map.fetch(index.graph.modules, module) do
+      {:ok, %ModuleSummary{} = summary} ->
+        {summary.source_file, Map.get(summary.function_lines, {function, arity})}
+
+      :error ->
+        {nil, nil}
+    end
+  end
+
+  defp display_path(_index, _mfa, nil), do: nil
+
+  defp display_path(index, %MFA{module: module}, file) do
+    case Map.fetch(index.graph.modules, module) do
+      {:ok, %ModuleSummary{package: package}} when is_binary(package) ->
+        if Path.type(file) == :relative and not String.starts_with?(file, ["deps/", "_build/"]),
+          do: Path.join(["deps", package, file]),
+          else: file
+
+      _ ->
+        file
     end
   end
 

@@ -104,6 +104,7 @@ defmodule VulnCheck.Beam.AbstractWalker do
       source_file: source_file,
       has_debug_info: true,
       functions: defined |> Enum.map(&fa/1) |> Enum.sort(),
+      function_lines: function_lines(forms),
       exports: exports |> Enum.map(&fa/1) |> Enum.uniq() |> Enum.sort(),
       behaviours: behaviours(attributes),
       attributes: attributes,
@@ -636,6 +637,13 @@ defmodule VulnCheck.Beam.AbstractWalker do
     end
   rescue
     _ -> nil
+  end
+
+  defp function_lines(forms) do
+    for {:function, anno, fun, arity, _} <- forms,
+        line = line(anno),
+        into: %{},
+        do: {{Atom.to_string(fun), arity}, line}
   end
 
   defp elixir_alias?(atom), do: match?("Elixir." <> _, Atom.to_string(atom))
