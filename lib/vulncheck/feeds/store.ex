@@ -10,10 +10,12 @@ defmodule VulnCheck.Feeds.Store do
      four at a time.
   4. Falls back to strict backtick signatures from the advisory text when no
      structured symbol data exists.
+  5. Adds Hex.pm retirement advisories (unless `check_retired` is off) and
+     `mix.lock` hygiene warnings.
   """
 
   alias VulnCheck.{Cache, Config, Semver}
-  alias VulnCheck.Feeds.{EefCna, OSV, TextHints}
+  alias VulnCheck.Feeds.{EefCna, HexRetired, OSV, TextHints}
   alias VulnCheck.Types.{Advisory, Package, Workspace}
 
   @type result :: %{
@@ -38,7 +40,8 @@ defmodule VulnCheck.Feeds.Store do
   Like `match_workspace/3` but also returns warnings and feed statistics.
 
   Options: `:http_client`, `:osv_url`, `:cna_base_url`, `:mitre_base_url`,
-  `:enrich` (default `true`).
+  `:hex_api_url`, `:enrich` (default `true`) and `:retired` (default
+  `config.check_retired`).
   """
   @spec load(Workspace.t(), Config.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def load(%Workspace{} = workspace, %Config{} = config, opts \\ []) do
@@ -48,16 +51,22 @@ defmodule VulnCheck.Feeds.Store do
       {enriched, enrich_warnings} = enrich(matched, config, opts)
       advisories = Enum.map(enriched, &text_fallback/1)
 
+      {retired, retired_warnings} =
+        if Keyword.get(opts, :retired, config.check_retired),
+          do: HexRetired.advisories(workspace, config, opts),
+          else: {[], []}
+
       {:ok,
        %{
-         advisories: advisories,
-         warnings: enrich_warnings,
+         advisories: advisories ++ retired,
+         warnings: enrich_warnings ++ retired_warnings ++ HexRetired.hygiene(workspace),
          stats: %{
            feed_status: feed_status,
            feed_advisories: length(all),
            matched_advisories: length(matched),
            enriched_advisories: Enum.count(advisories, & &1.enriched),
-           advisories_with_routines: Enum.count(advisories, &(&1.affected_routines != []))
+           advisories_with_routines: Enum.count(advisories, &(&1.affected_routines != [])),
+           retired_releases: length(retired)
          }
        }}
     end

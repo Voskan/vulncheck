@@ -140,6 +140,7 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
         osv_url: server.url <> "/osv/all.zip",
         cna_base_url: server.url <> "/cna",
         mitre_base_url: server.url <> "/mitre",
+        retired: false,
         http_opts: [retry_delay_ms: 1, retries: 0]
       ]
 
