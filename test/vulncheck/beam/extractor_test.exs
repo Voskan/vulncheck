@@ -201,8 +201,9 @@ defmodule VulnCheck.Beam.ExtractorTest do
 
     assert "Elixir.Supervisor" in sup.behaviours
 
-    assert {_caller, %MFA{module: "Elixir.Supervisor", function: "init", arity: 2}, [children, _],
-            _file, _line} =
+    supervisor_init = mfa("Elixir.Supervisor", "init", 2)
+
+    assert {_, ^supervisor_init, [children, _], _, _} =
              Enum.find(sup.init_literals, &(elem(&1, 1).function == "init"))
 
     assert children == [

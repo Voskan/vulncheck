@@ -182,7 +182,7 @@ defmodule VulnCheck.CacheTest do
 
     test "rejects Tar Slip paths, symlinks, tampering and garbage" do
       dir = Tmp.mkdir!("evil")
-      target = config()
+      target = %Config{project_dir: dir, cache_dir: Path.join(dir, "workspace/cache")}
 
       evil = Path.join(dir, "evil.tar.gz")
 
@@ -196,7 +196,7 @@ defmodule VulnCheck.CacheTest do
       assert {:error, {:unsafe_bundle_entry, "../../etc/passwd", :path}} =
                Cache.import_bundle(evil, target)
 
-      refute File.exists?(Path.join(Cache.dir(target), "../../etc/passwd"))
+      refute File.exists?(Path.expand("../../etc/passwd", Cache.feeds_dir(target)))
 
       absolute = Path.join(dir, "abs.tar.gz")
       :ok = :erl_tar.create(String.to_charlist(absolute), [{~c"/etc/x", "x"}], [:compressed])
