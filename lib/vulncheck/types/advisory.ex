@@ -87,6 +87,7 @@ defmodule VulnCheck.Types.Advisory do
     symbol_source: nil,
     enriched: false,
     git_repos: [],
+    git_ranges: [],
     git_match_status: nil
   ]
 
@@ -123,10 +124,12 @@ defmodule VulnCheck.Types.Advisory do
           affected_routines: [MFA.t()],
           affected_blocks: [
             %{
-              ranges: [VersionRange.t()],
-              versions: [String.t()],
-              modules: [String.t()],
-              routines: [MFA.t()]
+              :ranges => [VersionRange.t()],
+              :versions => [String.t()],
+              :modules => [String.t()],
+              :routines => [MFA.t()],
+              optional(:git_ranges) => [VersionRange.t()],
+              optional(:git_repos) => [String.t()]
             }
           ],
           symbol_gaps: boolean(),
@@ -136,6 +139,7 @@ defmodule VulnCheck.Types.Advisory do
           symbol_source: :cve | :osv | :osv_and_cve | :text | nil,
           enriched: boolean(),
           git_repos: [String.t()],
+          git_ranges: [VersionRange.t()],
           git_match_status: :confirmed | :uncertain | nil
         }
 

@@ -97,7 +97,9 @@ defmodule VulnCheck.Semver do
     lower_ok and upper_ok and (not valid?(range.limit) or compare(version, range.limit) == :lt)
   end
 
-  def in_range?(_version, %VersionRange{type: :git}), do: false
+  # Commit intervals cannot be compared with package versions. They are kept
+  # outside numbered ranges; should one reach this point, it stays affected.
+  def in_range?(_version, %VersionRange{type: :git}), do: true
 
   @doc """
   Returns `true` when the installed version is affected by the advisory.
@@ -151,6 +153,11 @@ defmodule VulnCheck.Semver do
 
   def from_osv_ranges(_), do: []
 
+  @doc """
+  Converts the `GIT` ranges of an OSV `ranges` array into commit intervals
+  (`type: :git`). They are kept apart from numbered ranges and never take part
+  in version matching.
+  """
   @spec from_osv_git_ranges([map()] | nil) :: [VersionRange.t()]
   def from_osv_git_ranges(ranges) when is_list(ranges) do
     Enum.flat_map(ranges, fn
@@ -158,7 +165,7 @@ defmodule VulnCheck.Semver do
         repo = GitUrl.repo_slug(range["repo"])
 
         events
-        |> events_to_ranges()
+        |> git_events_to_ranges()
         |> Enum.map(&%{&1 | type: :git, repo: repo})
 
       _ ->
@@ -169,6 +176,51 @@ defmodule VulnCheck.Semver do
   def from_osv_git_ranges(_), do: []
 
   @doc """
+  Converts the `versionType: "git"` entries of a CVE 5.1 affected product into
+  commit intervals (`type: :git`). Unaffected entries are dropped.
+  """
+  @spec from_cve_git_versions(map()) :: [VersionRange.t()]
+  def from_cve_git_versions(%{} = entry) do
+    entry
+    |> Map.get("versions")
+    |> List.wrap()
+    |> Enum.flat_map(fn
+      %{"versionType" => "git", "status" => status} = version
+      when status in ["affected", "unknown"] ->
+        [
+          %VersionRange{
+            introduced: normalize_bound(version["version"]),
+            fixed: normalize_bound(version["lessThan"]),
+            last_affected: normalize_bound(version["lessThanOrEqual"]),
+            type: :git
+          }
+        ]
+
+      _ ->
+        []
+    end)
+  end
+
+  def from_cve_git_versions(_entry), do: []
+
+  @doc """
+  `true` when two strings designate the same commit: both are hexadecimal
+  object ids of at least 12 characters and one is a prefix of the other.
+  Placeholders such as `"0"` never match.
+  """
+  @spec same_commit?(term(), term()) :: boolean()
+  def same_commit?(a, b) when is_binary(a) and is_binary(b) do
+    a = String.downcase(a)
+    b = String.downcase(b)
+
+    commit_id?(a) and commit_id?(b) and (String.starts_with?(a, b) or String.starts_with?(b, a))
+  end
+
+  def same_commit?(_a, _b), do: false
+
+  defp commit_id?(value), do: Regex.match?(~r/\A[0-9a-f]{12,64}\z/, value)
+
+  @doc """
   Evaluates whether a git dependency is confirmed or uncertainly affected by an
   advisory. Without git commit history, a git dependency is never marked
   unaffected solely by commit or version comparison.
@@ -176,23 +228,20 @@ defmodule VulnCheck.Semver do
   @spec git_affected?(Package.t(), Advisory.t()) :: :confirmed | :uncertain
   def git_affected?(%Package{source: :git} = package, %Advisory{} = advisory) do
     pkg_repo = GitUrl.repo_slug(package.git_url)
-    git_ranges = Enum.filter(advisory.version_ranges, &(&1.type == :git))
-    semver_ranges = Enum.filter(advisory.version_ranges, &(&1.type == :semver))
 
     identity_ok? =
       is_binary(pkg_repo) and (advisory.git_repos == [] or pkg_repo in advisory.git_repos)
 
     commit_hit? =
-      is_binary(package.git_ref) and
-        Enum.any?(git_ranges, fn r ->
-          (is_binary(r.introduced) and String.starts_with?(package.git_ref, r.introduced)) or
-            (is_binary(r.last_affected) and String.starts_with?(package.git_ref, r.last_affected))
-        end)
+      Enum.any?(advisory.git_ranges, fn r ->
+        same_commit?(package.git_ref, r.introduced) or
+          same_commit?(package.git_ref, r.last_affected)
+      end)
 
     semver_hit? =
       identity_ok? and valid?(package.version) and
-        (semver_ranges != [] or advisory.affected_versions != []) and
-        affected?(package.version, semver_ranges, advisory.affected_versions)
+        (advisory.version_ranges != [] or advisory.affected_versions != []) and
+        affected?(package.version, advisory.version_ranges, advisory.affected_versions)
 
     if commit_hit? or semver_hit?, do: :confirmed, else: :uncertain
   end
@@ -222,7 +271,8 @@ defmodule VulnCheck.Semver do
   def fixed_versions(ranges) do
     ranges
     |> Enum.filter(fn range ->
-      valid?(range.fixed) and (not valid?(range.limit) or compare(range.fixed, range.limit) != :gt)
+      range.type == :semver and valid?(range.fixed) and
+        (not valid?(range.limit) or compare(range.fixed, range.limit) != :gt)
     end)
     |> Enum.map(& &1.fixed)
     |> Enum.uniq()
@@ -353,10 +403,6 @@ defmodule VulnCheck.Semver do
   defp normalize_bound(value) when is_binary(value), do: String.trim(value)
   defp normalize_bound(_), do: nil
 
-  defp cve_entry_ranges(%{"versionType" => "git", "status" => status} = entry)
-       when status in ["affected", "unknown"],
-       do: [%{cve_interval(entry) | type: :git}]
-
   defp cve_entry_ranges(%{"versionType" => "git"}), do: []
 
   defp cve_entry_ranges(%{"status" => status} = entry)
@@ -459,6 +505,28 @@ defmodule VulnCheck.Semver do
   defp event_compare("0", _), do: :lt
   defp event_compare(_, "0"), do: :gt
   defp event_compare(a, b), do: compare(a, b)
+
+  # Commit events follow the order of the record: commit ids cannot be
+  # ordered without the repository history.
+  defp git_events_to_ranges(events) do
+    {ranges, open} =
+      Enum.reduce(events, {[], nil}, fn
+        %{"introduced" => commit}, {acc, nil} when is_binary(commit) ->
+          {acc, commit}
+
+        %{"fixed" => commit}, {acc, open} when is_binary(commit) and open != nil ->
+          {[%VersionRange{introduced: open, fixed: commit} | acc], nil}
+
+        %{"last_affected" => commit}, {acc, open} when is_binary(commit) and open != nil ->
+          {[%VersionRange{introduced: open, last_affected: commit} | acc], nil}
+
+        _event, state ->
+          state
+      end)
+
+    ranges = if open, do: [%VersionRange{introduced: open} | ranges], else: ranges
+    Enum.reverse(ranges)
+  end
 
   defp parse_constraint(constraints) do
     disjuncts =

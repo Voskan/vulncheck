@@ -203,6 +203,12 @@ defmodule VulnCheck.Feeds.EefCna do
         |> Enum.reject(&is_nil/1)
       end)
 
+    git_ranges =
+      Enum.flat_map(products, fn entry ->
+        repo = GitUrl.repo_slug(entry["repo"]) || GitUrl.repo_slug(entry["packageName"])
+        entry |> Semver.from_cve_git_versions() |> Enum.map(&%{&1 | repo: repo})
+      end)
+
     %{
       advisory
       | affected_routines: all_routines,
@@ -213,6 +219,7 @@ defmodule VulnCheck.Feeds.EefCna do
         version_ranges: ranges,
         fixed_versions: Enum.uniq(advisory.fixed_versions ++ Semver.fixed_versions(ranges)),
         git_repos: Enum.uniq(advisory.git_repos ++ extra_repos),
+        git_ranges: Enum.uniq(advisory.git_ranges ++ git_ranges),
         otp_constraints: otp_constraints(advisory, descriptions),
         enriched: true
     }
@@ -221,13 +228,14 @@ defmodule VulnCheck.Feeds.EefCna do
 
   defp applies_to_version?(_entry, nil), do: true
 
+  # A product whose versions are all commit ids carries no numbered
+  # information, so its applicability to a numbered version is unknown and
+  # its symbols are kept.
   defp applies_to_version?(entry, version) do
-    has_git_versions? =
-      entry
-      |> list("versions")
-      |> Enum.any?(&(&1["versionType"] == "git"))
+    versions = list(entry, "versions")
+    commit_only? = versions != [] and Enum.all?(versions, &(&1["versionType"] == "git"))
 
-    has_git_versions? or
+    commit_only? or
       Enum.any?(Semver.from_cve_affected(entry), &Semver.in_range?(version, &1)) or
       not Semver.valid?(version)
   end

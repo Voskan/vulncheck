@@ -529,6 +529,154 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
     assert CVSS.base_score("CVSS:3.1/" <> base <> "/RL:X") == 9.8
   end
 
+  describe "commit ranges stay apart from numbered matching" do
+    alias VulnCheck.Semver
+    alias VulnCheck.Types.VersionRange
+
+    defp git_range(events),
+      do: %{"type" => "GIT", "repo" => "https://github.com/o/demo.git", "events" => events}
+
+    test "a Hex entry described only by commits affects every numbered version" do
+      record = %{
+        "id" => "GHSA-commit-only",
+        "affected" => [
+          %{
+            "package" => %{"ecosystem" => "Hex", "name" => "demo"},
+            "ranges" => [git_range([%{"introduced" => "0"}, %{"fixed" => "a1b2c3d4e5f6a7b8"}])]
+          }
+        ]
+      }
+
+      assert [advisory] = OSV.parse_record(record)
+      assert advisory.version_ranges == []
+      assert advisory.affected_versions == []
+
+      assert [%VersionRange{type: :git, repo: "o/demo", fixed: "a1b2c3d4e5f6a7b8"}] =
+               advisory.git_ranges
+
+      assert Semver.affected?("1.0.0", advisory)
+      assert Semver.affected?("99.0.0", advisory)
+      assert advisory.fixed_versions == []
+      assert OSV.scope_symbols(advisory, "1.0.0").affected_blocks == advisory.affected_blocks
+    end
+
+    test "mixed numbered and commit ranges match only by numbers" do
+      record = %{
+        "id" => "GHSA-mixed",
+        "affected" => [
+          %{
+            "package" => %{"ecosystem" => "Hex", "name" => "demo"},
+            "ranges" => [
+              %{
+                "type" => "SEMVER",
+                "events" => [%{"introduced" => "1.0.0"}, %{"fixed" => "1.2.0"}]
+              },
+              git_range([%{"introduced" => "0"}, %{"fixed" => "1234567"}])
+            ]
+          }
+        ]
+      }
+
+      assert [advisory] = OSV.parse_record(record)
+      assert Enum.all?(advisory.version_ranges, &(&1.type == :semver))
+      assert Semver.affected?("1.1.0", advisory)
+      refute Semver.affected?("1.3.0", advisory)
+      assert advisory.fixed_versions == ["1.2.0"]
+      assert Semver.recommended_fix("1.1.0", advisory) == "1.2.0"
+    end
+
+    test "numeric commit ids never become fixed versions" do
+      ranges = [
+        %VersionRange{type: :git, introduced: "0", fixed: "1234567"},
+        %VersionRange{introduced: "1.0.0", fixed: "1.0.5"}
+      ]
+
+      assert Semver.fixed_versions(ranges) == ["1.0.5"]
+    end
+
+    test "a CVE product described only by commits keeps the advisory affected" do
+      advisory = %Advisory{
+        id: "EEF-CVE-2026-90001",
+        aliases: ["CVE-2026-90001"],
+        package: "demo",
+        checked_version: "1.4.0"
+      }
+
+      record = %{
+        "containers" => %{
+          "cna" => %{
+            "affected" => [
+              %{
+                "packageName" => "demo",
+                "defaultStatus" => "unaffected",
+                "programRoutines" => [%{"name" => "'Elixir.Demo':run/1"}],
+                "versions" => [
+                  %{
+                    "version" => "a1b2c3d4e5f6",
+                    "lessThan" => "f6e5d4c3b2a1",
+                    "status" => "affected",
+                    "versionType" => "git"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+
+      enriched = EefCna.apply_record(advisory, record)
+      assert enriched.enriched
+      assert enriched.affected_routines == [MFA.new("Elixir.Demo", "run", 1)]
+      assert Enum.all?(enriched.version_ranges, &(&1.type == :semver))
+      assert [%VersionRange{type: :git, introduced: "a1b2c3d4e5f6"}] = enriched.git_ranges
+      assert Semver.affected?("1.4.0", enriched)
+      assert enriched.fixed_versions == []
+    end
+
+    test "commit confirmation requires a real object id" do
+      git_pkg = fn ref ->
+        %Package{
+          name: "demo",
+          version: String.slice(ref, 0, 12),
+          source: :git,
+          scope: :prod,
+          git_url: "https://github.com/o/demo.git",
+          git_ref: ref
+        }
+      end
+
+      sha = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c"
+
+      placeholder = %Advisory{
+        id: "A",
+        package: "demo",
+        git_ranges: [%VersionRange{type: :git, introduced: "0", fixed: "abcdef"}]
+      }
+
+      assert Semver.git_affected?(git_pkg.(sha), placeholder) == :uncertain
+
+      exact = %{placeholder | git_ranges: [%VersionRange{type: :git, introduced: sha}]}
+      assert Semver.git_affected?(git_pkg.(sha), exact) == :confirmed
+
+      prefix = %{
+        placeholder
+        | git_ranges: [%VersionRange{type: :git, introduced: String.slice(sha, 0, 12)}]
+      }
+
+      assert Semver.git_affected?(git_pkg.(sha), prefix) == :confirmed
+
+      short = %{
+        placeholder
+        | git_ranges: [%VersionRange{type: :git, introduced: String.slice(sha, 0, 7)}]
+      }
+
+      assert Semver.git_affected?(git_pkg.(sha), short) == :uncertain
+
+      refute Semver.same_commit?("0", sha)
+      refute Semver.same_commit?(nil, sha)
+    end
+  end
+
   describe "git dependency matching" do
     alias VulnCheck.Workspace.GitUrl
 
