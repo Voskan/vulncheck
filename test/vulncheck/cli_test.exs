@@ -243,6 +243,62 @@ defmodule VulnCheck.CLITest do
   end
 
   describe "explain" do
+    test "retains the underlying verdict when baseline and diff filter a scan result" do
+      root = Project.shop!()
+      cache = Project.cache!()
+      baseline = Path.join(Tmp.mkdir!("explain-baseline"), "observations.json")
+
+      config = %VulnCheck.Config{
+        project_dir: root,
+        cache_dir: cache,
+        offline: true,
+        check_retired: false,
+        write_baseline: baseline
+      }
+
+      assert {:ok, scan} = VulnCheck.scan(config)
+      assert Enum.any?(scan.findings, &(&1.package == "plug" and &1.verdict == :reachable))
+
+      policy = %{config | baseline: baseline, diff: "unknown-base", write_baseline: nil}
+      assert {:ok, %{findings: []}} = VulnCheck.scan(policy)
+      assert {:ok, result} = VulnCheck.explain("CVE-2026-54892", config: policy)
+
+      assert [%{status: :affected_version, finding: %{verdict: :reachable}, filtered: true}] =
+               result.local.outcomes
+
+      text = VulnCheck.Explain.format(result)
+      assert text =~ "Filtered from the scan report"
+      assert text =~ "Verdict:   REACHABLE"
+      assert text =~ "diff against unknown-base ignored"
+      refute text =~ "installed version is not affected"
+
+      Tmp.write!(root, ".vulncheck.ignore", "[%{id: \"CVE-2026-54892\", reason: \"accepted\"}]")
+      assert {:ok, ignored} = VulnCheck.explain("CVE-2026-54892", config: policy)
+      assert [%{finding: %{suppressed: true}, filtered: false}] = ignored.local.outcomes
+      assert VulnCheck.Explain.format(ignored) =~ "Suppressed: accepted"
+    end
+
+    test "distinguishes a fixed installed version from an absent package" do
+      root = Project.shop!()
+      cache = Project.cache!()
+      lock = Path.join(root, "mix.lock")
+      File.write!(lock, String.replace(File.read!(lock), "1.16.2", "1.16.4"))
+
+      config = %VulnCheck.Config{
+        project_dir: root,
+        cache_dir: cache,
+        offline: true,
+        check_retired: false
+      }
+
+      assert {:ok, result} = VulnCheck.explain("CVE-2026-54892", config: config)
+      assert [%{status: :not_affected_version, installed_version: "1.16.4"}] = result.local.outcomes
+
+      File.write!(lock, "%{}")
+      assert {:ok, result} = VulnCheck.explain("CVE-2026-54892", config: config)
+      assert [%{status: :not_locked, package: "plug"}] = result.local.outcomes
+    end
+
     test "describes the advisory with its local verdict and trace" do
       root = Project.shop!()
       cache = Project.cache!()

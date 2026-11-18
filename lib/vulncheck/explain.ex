@@ -7,16 +7,22 @@ defmodule VulnCheck.Explain do
   aliases; `CVE-2026-1234` also matches `EEF-CVE-2026-1234`.
   """
 
-  alias VulnCheck.{Cache, Config}
+  alias VulnCheck.{Cache, Config, Semver}
   alias VulnCheck.Feeds.{EefCna, OSV}
   alias VulnCheck.Report.Formatter
   alias VulnCheck.Solver.RoutineScope
-  alias VulnCheck.Types.{Advisory, Finding, MFA, VersionRange, Workspace}
+  alias VulnCheck.Types.{Advisory, Finding, MFA, ScanReport, VersionRange, Workspace}
   alias VulnCheck.Workspace.Detector
 
   @type local ::
           nil
-          | %{workspace: Workspace.t(), findings: [Finding.t()]}
+          | %{
+              workspace: Workspace.t(),
+              findings: [Finding.t()],
+              visible_findings: [Finding.t()],
+              outcomes: [map()],
+              warnings: [String.t()]
+            }
           | %{error: term()}
 
   @type result :: %{
@@ -38,7 +44,7 @@ defmodule VulnCheck.Explain do
       {enriched, warnings} = enrich(matches, config, opts)
 
       {:ok,
-       %{query: id, advisories: enriched, local: local(config, opts, enriched), warnings: warnings}}
+       %{query: id, advisories: enriched, local: local(config, opts, matches), warnings: warnings}}
     end
   end
 
@@ -102,19 +108,29 @@ defmodule VulnCheck.Explain do
       {:ok, _info} ->
         ids = MapSet.new(advisories, & &1.id)
 
-        case VulnCheck.scan(config, opts) do
+        case VulnCheck.scan(%{config | write_baseline: nil}, opts) do
           {:ok, report} ->
-            %{
+            complete = %{
               workspace: report.workspace,
-              findings: Enum.filter(report.findings, &MapSet.member?(ids, &1.advisory_id))
+              findings:
+                report
+                |> ScanReport.complete_findings()
+                |> Enum.filter(&MapSet.member?(ids, &1.advisory_id)),
+              visible_findings: Enum.filter(report.findings, &MapSet.member?(ids, &1.advisory_id)),
+              warnings: report.warnings
             }
+
+            Map.put(complete, :outcomes, outcomes(complete, advisories))
 
           {:error, reason} ->
             %{error: reason}
         end
 
-      {:error, _kind, _details} ->
+      {:error, :unknown_project, _details} ->
         nil
+
+      {:error, kind, details} ->
+        %{error: {kind, details}}
     end
   end
 
@@ -123,7 +139,8 @@ defmodule VulnCheck.Explain do
   def format(%{advisories: advisories} = result) do
     cards = Enum.map(advisories, &card/1)
     local = format_local(result.local, advisories)
-    warnings = Enum.map(result.warnings, &("warning: " <> &1))
+    local_warnings = if result.local, do: Map.get(result.local, :warnings, []), else: []
+    warnings = (result.warnings ++ local_warnings) |> Enum.uniq() |> Enum.map(&("warning: " <> &1))
 
     (cards ++ [local] ++ [Enum.join(warnings, "\n")])
     |> Enum.reject(&(&1 in [nil, ""]))
@@ -184,10 +201,9 @@ defmodule VulnCheck.Explain do
   defp identifiers(%Advisory{id: id, aliases: aliases}),
     do: "#{id} (aliases: #{Enum.join(aliases, ", ")})"
 
-  defp affected(%Advisory{version_ranges: [], affected_versions: versions}),
-    do: Enum.join(versions, ", ")
-
-  defp affected(%Advisory{version_ranges: ranges}), do: Enum.map_join(ranges, "; ", &range/1)
+  defp affected(%Advisory{version_ranges: ranges, affected_versions: versions}) do
+    (Enum.map(ranges, &range/1) ++ versions) |> Enum.join("; ")
+  end
 
   defp range(%VersionRange{} = r) do
     lower = if r.introduced in [nil, "0"], do: nil, else: ">= #{r.introduced}"
@@ -235,37 +251,67 @@ defmodule VulnCheck.Explain do
   defp format_local(%{error: reason}, _advisories),
     do: "Local project: scan failed (#{VulnCheck.CLI.describe_error(reason)})"
 
-  defp format_local(%{workspace: ws, findings: findings}, advisories) do
+  defp format_local(%{workspace: ws} = local, advisories) do
     header = "Local project: #{ws.project_name} (#{ws.project_type}, env: #{ws.env})"
-
-    lines =
-      advisories
-      |> Enum.uniq_by(& &1.package)
-      |> Enum.flat_map(fn advisory ->
-        source_package = advisory.source_package || advisory.package
-
-        packages =
-          ws.packages
-          |> Map.values()
-          |> Enum.filter(&((&1.hex_name || &1.name) == source_package))
-          |> Enum.sort_by(& &1.name)
-
-        case packages do
-          [] ->
-            ["  #{advisory.package}: not locked by this project"]
-
-          packages ->
-            Enum.map(packages, fn package ->
-              case Enum.find(findings, &(&1.package == package.name)) do
-                nil -> "  #{package.name} #{package.version}: installed version is not affected"
-                finding -> finding_lines(finding)
-              end
-            end)
-        end
-      end)
-
-    Enum.join([header | lines], "\n")
+    checks = Map.get_lazy(local, :outcomes, fn -> outcomes(local, advisories) end)
+    Enum.join([header | Enum.map(checks, &outcome_line/1)], "\n")
   end
+
+  defp outcomes(%{workspace: ws, findings: findings} = local, advisories) do
+    visible = local |> Map.get(:visible_findings, findings) |> MapSet.new(& &1.fingerprint)
+    by_key = Map.new(findings, &{{&1.advisory_id, &1.package}, &1})
+
+    Enum.flat_map(advisories, fn advisory ->
+      source_package = advisory.source_package || advisory.package
+
+      packages =
+        ws.packages
+        |> Map.values()
+        |> Enum.filter(&((&1.hex_name || &1.name) == source_package))
+        |> Enum.sort_by(& &1.name)
+
+      case packages do
+        [] ->
+          [%{advisory_id: advisory.id, package: source_package, status: :not_locked}]
+
+        packages ->
+          Enum.map(packages, fn package ->
+            finding = Map.get(by_key, {advisory.id, package.name})
+
+            status =
+              cond do
+                finding -> :affected_version
+                package.source != :hex -> :unknown
+                Semver.affected?(package.version, advisory) -> :unknown
+                true -> :not_affected_version
+              end
+
+            %{
+              advisory_id: advisory.id,
+              package: package.name,
+              installed_version: package.version,
+              status: status,
+              finding: finding,
+              filtered: finding != nil and not MapSet.member?(visible, finding.fingerprint)
+            }
+          end)
+      end
+    end)
+  end
+
+  defp outcome_line(%{finding: %Finding{} = finding, filtered: filtered}) do
+    note = if filtered, do: "\n    Filtered from the scan report by its display policy", else: ""
+    finding_lines(finding) <> note
+  end
+
+  defp outcome_line(%{status: :not_locked, package: package}),
+    do: "  #{package}: not locked by this project"
+
+  defp outcome_line(%{status: :not_affected_version, package: package, installed_version: version}),
+    do: "  #{package} #{version}: installed version is not affected"
+
+  defp outcome_line(%{status: :unknown, package: package, installed_version: version}),
+    do: "  #{package} #{version}: local applicability could not be established"
 
   defp context_line([]), do: []
 

@@ -136,6 +136,8 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 
 `mix vulncheck.init` accepts `--project-dir` and `--force` (overwrite an existing file). `mix vulncheck.explain` accepts `--project-dir`, `--offline` and `--bundle`.
 
+`explain` shows whether the installed version matches the advisory, the local reachability verdict when available, and the effect of suppressions or display filters. A missing or incomplete local scan is reported separately from an unaffected installed version.
+
 ### Exit Codes
 
 | Exit Code | Meaning |
