@@ -47,6 +47,10 @@ defmodule VulnCheck.Types.CallEdge do
           line: non_neg_integer() | nil,
           kind: kind()
         }
+
+  @doc "Whether the edge can support a confirmed call chain."
+  @spec proven?(t()) :: boolean()
+  def proven?(%__MODULE__{kind: kind}), do: kind != :imports
 end
 
 defmodule VulnCheck.Types.DynamicCall do
@@ -196,6 +200,7 @@ defmodule VulnCheck.Types.EntrypointModel do
             client_roots: [],
             active_plug_parsers: [],
             boot_tree_known: true,
+            artifact_issues: [],
             notes: []
 
   @type t :: %__MODULE__{
@@ -210,6 +215,7 @@ defmodule VulnCheck.Types.EntrypointModel do
           client_roots: [VulnCheck.Types.Entrypoint.t()],
           active_plug_parsers: [String.t()] | :all,
           boot_tree_known: boolean(),
+          artifact_issues: [{String.t() | nil, String.t()}],
           notes: [String.t()]
         }
 end

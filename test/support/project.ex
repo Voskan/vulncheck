@@ -89,8 +89,8 @@ defmodule VulnCheck.Test.Project do
        """}
     ])
 
-    Beams.write_app!(lib.("ash"), "ash")
-    Beams.write_app!(lib.("plug"), "plug")
+    Beams.write_app!(lib.("ash"), "ash", vsn: "3.34.2")
+    Beams.write_app!(lib.("plug"), "plug", vsn: "1.16.2")
 
     Beams.write_app!(lib.("shop"), "shop",
       applications: [:kernel, :stdlib, :elixir, :ash, :plug],

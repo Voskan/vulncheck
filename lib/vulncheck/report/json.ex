@@ -34,6 +34,7 @@ defmodule VulnCheck.Report.JSON do
       "policy_violations" => report.policy_violations,
       "warnings" => report.warnings
     }
+    |> put_optional("analysis", Map.get(report.stats, :analysis))
   end
 
   defp target(nil), do: %{}

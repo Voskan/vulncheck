@@ -53,7 +53,7 @@ defmodule VulnCheck.Workspace.AppFile do
     path = Path.join(ebin_dir, app <> ".app")
 
     case File.regular?(path) && read(path) do
-      {:ok, app_file} -> app_file
+      {:ok, %__MODULE__{name: ^app} = app_file} -> app_file
       _ -> nil
     end
   end

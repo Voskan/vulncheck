@@ -7,6 +7,9 @@ defmodule VulnCheck.SolverTest do
 
   alias VulnCheck.Types.{
     Advisory,
+    CallEdge,
+    Entrypoint,
+    EntrypointModel,
     Finding,
     MFA,
     Package,
@@ -220,6 +223,56 @@ defmodule VulnCheck.SolverTest do
 
   defp advisory(id, package, fields \\ []) do
     struct(%Advisory{id: id, package: package, severity: :high, summary: id}, fields)
+  end
+
+  test "confirmed project evidence outranks shorter or earlier speculative traces" do
+    root = mfa("Elixir.TraceApp", "entry", 0)
+    daemon = mfa("Elixir.TraceApp", "handler", 0)
+    relay = mfa("Elixir.TraceApp", "relay", 0)
+    guessed = mfa("Elixir.Witness", "a_guessed", 0)
+    target = mfa("Elixir.Witness", "b_target", 0)
+    daemon_target = mfa("Elixir.Witness", "c_daemon", 0)
+
+    graph =
+      CallGraph.build(%{},
+        extra_edges: [
+          %CallEdge{from: root, to: guessed, kind: :imports},
+          %CallEdge{from: root, to: target, kind: :imports},
+          %CallEdge{from: root, to: relay, kind: :static_call},
+          %CallEdge{from: relay, to: target, kind: :static_call},
+          %CallEdge{from: daemon, to: daemon_target, kind: :static_call}
+        ]
+      )
+
+    model = %EntrypointModel{
+      roots: [
+        %Entrypoint{mfa: root, kind: :extra},
+        %Entrypoint{
+          mfa: daemon,
+          kind: :daemon,
+          activation: %TraceHop{mfa: root, kind: :daemon_activation}
+        }
+      ]
+    }
+
+    advisory =
+      advisory("SYNTHETIC-TRACE", "witness", affected_routines: [guessed, daemon_target, target])
+
+    workspace = %Workspace{
+      root_dir: ".",
+      project_name: "trace_app",
+      project_type: :mix,
+      env: :prod,
+      otp_release: "27",
+      packages: %{
+        "witness" => %Package{name: "witness", version: "1.0.0", source: :hex, scope: :prod}
+      }
+    }
+
+    assert [%Finding{target_mfa: ^target, reason: :call_chain_proven, trace: trace}] =
+             Solver.solve(workspace, graph, model, [advisory], %Config{})
+
+    assert Enum.map(trace, & &1.mfa) == [root, relay, target]
   end
 
   test "call_chain_proven with the shortest trace", ctx do

@@ -81,8 +81,8 @@ defmodule VulnCheck.ScannerTest do
        """}
     ])
 
-    Beams.write_app!(lib.("ash"), "ash")
-    Beams.write_app!(lib.("plug"), "plug")
+    Beams.write_app!(lib.("ash"), "ash", vsn: "3.34.2")
+    Beams.write_app!(lib.("plug"), "plug", vsn: "1.16.2")
 
     Beams.write_app!(lib.("shop"), "shop",
       applications: [:kernel, :stdlib, :elixir, :ash, :plug],
@@ -148,6 +148,7 @@ defmodule VulnCheck.ScannerTest do
     assert report.tool_version == VulnCheck.version()
     assert report.stats.modules >= 7
     assert report.stats.matched_advisories == 2
+    assert report.stats.analysis.status == :complete
     assert is_map(report.stats.timings_ms)
     assert VulnCheck.should_fail?(report, config)
 
@@ -155,6 +156,107 @@ defmodule VulnCheck.ScannerTest do
     assert {:ok, warm} = VulnCheck.scan(config, opts)
     assert warm.stats.cached == warm.stats.beams
     assert Enum.map(warm.findings, & &1.fingerprint) == Enum.map(report.findings, & &1.fingerprint)
+  end
+
+  test "a dependency compiled for a different locked version cannot prove absence", ctx do
+    ebin = Path.join(ctx.root, "_build/prod/lib/ash/ebin")
+    Beams.write_app!(ebin, "ash", vsn: "3.34.6")
+
+    {report, ash} = scan_ash(ctx)
+    assert ash.verdict == :potentially_reachable
+    assert ash.reason_detail =~ "lock specifies 3.34.2"
+    assert report.stats.analysis.status == :partial
+    assert hd(report.findings).package == "plug"
+    assert hd(report.findings).verdict == :reachable
+  end
+
+  test "a missing or unreadable root BEAM keeps downstream matches active", ctx do
+    ebin = Path.join(ctx.root, "_build/prod/lib/shop/ebin")
+
+    Beams.write_app!(ebin, "shop",
+      applications: [:ash, :plug],
+      mod: "Elixir.Shop.Application",
+      modules: ["Elixir.Shop.Application", "Elixir.Shop.Catalog", "Elixir.Shop.Web"]
+    )
+
+    File.rm!(Path.join(ebin, "Elixir.Shop.Catalog.beam"))
+    File.write!(Path.join(ebin, "Elixir.Shop.Web.beam"), "invalid BEAM")
+
+    {report, ash} = scan_ash(ctx)
+    assert ash.verdict == :potentially_reachable
+    assert ash.reason_detail =~ "missing compiled module Elixir.Shop.Catalog"
+    assert Enum.any?(report.stats.analysis.issues, &String.contains?(&1, "could not read"))
+    assert VulnCheck.should_fail?(report, %Config{})
+  end
+
+  test "a fallback Mix build reports the profile and keeps negative matches active", ctx do
+    File.rename!(Path.join(ctx.root, "_build/prod"), Path.join(ctx.root, "_build/dev"))
+
+    {report, ash} = scan_ash(ctx)
+    assert ash.verdict == :potentially_reachable
+
+    assert %{
+             "analysis" => %{
+               "status" => "unsuitable",
+               "build_profile" => "dev",
+               "issues" => ["compiled profile dev differs from requested environment prod"]
+             }
+           } = report |> VulnCheck.Report.JSON.render(%Config{}) |> JSON.decode!()
+  end
+
+  test "an incomplete intermediate boot application limits evidence to its dependency closure",
+       ctx do
+    lock = Path.join(ctx.root, "mix.lock")
+
+    File.write!(
+      lock,
+      String.replace(
+        File.read!(lock),
+        "%{",
+        ~s(%{\n  "relay": {:hex, :relay, "1.0.0", "#{@sha}", [:mix], [{:ash, ">= 0.0.0", [optional: false]}], "hexpm", "#{@sha}"},)
+      )
+    )
+
+    Beams.write_app!(Path.join(ctx.root, "_build/prod/lib/shop/ebin"), "shop",
+      applications: [:relay, :plug],
+      mod: "Elixir.Shop.Application"
+    )
+
+    {report, ash} = scan_ash(ctx)
+    assert ash.verdict == :potentially_reachable
+    assert ash.reason_detail =~ "missing compiled .app for relay"
+    assert hd(report.findings).verdict == :reachable
+  end
+
+  test "a partially compiled umbrella cannot prove routine absence", ctx do
+    mix_exs = Path.join(ctx.root, "mix.exs")
+    Tmp.write!(ctx.root, "apps/shop/mix.exs", File.read!(mix_exs))
+
+    Tmp.write!(ctx.root, "apps/admin/mix.exs", """
+    defmodule Admin.MixProject do
+      use Mix.Project
+      def project, do: [app: :admin, version: "0.1.0", deps: [{:ash, "~> 3.0"}]]
+    end
+    """)
+
+    Tmp.write!(ctx.root, "mix.exs", """
+    defmodule Umbrella.MixProject do
+      use Mix.Project
+      def project, do: [apps_path: "apps"]
+    end
+    """)
+
+    {report, ash} = scan_ash(ctx)
+    assert report.workspace.project_type == :umbrella
+    assert ash.verdict == :potentially_reachable
+    assert ash.reason_detail =~ "missing compiled .app for project application admin"
+  end
+
+  defp scan_ash(%{root: root, opts: opts}) do
+    config = %Config{project_dir: root, cache_dir: Tmp.mkdir!("scan-cache"), env: :prod}
+    assert {:ok, report} = VulnCheck.scan(config, opts)
+    assert %Finding{} = ash = Enum.find(report.findings, &(&1.package == "ash"))
+    {report, ash}
   end
 
   test "keyword API, post-processing and error handling", %{root: root, opts: opts} do

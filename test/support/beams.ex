@@ -60,6 +60,8 @@ defmodule VulnCheck.Test.Beams do
     apps = Keyword.get(opts, :applications, [])
     optional = Keyword.get(opts, :optional_applications, [])
     included = Keyword.get(opts, :included_applications, [])
+    vsn = Keyword.get(opts, :vsn, "1.0.0")
+    modules = Keyword.get(opts, :modules, [])
 
     mod =
       case Keyword.get(opts, :mod) do
@@ -70,8 +72,8 @@ defmodule VulnCheck.Test.Beams do
     File.write!(Path.join(ebin, "#{app}.app"), """
     {application, #{app},
      [{description, "#{app}"},
-      {vsn, "1.0.0"},
-      {modules, []},
+      {vsn, "#{vsn}"},
+      {modules, [#{Enum.map_join(modules, ",", &"'#{&1}'")}]},
       {applications, [#{Enum.join(apps, ",")}]},
       {optional_applications, [#{Enum.join(optional, ",")}]},
       {included_applications, [#{Enum.join(included, ",")}]}#{mod}]}.

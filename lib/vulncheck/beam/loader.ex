@@ -12,9 +12,10 @@ defmodule VulnCheck.Beam.Loader do
   never analyzed twice. Files are processed in parallel.
   """
 
-  alias VulnCheck.{Cache, Config}
+  alias VulnCheck.{Cache, Config, Semver}
   alias VulnCheck.Beam.AbstractWalker
   alias VulnCheck.Types.{CallEdge, DynamicCall, MFA, ModuleSummary, Workspace}
+  alias VulnCheck.Workspace.AppFile
 
   @max_beam_bytes 64 * 1024 * 1024
 
@@ -28,6 +29,7 @@ defmodule VulnCheck.Beam.Loader do
   @type result :: %{
           modules: %{String.t() => ModuleSummary.t()},
           warnings: [String.t()],
+          artifact_issues: [{String.t() | nil, String.t()}],
           stats: %{atom() => non_neg_integer()}
         }
 
@@ -55,6 +57,7 @@ defmodule VulnCheck.Beam.Loader do
 
     result = load_dirs(dirs, opts)
     consolidated = load_dirs(Enum.map(workspace.consolidated_dirs, &{nil, &1}), opts)
+    profile_issue = profile_issue(workspace)
 
     modules =
       Enum.reduce(consolidated.modules, result.modules, fn {name, summary}, acc ->
@@ -65,8 +68,70 @@ defmodule VulnCheck.Beam.Loader do
     %{
       modules: modules,
       warnings: result.warnings ++ consolidated.warnings,
+      profile_matches: is_nil(profile_issue),
+      artifact_issues:
+        List.wrap(profile_issue) ++
+          workspace_issues(workspace) ++
+          result.artifact_issues ++ consolidated.artifact_issues,
       stats: Map.merge(result.stats, consolidated.stats, fn _key, a, b -> a + b end)
     }
+  end
+
+  defp profile_issue(%Workspace{build_env: profile} = ws) do
+    cond do
+      is_nil(profile) ->
+        {nil, "no compiled build for the requested environment"}
+
+      profile == Atom.to_string(ws.env) or (ws.project_type == :rebar3 and profile == "default") ->
+        nil
+
+      true ->
+        {nil, "compiled profile #{profile} differs from requested environment #{ws.env}"}
+    end
+  end
+
+  defp workspace_issues(workspace) do
+    roots =
+      for app <- workspace.root_apps do
+        case Enum.find_value(workspace.root_ebin_dirs, fn dir ->
+               if file = AppFile.read_ebin(dir, app), do: {dir, file}
+             end) do
+          {dir, file} -> inventory_issues(nil, dir, file)
+          nil -> [{nil, "missing compiled .app for project application #{app}"}]
+        end
+      end
+
+    dependencies =
+      for package <- Enum.sort_by(Workspace.prod_packages(workspace), & &1.name),
+          dir = package.ebin_dir,
+          file =
+            AppFile.read_ebin(dir, package.otp_app || package.name) ||
+              AppFile.read_ebin(dir, package.name) do
+        versions = compare_version(package.name, package.version, file.vsn)
+        versions ++ inventory_issues(package.name, dir, file)
+      end
+
+    List.flatten(roots ++ dependencies)
+  end
+
+  defp compare_version(package, locked, built) do
+    if Semver.valid?(locked) and
+         (not Semver.valid?(built) or Semver.compare(locked, built) != :eq) do
+      [
+        {package,
+         "#{package} was built at #{built || "an unknown version"}, lock specifies #{locked}"}
+      ]
+    else
+      []
+    end
+  end
+
+  defp inventory_issues(owner, dir, file) do
+    expected = if file.mod, do: [file.mod | file.modules], else: file.modules
+    missing = expected |> Enum.uniq() |> Enum.reject(&File.regular?(Path.join(dir, &1 <> ".beam")))
+
+    for module <- missing,
+        do: {owner, "missing compiled module #{module} listed by #{file.name}.app"}
   end
 
   @doc """
@@ -89,6 +154,7 @@ defmodule VulnCheck.Beam.Loader do
     initial = %{
       modules: %{},
       warnings: [],
+      artifact_issues: [],
       stats: %{beams: 0, cached: 0, analyzed: 0, without_debug_info: 0, failed: 0}
     }
 
@@ -114,22 +180,32 @@ defmodule VulnCheck.Beam.Loader do
               "module #{summary.module} is defined in both #{existing.beam_path} and #{path}; " <>
                 "using the first"
 
-            %{acc | stats: stats, warnings: [warning | acc.warnings]}
+            %{
+              acc
+              | stats: stats,
+                warnings: [warning | acc.warnings],
+                artifact_issues: [
+                  {package, warning},
+                  {existing.package, warning} | acc.artifact_issues
+                ]
+            }
 
           :error ->
             %{acc | stats: stats, modules: Map.put(acc.modules, summary.module, summary)}
         end
 
-      {_package, path, {:error, reason}}, acc ->
+      {package, path, {:error, reason}}, acc ->
         warning = "could not read #{path}: #{inspect(reason)}"
 
         %{
           acc
           | stats: acc.stats |> bump(:beams) |> bump(:failed),
-            warnings: [warning | acc.warnings]
+            warnings: [warning | acc.warnings],
+            artifact_issues: [{package, warning} | acc.artifact_issues]
         }
     end)
     |> Map.update!(:warnings, &Enum.reverse/1)
+    |> Map.update!(:artifact_issues, &Enum.reverse/1)
   end
 
   @doc """

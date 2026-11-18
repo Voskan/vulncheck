@@ -27,7 +27,7 @@ Assigned when **both** conditions hold:
 - The advisory specifies one or more target MFA symbols (`programRoutines`) or modules; **and**
 - There exists a directed path in the post-macro `.beam` + behaviour-linked call graph from a production root $r \in R$ to at least one vulnerable `Module.fun/arity`.
 
-**Output:** `vulncheck` prints the shortest witness call trace from the entrypoint in user code down to the vulnerable dependency function, with source file and line numbers at each hop.
+**Output:** `vulncheck` prefers confirmed traces from the project's entrypoints, then confirmed traces through a daemon or protocol client. It selects the shortest trace among matching routines within each group and breaks ties by MFA. Speculative import edges stay visible in potential traces and cannot displace a confirmed trace.
 
 Two reason codes tell how the chain starts:
 
@@ -58,7 +58,9 @@ Assigned when static non-reachability **cannot** be proven safely:
 - **Network / Runtime Daemon Exposure:** The vulnerable package is an active server in the production application tree (see the table above) and the vulnerable module belongs to its active protocol stack.
 - **Unresolved Dynamic Dispatch:** A reachable module invokes `apply(mod_var, fun_var, args)` where target module/function candidates cannot be narrowed away from the vulnerable module, and the vulnerable dependency's OTP application is loaded in `:prod`. A dynamic call can only name a module whose atom reaches it: one written in reachable code or configuration, one built with `Module.concat/1,2` or `Module.safe_concat/1,2` anywhere in reachable code (outside modules whose dynamic calls a framework rule resolves, such as `Plug.Parsers`), or one converted from a string (`String.to_atom/1`, `:erlang.binary_to_atom/2`, ...) in the module that makes the call. Each such call site that keeps advisories open is listed in the report warnings. Calls whose arguments are an open list (`apply(m, f, [env | rest])`) only match functions with at least the known number of arguments. Framework dispatch through a module held in a variable is resolved when the framework only ever calls implementations of its own behaviour (ThousandIsland transports, Mint connections and transports) or entries of literal configuration (the `Plug.Parsers` body reader and decoder, the Tesla middleware stack).
 - **Missing Symbol Granularity:** An upstream advisory lacks `programRoutines` and module-level hints, and at least one function in the vulnerable package is reachable in `:prod`.
-- **Missing `.beam` Debug Info:** A dependency `.beam` was compiled with `debug_info` stripped, preventing call-graph traversal inside that dependency.
+- **Incomplete Compiled Evidence:** Absent or unreadable BEAM files, stripped debug info, missing boot application metadata and dependency versions inconsistent with the lock can prevent a negative verdict. An issue in a dependency applies to that package and its recorded dependency closure. An issue in a project application can affect the whole scan. A fallback build profile also prevents negative code verdicts. The compiler's default rebar3 profile is treated as native to rebar3 projects.
+
+The native JSON report records the build profile, issues and analysis status under `analysis`. The status can be `complete`, `partial`, `unsuitable` for a fallback profile, `unavailable` when no BEAM could be analyzed, or `not_needed` when no advisory required code analysis. The default CI policy, `--fail-on potentially_reachable`, fails for active matches carried by incomplete evidence, subject to the configured minimum severity and suppressions. An explicit non-production scope or an excluded OTP version can still establish a negative verdict independently of BEAM evidence.
 
 ### 3. `UNREACHABLE` (Proven Safe to Suppress in Production)
 

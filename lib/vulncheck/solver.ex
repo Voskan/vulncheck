@@ -8,14 +8,15 @@ defmodule VulnCheck.Solver do
   reachable, the traversal continues from the client's receive functions,
   and their chains continue the chain that reaches the client.
 
-  A single breadth-first traversal from the entrypoints computes the
+  Breadth-first traversal from the entrypoints computes the
   reachable functions and a parent edge for each of them, so the shortest
   witness trace of any reachable function is rebuilt in time proportional
   to its length. The traversal first visits everything reachable from the
   project's own entrypoints and only then continues from the protocol
   handlers of network daemons, so a function is attributed to a daemon only
   when no proven chain reaches it. Chains from a root the project does not
-  call itself start with the root's activation hop.
+  call itself start with the root's activation hop. A separate traversal
+  excludes speculative edges when they occur in the graph.
 
   Routines and modules of the advisory that belong to other packages or to
   Erlang/OTP and Elixir are context only (`VulnCheck.Solver.RoutineScope`).
@@ -93,6 +94,9 @@ defmodule VulnCheck.Solver do
       :config,
       :reachable,
       :parents,
+      :proven_parents,
+      :proven_client_anchors,
+      :artifact_issues,
       :modules_by_package,
       :reachable_packages,
       :reachable_modules,
@@ -114,10 +118,19 @@ defmodule VulnCheck.Solver do
   def index(%Workspace{} = workspace, %CallGraph{} = graph, %EntrypointModel{} = model, config) do
     {daemon_roots, proven_roots} = Enum.split_with(model.roots, &(&1.kind == :daemon))
     package_of = Map.new(graph.modules, fn {name, summary} -> {name, summary.package} end)
-    parents = bfs(graph, [Enum.map(proven_roots, & &1.mfa), Enum.map(daemon_roots, & &1.mfa)])
+    root_groups = [proven_roots, daemon_roots]
 
     {parents, client_anchors} =
-      activate_clients(graph, model.client_roots, package_of, parents, %{})
+      traverse(graph, root_groups, model.client_roots, package_of, false)
+
+    {proven_parents, proven_client_anchors} =
+      if Enum.any?(graph.out_edges, fn {_, edges} ->
+           Enum.any?(edges, &(not CallEdge.proven?(&1)))
+         end) do
+        traverse(graph, root_groups, model.client_roots, package_of, true)
+      else
+        {parents, client_anchors}
+      end
 
     reachable = parents |> Map.keys() |> MapSet.new()
 
@@ -160,6 +173,16 @@ defmodule VulnCheck.Solver do
       config: config,
       reachable: reachable,
       parents: parents,
+      proven_parents: proven_parents,
+      proven_client_anchors: proven_client_anchors,
+      artifact_issues:
+        affected_by_incomplete_artifacts(
+          workspace,
+          graph,
+          model,
+          reachable_modules,
+          reachable_packages
+        ),
       modules_by_package: modules_by_package,
       reachable_packages: reachable_packages,
       reachable_modules: reachable_modules,
@@ -271,7 +294,7 @@ defmodule VulnCheck.Solver do
     pkg = package.name
     package_reachable? = MapSet.member?(index.reachable_packages, pkg)
 
-    reachable_routine = Enum.find(routines, &MapSet.member?(index.reachable, &1))
+    witness = best_witness(index, routines)
     hit = if routines == [] and modules != [], do: first_reachable_in(index, modules)
 
     cond do
@@ -290,22 +313,8 @@ defmodule VulnCheck.Solver do
           "only OTP #{advisory.otp_constraints} is affected; the project runs OTP #{otp}"
         )
 
-      reachable_routine != nil ->
-        trace = trace(index, reachable_routine)
-
-        # Edges of modules without debug info are an over-approximation
-        # (every export to every import), not a proven call chain.
-        if Enum.any?(trace, &(&1.kind == :imports)) do
-          potentially(
-            :missing_beam_debug_info,
-            "#{MFA.format(reachable_routine)} is reachable only through modules " <>
-              "without debug info",
-            reachable_routine,
-            trace
-          )
-        else
-          proven(reachable_routine, trace)
-        end
+      witness != nil ->
+        routine_verdict(witness)
 
       hit != nil ->
         if pkg in index.model.active_daemon_packages do
@@ -324,6 +333,9 @@ defmodule VulnCheck.Solver do
             trace(index, hit)
           )
         end
+
+      issue = Map.get(index.artifact_issues, nil) || Map.get(index.artifact_issues, pkg) ->
+        potentially(:missing_beam_debug_info, "compiled evidence is incomplete: #{issue}", nil, [])
 
       not package_reachable? and Map.has_key?(index.model.inactive_adapter_packages, pkg) and
           not escape_toward?(index, advisory, package) ->
@@ -344,6 +356,92 @@ defmodule VulnCheck.Solver do
 
       true ->
         boundaries(advisory, package, index, routines, modules, package_reachable?)
+    end
+  end
+
+  defp best_witness(index, routines) do
+    proof = %{index | parents: index.proven_parents, client_anchors: index.proven_client_anchors}
+
+    case shortest_witness(proof, routines) do
+      {routine, hops} ->
+        {:proven, routine, hops}
+
+      nil ->
+        case shortest_witness(index, routines) do
+          {routine, hops} -> {:possible, routine, hops}
+          nil -> nil
+        end
+    end
+  end
+
+  defp shortest_witness(index, routines) do
+    routines
+    |> Enum.filter(&Map.has_key?(index.parents, &1))
+    |> Enum.map(&{&1, trace(index, &1)})
+    |> Enum.min_by(
+      fn {routine, hops} ->
+        indirect? = Enum.any?(hops, &(&1.kind in [:daemon_activation, :incoming_data]))
+        {indirect?, length(hops), routine}
+      end,
+      fn -> nil end
+    )
+  end
+
+  defp routine_verdict({:proven, routine, hops}), do: proven(routine, hops)
+
+  defp routine_verdict({:possible, routine, hops}) do
+    potentially(
+      :missing_beam_debug_info,
+      "#{MFA.format(routine)} is reachable only through modules without debug info",
+      routine,
+      hops
+    )
+  end
+
+  defp affected_by_incomplete_artifacts(
+         workspace,
+         graph,
+         model,
+         reachable_modules,
+         reachable_packages
+       ) do
+    stripped =
+      for name <- Enum.sort(reachable_modules),
+          %ModuleSummary{has_debug_info: false, package: pkg} <- [graph.modules[name]],
+          do: {pkg, "#{MFA.display_module(name)} has no debug info"}
+
+    started = MapSet.new(model.started_otp_apps)
+
+    {active, inactive} =
+      Enum.split_with(model.artifact_issues ++ stripped, fn {owner, _detail} ->
+        app = Map.get(workspace.packages, owner, %{otp_app: nil}).otp_app || owner
+
+        is_nil(owner) or MapSet.member?(started, app) or MapSet.member?(reachable_packages, owner)
+      end)
+
+    propagated =
+      Enum.reduce(active, %{}, fn {owner, detail}, issues ->
+        add_affected_issues([owner], workspace.packages, detail, issues)
+      end)
+
+    Enum.reduce(inactive, propagated, fn {owner, detail}, issues ->
+      Map.put_new(issues, owner, detail)
+    end)
+  end
+
+  defp add_affected_issues([], _packages, _detail, issues), do: issues
+
+  defp add_affected_issues([name | rest], packages, detail, issues) do
+    if Map.has_key?(issues, name) do
+      add_affected_issues(rest, packages, detail, issues)
+    else
+      deps =
+        case packages[name] do
+          %{deps: deps} -> deps
+          _ -> []
+        end
+
+      add_affected_issues(deps ++ rest, packages, detail, Map.put(issues, name, detail))
     end
   end
 
@@ -554,7 +652,7 @@ defmodule VulnCheck.Solver do
   # roots; each is anchored to the reachable function of its package closest
   # to an entrypoint (the call that opens connections). Repeated until no
   # further client package becomes reachable.
-  defp activate_clients(graph, clients, package_of, parents, anchors) do
+  defp activate_clients(graph, clients, package_of, parents, anchors, proven_only?) do
     packages = clients |> Enum.map(& &1.source) |> MapSet.new()
 
     nearest =
@@ -587,22 +685,25 @@ defmodule VulnCheck.Solver do
           Map.put(acc, mfa, {anchor, package})
         end)
 
-      parents = bfs_loop(graph, :queue.from_list(Enum.map(fresh, &elem(&1, 0))), parents)
-      activate_clients(graph, clients, package_of, parents, anchors)
+      queue = :queue.from_list(Enum.map(fresh, &elem(&1, 0)))
+      parents = bfs_loop(graph, queue, parents, proven_only?)
+      activate_clients(graph, clients, package_of, parents, anchors, proven_only?)
     end
   end
 
   # Root groups are traversed in order; a later group only reaches
   # functions that no earlier group reached.
-  defp bfs(graph, root_groups) do
-    Enum.reduce(root_groups, %{}, fn roots, parents ->
-      fresh = roots |> Enum.uniq() |> Enum.reject(&Map.has_key?(parents, &1))
+  defp traverse(graph, root_groups, clients, package_of, proven_only?) do
+    Enum.reduce(root_groups, {%{}, %{}}, fn roots, {parents, anchors} ->
+      fresh = roots |> Enum.map(& &1.mfa) |> Enum.uniq() |> Enum.sort()
+      fresh = Enum.reject(fresh, &Map.has_key?(parents, &1))
       parents = Enum.reduce(fresh, parents, &Map.put(&2, &1, {:root, 0}))
-      bfs_loop(graph, :queue.from_list(fresh), parents)
+      parents = bfs_loop(graph, :queue.from_list(fresh), parents, proven_only?)
+      activate_clients(graph, clients, package_of, parents, anchors, proven_only?)
     end)
   end
 
-  defp bfs_loop(graph, queue, parents) do
+  defp bfs_loop(graph, queue, parents, proven_only?) do
     case :queue.out(queue) do
       {:empty, _} ->
         parents
@@ -614,12 +715,12 @@ defmodule VulnCheck.Solver do
           graph
           |> CallGraph.edges_from(mfa)
           |> Enum.reduce({queue, parents}, fn %CallEdge{to: to} = edge, {q, p} ->
-            if Map.has_key?(p, to),
+            if Map.has_key?(p, to) or (proven_only? and not CallEdge.proven?(edge)),
               do: {q, p},
               else: {:queue.in(to, q), Map.put(p, to, {edge, depth + 1})}
           end)
 
-        bfs_loop(graph, queue, parents)
+        bfs_loop(graph, queue, parents, proven_only?)
     end
   end
 

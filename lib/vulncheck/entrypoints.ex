@@ -124,6 +124,11 @@ defmodule VulnCheck.Entrypoints do
       client_roots: client_roots(workspace, graph),
       active_plug_parsers: synthetic.active_plug_parsers,
       boot_tree_known: otp.boot_tree_known,
+      artifact_issues:
+        for(
+          {package, app} <- otp.missing_packages,
+          do: {package, "missing compiled .app for #{app} in the boot tree"}
+        ),
       notes: otp.notes ++ adapters.notes
     }
 
@@ -172,7 +177,7 @@ defmodule VulnCheck.Entrypoints do
   end
 
   defp library_roots(otp, graph) do
-    if otp.root_has_mod and otp.boot_tree_known do
+    if otp.root_has_mod and otp.root_files_known do
       []
     else
       for summary <- project_modules(graph),

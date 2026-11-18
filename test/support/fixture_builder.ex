@@ -195,6 +195,7 @@ defmodule VulnCheck.Test.FixtureBuilder do
       compile_sources!(root, ebin, source_dir, Map.get(pkg, :ex, []), Map.get(pkg, :erl, []))
 
     Beams.write_app!(ebin, pkg.name,
+      vsn: pkg.version,
       applications: [:kernel, :stdlib | Map.get(pkg, :applications, [])],
       optional_applications: Map.get(pkg, :optional_applications, [])
     )

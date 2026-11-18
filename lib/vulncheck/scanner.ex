@@ -134,13 +134,16 @@ defmodule VulnCheck.Scanner do
       loaded = Loader.load_workspace(workspace, config, cache: cache)
       graph = CallGraph.build(loaded.modules)
       {model, graph} = Entrypoints.build(workspace, graph, config)
+      model = %{model | artifact_issues: loaded.artifact_issues ++ model.artifact_issues}
+      analysis = artifact_analysis(loaded, model, workspace)
 
       %{
         graph: graph,
         model: model,
-        warnings: loaded.warnings ++ model.notes,
+        warnings: loaded.warnings ++ model.notes ++ analysis.issues,
         stats:
           Map.merge(loaded.stats, %{
+            analysis: analysis,
             modules: map_size(loaded.modules),
             edges: CallGraph.edge_count(graph),
             roots: length(model.roots),
@@ -148,8 +151,31 @@ defmodule VulnCheck.Scanner do
           })
       }
     else
-      %{graph: nil, model: nil, warnings: [], stats: %{modules: 0, edges: 0, roots: 0}}
+      %{
+        graph: nil,
+        model: nil,
+        warnings: [],
+        stats: %{modules: 0, edges: 0, roots: 0, analysis: %{status: :not_needed, issues: []}}
+      }
     end
+  end
+
+  defp artifact_analysis(loaded, model, workspace) do
+    issues = model.artifact_issues |> Enum.map(&elem(&1, 1)) |> Enum.uniq()
+    stripped = loaded.stats.without_debug_info
+
+    issues =
+      if stripped > 0, do: issues ++ ["#{stripped} BEAM file(s) lack debug info"], else: issues
+
+    status =
+      cond do
+        map_size(loaded.modules) == 0 -> :unavailable
+        not loaded.profile_matches -> :unsuitable
+        issues != [] -> :partial
+        true -> :complete
+      end
+
+    %{status: status, build_profile: workspace.build_env, issues: issues}
   end
 
   defp timed(fun) do

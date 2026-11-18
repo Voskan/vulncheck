@@ -15,7 +15,9 @@ defmodule VulnCheck.Entrypoints.OtpApp do
           started: [String.t()],
           app_modules: %{String.t() => String.t()},
           root_has_mod: boolean(),
+          root_files_known: boolean(),
           boot_tree_known: boolean(),
+          missing_packages: [{String.t(), String.t()}],
           notes: [String.t()]
         }
 
@@ -29,9 +31,15 @@ defmodule VulnCheck.Entrypoints.OtpApp do
   def analyze(%Workspace{} = workspace) do
     by_app = packages_by_app(workspace)
     root_files = Map.new(workspace.root_apps, &{&1, root_app_file(workspace, &1)})
-    missing = for {app, nil} <- root_files, do: app
+    missing = for {app, nil} <- Enum.sort(root_files), do: app
 
     {started, app_files} = walk(workspace.root_apps, root_files, by_app)
+
+    missing_packages =
+      for app <- Enum.sort(started),
+          not Map.has_key?(app_files, app),
+          %Package{name: name} <- [Map.get(by_app, app)],
+          do: {name, app}
 
     app_modules =
       for {app, %AppFile{mod: mod}} <- app_files, is_binary(mod), into: %{}, do: {app, mod}
@@ -48,7 +56,9 @@ defmodule VulnCheck.Entrypoints.OtpApp do
       started: Enum.sort(started),
       app_modules: app_modules,
       root_has_mod: Enum.any?(workspace.root_apps, &Map.has_key?(app_modules, &1)),
-      boot_tree_known: workspace.root_apps != [] and missing == [],
+      root_files_known: workspace.root_apps != [] and missing == [],
+      boot_tree_known: workspace.root_apps != [] and missing == [] and missing_packages == [],
+      missing_packages: missing_packages,
       notes: notes
     }
   end
