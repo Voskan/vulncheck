@@ -221,11 +221,12 @@ defmodule VulnCheck.Semver do
   defp commit_id?(value), do: Regex.match?(~r/\A[0-9a-f]{12,64}\z/, value)
 
   @doc """
-  Evaluates whether a git dependency is confirmed or uncertainly affected by an
-  advisory. Without git commit history, a git dependency is never marked
-  unaffected solely by commit or version comparison.
+  Evaluates whether a git dependency is confirmed, unaffected, or uncertainly
+  affected by an advisory. Without git commit history, a git dependency is
+  only marked `:unaffected` when the upstream repository identity is confirmed
+  and a non-commit SemVer tag lies outside the advisory's numbered ranges.
   """
-  @spec git_affected?(Package.t(), Advisory.t()) :: :confirmed | :uncertain
+  @spec git_affected?(Package.t(), Advisory.t()) :: :confirmed | :uncertain | :unaffected
   def git_affected?(%Package{source: :git} = package, %Advisory{} = advisory) do
     pkg_repo = GitUrl.repo_slug(package.git_url)
 
@@ -238,12 +239,27 @@ defmodule VulnCheck.Semver do
           same_commit?(package.git_ref, r.last_affected)
       end)
 
-    semver_hit? =
-      identity_ok? and valid?(package.version) and
-        (advisory.version_ranges != [] or advisory.affected_versions != []) and
-        affected?(package.version, advisory.version_ranges, advisory.affected_versions)
+    tag? =
+      valid?(package.version) and not commit_id?(String.downcase(String.trim(package.version)))
 
-    if commit_hit? or semver_hit?, do: :confirmed, else: :uncertain
+    has_numbered? = advisory.version_ranges != [] or advisory.affected_versions != []
+
+    cond do
+      commit_hit? ->
+        :confirmed
+
+      identity_ok? and tag? and has_numbered? ->
+        if affected?(package.version, advisory.version_ranges, advisory.affected_versions) do
+          :confirmed
+        else
+          if advisory.git_repos != [] and advisory.git_ranges == [],
+            do: :unaffected,
+            else: :uncertain
+        end
+
+      true ->
+        :uncertain
+    end
   end
 
   @doc """

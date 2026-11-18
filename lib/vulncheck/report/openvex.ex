@@ -117,6 +117,10 @@ defmodule VulnCheck.Report.OpenVEX do
   def status(%Finding{verdict: :potentially_reachable} = f),
     do: %{"status" => "under_investigation", "status_notes" => impact(f)}
 
+  def status(%Finding{verdict: :unreachable, reason: reason, git_match_status: :uncertain} = f)
+      when reason not in @not_in_execute_path,
+      do: %{"status" => "under_investigation", "status_notes" => impact(f)}
+
   def status(%Finding{verdict: :unreachable, reason: :otp_version_unaffected} = f),
     do: %{"status" => "not_affected", "impact_statement" => impact(f)}
 

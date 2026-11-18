@@ -96,6 +96,7 @@ defmodule VulnCheck.Report.JSON do
     |> put_optional("cvss_vector", f.cvss_vector)
     |> put_optional("cvss_method", f.cvss_method)
     |> put_optional("cvss_source", f.cvss_source)
+    |> put_optional("git_match_status", f.git_match_status && Atom.to_string(f.git_match_status))
     |> put_optional("package_identity", Diff.package_identity(workspace, f.package))
   end
 

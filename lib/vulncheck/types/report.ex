@@ -93,7 +93,8 @@ defmodule VulnCheck.Types.Finding do
     suppression_reason: nil,
     suppression_expired: false,
     suppression_expires: nil,
-    package_scope: :prod
+    package_scope: :prod,
+    git_match_status: nil
   ]
 
   @type t :: %__MODULE__{
@@ -122,7 +123,8 @@ defmodule VulnCheck.Types.Finding do
           suppression_reason: String.t() | nil,
           suppression_expired: boolean(),
           suppression_expires: String.t() | nil,
-          package_scope: :prod | :build_only | :non_prod
+          package_scope: :prod | :build_only | :non_prod,
+          git_match_status: :confirmed | :uncertain | nil
         }
 
   @verdicts [:reachable, :potentially_reachable, :retired, :unreachable]

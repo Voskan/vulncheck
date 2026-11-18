@@ -801,5 +801,123 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
 
       assert Enum.any?(res_obs.warnings, &(&1 =~ "git dependency"))
     end
+
+    test "upstream tag outside Hex range is unaffected, offline CNA git-only records are matched, and JSON/OpenVEX preserve git_match_status" do
+      config = config()
+
+      hex_with_repo = %{
+        "id" => "EEF-CVE-2026-99010",
+        "aliases" => ["CVE-2026-99010"],
+        "summary" => "Hex advisory with upstream repo",
+        "affected" => [
+          %{
+            "package" => %{"ecosystem" => "Hex", "name" => "demo_git"},
+            "ranges" => [
+              %{"type" => "SEMVER", "events" => [%{"introduced" => "1.0.0"}, %{"fixed" => "1.2.0"}]}
+            ]
+          }
+        ]
+      }
+
+      :ok =
+        Cache.atomic_write(
+          Path.join(Cache.feeds_dir(config), "osv_hex_all.zip"),
+          Feeds.zip([hex_with_repo])
+        )
+
+      cna_git_only = %{
+        "cveMetadata" => %{"cveId" => "CVE-2026-99099"},
+        "containers" => %{
+          "cna" => %{
+            "descriptions" => [%{"value" => "Git-only CNA advisory"}],
+            "affected" => [
+              %{
+                "collectionURL" => "https://github.com",
+                "packageName" => "o/demo_git",
+                "defaultStatus" => "unaffected",
+                "programRoutines" => [%{"name" => "'Elixir.DemoGit':run/1"}],
+                "versions" => [
+                  %{
+                    "version" => "0",
+                    "lessThan" => "deadbeef1234",
+                    "status" => "affected",
+                    "versionType" => "git"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+
+      :ok =
+        Cache.atomic_write(
+          Path.join(Cache.feeds_dir(config), "cves/CVE-2026-99099.json"),
+          JSON.encode!(cna_git_only)
+        )
+
+      ws = %Workspace{
+        root_dir: "/tmp/git-cna",
+        project_name: "demo",
+        project_type: :mix,
+        env: :prod,
+        otp_release: "27",
+        packages: %{
+          "demo_git" => %Package{
+            name: "demo_git",
+            version: "1.5.0",
+            source: :git,
+            scope: :prod,
+            git_url: "https://github.com/o/demo_git.git",
+            git_ref: "cafebabe0000"
+          }
+        }
+      }
+
+      atoms_before = :erlang.system_info(:atom_count)
+      assert {:ok, res} = Store.load(ws, %{config | offline: true}, enrich: false, retired: false)
+      assert :erlang.system_info(:atom_count) == atoms_before
+
+      assert [cna_adv] = Enum.filter(res.advisories, &(&1.id == "CVE-2026-99099"))
+      assert cna_adv.git_match_status == :uncertain
+      assert cna_adv.affected_routines == [MFA.new("Elixir.DemoGit", "run", 1)]
+      assert res.stats.feed.sources == %{git: 1}
+
+      # Confirmed upstream tag outside SemVer range when git_repos matches
+      upstream_adv = %Advisory{
+        id: "EEF-CVE-2026-99010",
+        package: "demo_git",
+        git_repos: ["o/demo_git"],
+        version_ranges: [%VulnCheck.Types.VersionRange{introduced: "1.0.0", fixed: "1.2.0"}]
+      }
+
+      assert VulnCheck.Semver.git_affected?(ws.packages["demo_git"], upstream_adv) == :unaffected
+
+      # JSON & OpenVEX preserve git_match_status
+      finding = %Finding{
+        advisory_id: "CVE-2026-99099",
+        package: "demo_git",
+        installed_version: "1.5.0",
+        severity: :high,
+        verdict: :potentially_reachable,
+        reason: :unresolved_dynamic_dispatch,
+        git_match_status: :uncertain
+      }
+
+      report = %ScanReport{
+        tool_version: "1.0.0",
+        generated_at: "2026-11-18T00:00:00Z",
+        workspace: ws,
+        findings: [finding],
+        stats: %{feed: res.stats.feed}
+      }
+
+      json = report |> VulnCheck.Report.JSON.render(config) |> JSON.decode!()
+      assert hd(json["findings"])["git_match_status"] == "uncertain"
+      assert json["feed"]["sources"] == %{"git" => 1}
+
+      vex = report |> VulnCheck.Report.OpenVEX.render(config) |> JSON.decode!()
+      assert hd(vex["statements"])["status"] == "under_investigation"
+    end
   end
 end

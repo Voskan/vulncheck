@@ -842,7 +842,8 @@ defmodule VulnCheck.Solver do
       target_mfa: target,
       trace: trace,
       fingerprint: Finding.fingerprint(advisory.id, package.name, verdict, target),
-      package_scope: package.scope
+      package_scope: package.scope,
+      git_match_status: advisory.git_match_status
     }
   end
 end

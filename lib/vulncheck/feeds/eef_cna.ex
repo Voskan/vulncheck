@@ -127,6 +127,79 @@ defmodule VulnCheck.Feeds.EefCna do
   end
 
   @doc """
+  Scans cached CVE 5.1 records for git-only products matching any `:git`
+  dependency's normalized `owner/repo` slug. Atom-safe (no `String.to_atom/1`).
+  """
+  @spec offline_git_advisories(VulnCheck.Types.Workspace.t(), Config.t()) :: [Advisory.t()]
+  def offline_git_advisories(workspace, %Config{} = config) do
+    git_packages =
+      workspace.packages
+      |> Map.values()
+      |> Enum.filter(&(&1.source == :git))
+
+    slug_to_packages =
+      Enum.reduce(git_packages, %{}, fn pkg, acc ->
+        case GitUrl.repo_slug(pkg.git_url) do
+          nil -> acc
+          slug -> Map.update(acc, slug, [pkg], &[pkg | &1])
+        end
+      end)
+
+    if map_size(slug_to_packages) == 0 do
+      []
+    else
+      config
+      |> Cache.list_feed_files()
+      |> Enum.filter(&(String.starts_with?(&1, "cves/") and String.ends_with?(&1, ".json")))
+      |> Enum.flat_map(fn rel ->
+        with {:ok, body} <- Cache.read_feed(config, rel),
+             {:ok, %{"cveMetadata" => %{"cveId" => cve_id}, "containers" => %{"cna" => cna}} = rec} <-
+               JSON.decode(body) do
+          match_git_cve(cve_id, cna, rec, slug_to_packages)
+        else
+          _ -> []
+        end
+      end)
+    end
+  end
+
+  defp match_git_cve(cve_id, cna, record, slug_to_packages) do
+    affected = list(cna, "affected")
+
+    Enum.flat_map(slug_to_packages, fn {slug, pkgs} ->
+      if Enum.any?(affected, &matches_targets?(&1, [slug])) do
+        Enum.map(pkgs, fn pkg ->
+          base = %Advisory{
+            id: cve_id,
+            aliases: [],
+            package: pkg.name,
+            source_package: slug,
+            checked_version: pkg.version,
+            summary: first_description(cna),
+            git_repos: [slug]
+          }
+
+          enriched = apply_record(base, record)
+          status = Semver.git_affected?(pkg, enriched)
+          %{enriched | git_match_status: status}
+        end)
+      else
+        []
+      end
+    end)
+    |> Enum.reject(&(&1.git_match_status == :unaffected))
+  end
+
+  defp first_description(cna) do
+    cna
+    |> list("descriptions")
+    |> Enum.find_value("", fn
+      %{"value" => v} when is_binary(v) -> v
+      _ -> nil
+    end)
+  end
+
+  @doc """
   Applies a decoded CVE 5.1 record to an advisory: `programRoutines`,
   `modules`, CVSS metrics, CWE identifiers, OTP constraints and (when the OSV
   record had none) version ranges.

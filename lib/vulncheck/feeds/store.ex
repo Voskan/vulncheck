@@ -53,7 +53,8 @@ defmodule VulnCheck.Feeds.Store do
          {:ok, all, feed_status, meta} <- load_osv(config, opts) do
       matched = match(OSV.index(all), workspace)
       {enriched, enrich_warnings} = enrich(matched, config, opts)
-      advisories = Enum.map(enriched, &text_fallback/1)
+      cna_git = merge_cna_git(enriched, EefCna.offline_git_advisories(workspace, config))
+      advisories = Enum.map(enriched ++ cna_git, &text_fallback/1)
 
       {retired, retired_warnings} =
         if Keyword.get(opts, :retired, config.check_retired),
@@ -70,9 +71,9 @@ defmodule VulnCheck.Feeds.Store do
              retired_warnings ++ HexRetired.hygiene(workspace),
          stats: %{
            feed_status: feed_status,
-           feed: feed_info(feed_status, meta, config),
+           feed: Map.put(feed_info(feed_status, meta, config), :sources, source_counts(workspace)),
            feed_advisories: length(all),
-           matched_advisories: length(matched),
+           matched_advisories: length(matched) + length(cna_git),
            enriched_advisories: Enum.count(advisories, & &1.enriched),
            advisories_with_routines: Enum.count(advisories, &(&1.affected_routines != [])),
            retired_releases: length(retired),
@@ -136,9 +137,25 @@ defmodule VulnCheck.Feeds.Store do
         keys
         |> Enum.flat_map(&Map.get(index, &1, []))
         |> Enum.uniq_by(& &1.id)
-        |> Enum.map(fn advisory ->
-          bind_package(advisory, package, Semver.git_affected?(package, advisory))
+        |> Enum.flat_map(fn advisory ->
+          case Semver.git_affected?(package, advisory) do
+            :unaffected -> []
+            status -> [bind_package(advisory, package, status)]
+          end
         end)
+    end)
+  end
+
+  defp merge_cna_git(existing, cna_git) do
+    seen =
+      existing
+      |> Enum.flat_map(fn adv ->
+        for id <- [adv.id | adv.aliases], do: {adv.package, id}
+      end)
+      |> MapSet.new()
+
+    Enum.reject(cna_git, fn adv ->
+      Enum.any?([adv.id | adv.aliases], &MapSet.member?(seen, {adv.package, &1}))
     end)
   end
 
