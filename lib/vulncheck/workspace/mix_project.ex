@@ -12,7 +12,7 @@ defmodule VulnCheck.Workspace.MixProject do
   alias VulnCheck.Literal
 
   defmodule Dep do
-    @moduledoc false
+    @moduledoc "A dependency declared in `mix.exs`."
     @enforce_keys [:name]
     defstruct [
       :name,

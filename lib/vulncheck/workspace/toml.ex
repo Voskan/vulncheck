@@ -291,5 +291,6 @@ defmodule VulnCheck.Workspace.Toml do
 
   defp skip_ws_and_comments(rest), do: rest
 
+  @spec fail(String.t()) :: no_return()
   defp fail(message), do: throw({:toml_error, message})
 end

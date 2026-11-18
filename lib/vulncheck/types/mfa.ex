@@ -41,10 +41,11 @@ defmodule VulnCheck.Types.MFA do
 
   Supported notations:
 
-    * `'Elixir.Plug.Conn.Query':decode/4`
-    * `hex_http_httpc:http_options/2` and `'cow_http_hd':parse/1`
-    * `Ash.Actions.Aggregate.run/4`
-    * `:cow_http_hd.parse/1`
+      'Elixir.Plug.Conn.Query':decode/4
+      hex_http_httpc:http_options/2
+      'cow_http_hd':parse/1
+      Ash.Actions.Aggregate.run/4
+      :cow_http_hd.parse/1
 
   Returns `:error` when the string has no explicit arity or is malformed.
   No atoms are created.

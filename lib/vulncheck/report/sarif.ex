@@ -59,7 +59,7 @@ defmodule VulnCheck.Report.SARIF do
 
   defp rule(%Finding{} = f) do
     title = Formatter.display_id(f)
-    summary = if f.summary in [nil, ""], do: "#{title} in #{f.package}", else: f.summary
+    summary = if f.summary == "", do: "#{title} in #{f.package}", else: f.summary
 
     %{
       "id" => f.advisory_id,
@@ -144,7 +144,7 @@ defmodule VulnCheck.Report.SARIF do
     target = if f.target_mfa, do: " through #{Formatter.mfa(f.target_mfa)}", else: ""
     fix = Formatter.fix_text(f)
     fix = if fix, do: " Fix: upgrade to #{fix}.", else: ""
-    detail = if f.reason_detail in [nil, ""], do: "", else: " #{f.reason_detail}."
+    detail = if f.reason_detail == "", do: "", else: " #{f.reason_detail}."
 
     "#{Formatter.display_id(f)} in #{f.package} #{f.installed_version} #{verdict}#{target} " <>
       "(#{Formatter.reason_label(f.reason)}).#{detail}#{fix}"

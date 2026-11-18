@@ -43,13 +43,16 @@ defmodule VulnCheck.Workspace do
   """
   @spec closure(%{String.t() => Package.t()}, [String.t()]) :: MapSet.t(String.t())
   def closure(packages, roots) do
-    do_closure(packages, Enum.filter(roots, &Map.has_key?(packages, &1)), MapSet.new())
+    packages
+    |> do_closure(Enum.filter(roots, &Map.has_key?(packages, &1)), %{})
+    |> Map.keys()
+    |> MapSet.new()
   end
 
   defp do_closure(_packages, [], seen), do: seen
 
   defp do_closure(packages, [name | rest], seen) do
-    if MapSet.member?(seen, name) do
+    if Map.has_key?(seen, name) do
       do_closure(packages, rest, seen)
     else
       deps =
@@ -58,7 +61,7 @@ defmodule VulnCheck.Workspace do
         |> Map.get(:deps)
         |> Enum.filter(&Map.has_key?(packages, &1))
 
-      do_closure(packages, deps ++ rest, MapSet.put(seen, name))
+      do_closure(packages, deps ++ rest, Map.put(seen, name, true))
     end
   end
 

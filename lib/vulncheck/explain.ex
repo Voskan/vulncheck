@@ -132,7 +132,7 @@ defmodule VulnCheck.Explain do
 
   defp card(%Advisory{} = a) do
     title = Advisory.cve_id(a) || a.id
-    summary = if a.summary in [nil, ""], do: "", else: " — " <> a.summary
+    summary = if a.summary == "", do: "", else: " — " <> a.summary
 
     severity =
       [
@@ -169,7 +169,7 @@ defmodule VulnCheck.Explain do
       end
 
     details =
-      case String.trim(a.details || "") do
+      case String.trim(a.details) do
         "" -> []
         text -> ["Details:" | text |> String.split("\n") |> Enum.map(&("  " <> &1))]
       end

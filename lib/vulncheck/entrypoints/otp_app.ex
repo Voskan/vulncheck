@@ -62,13 +62,13 @@ defmodule VulnCheck.Entrypoints.OtpApp do
   end
 
   defp walk(roots, root_files, by_app) do
-    walk(roots, root_files, by_app, MapSet.new(), %{})
+    walk(roots, root_files, by_app, %{}, %{})
   end
 
-  defp walk([], _root_files, _by_app, seen, files), do: {MapSet.to_list(seen), files}
+  defp walk([], _root_files, _by_app, seen, files), do: {Map.keys(seen), files}
 
   defp walk([app | rest], root_files, by_app, seen, files) do
-    if MapSet.member?(seen, app) do
+    if Map.has_key?(seen, app) do
       walk(rest, root_files, by_app, seen, files)
     else
       file =
@@ -77,7 +77,7 @@ defmodule VulnCheck.Entrypoints.OtpApp do
           :error -> package_app_file(Map.get(by_app, app), app)
         end
 
-      seen = MapSet.put(seen, app)
+      seen = Map.put(seen, app, true)
 
       case file do
         %AppFile{} = file ->

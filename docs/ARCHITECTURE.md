@@ -32,7 +32,7 @@ Standard OSV Hex exports omit function-level symbols (`ecosystem_specific` is `n
    - Matched in memory against locked package versions in milliseconds.
 2. **EEF CNA CVE 5.1 Enricher (`https://cna.erlef.org/cves/<CVE-ID>.json`, fallback `https://cveawg.mitre.org/api/cve/<CVE-ID>`):**
    - Fetched **only** for advisories whose package and version range match the target project's lockfile.
-   - Extracts `containers.cna.affected[].programRoutines` (normalized from Erlang MFA strings like `'Elixir.Plug.Conn.Query':decode/4` or `hex_http_httpc:http_options/2` into `{module_atom_or_name, function_name, arity}`), `modules`, `programFiles`, CVSS v3.1/v4.0 vectors, CWE identifiers, and OTP version constraints.
+   - Extracts `containers.cna.affected[].programRoutines` (normalized from Erlang MFA strings like <code>'Elixir.Plug.Conn.Query':decode/4</code> or `hex_http_httpc:http_options/2` into `{module_atom_or_name, function_name, arity}`), `modules`, `programFiles`, CVSS v3.1/v4.0 vectors, CWE identifiers, and OTP version constraints.
    - Cached immutably by `(cve_id, modified_timestamp)` on disk.
 3. **Hex.pm Package Retirement Metadata:**
    - Queries cached package retirement records to flag packages marked retired due to security or deprecation.
@@ -66,7 +66,7 @@ Before running graph reachability, `vulncheck` constructs synthetic edges repres
 1. **OTP Application Roots:** From each active production `.app` file's `{mod, {AppMod, _}}`, roots `AppMod.start/2` and traces child specifications (`Supervisor.init/2`, `child_spec/1`, `{ChildMod, opts}`).
 2. **Network Daemon Roots:** Active HTTP/gRPC/socket server applications in the production release closure (`:bandit`, `:cowboy`, `:ranch`, `:thousand_island`, `:grpc`) register their listener/protocol entrypoints automatically so transport-layer CVEs are never misclassified as unreachable.
 3. **Behaviour & Pipeline Wiring:**
-   - Links `Plug` pipelines (`Module.init/1` and `Module.call/2`), `Phoenix.Endpoint`, `Phoenix.Router`, `Phoenix.LiveView` (`mount/3`, `handle_params/3`, `handle_event/3`, `handle_info/2`), `GenServer`, `GenStage`, `Broadway`, and `Oban.Worker` (`perform/1`).
+   - Links `Plug` pipelines (`init/1` and `call/2` of every plug), `Phoenix.Endpoint`, `Phoenix.Router`, `Phoenix.LiveView` (`mount/3`, `handle_params/3`, `handle_event/3`, `handle_info/2`), `GenServer`, `GenStage`, `Broadway`, and `Oban.Worker` (`perform/1`).
    - Resolves consolidated Elixir protocols (`impl_for/1` dispatch targets across loaded structs).
 4. **Configured Adapter Resolution:** Inspects compiled application environment configuration (`config.exs` / `sys.config` / module attributes) for adapter-driven libraries (`Tesla`, `Swoosh`, `Ecto.Repo`, `Phoenix.PubSub`) to distinguish active adapters from dormant transitive dependencies.
 

@@ -337,5 +337,6 @@ defmodule VulnCheck.ErlTerm do
 
   defp skip_ws(rest), do: rest
 
+  @spec fail(String.t()) :: no_return()
   defp fail(message), do: throw({:parse_error, message})
 end

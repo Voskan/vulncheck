@@ -90,9 +90,9 @@ defmodule VulnCheck.Report.GitHub do
 
     [
       "#{verdict_label(f.verdict)}: #{Formatter.reason_label(f.reason)}",
-      f.summary not in [nil, ""] && "Summary: #{f.summary}",
+      f.summary != "" && "Summary: #{f.summary}",
       f.target_mfa && "Target: #{Formatter.mfa(f.target_mfa)}",
-      f.reason_detail not in [nil, ""] && "Reason: #{f.reason_detail}",
+      f.reason_detail != "" && "Reason: #{f.reason_detail}",
       fix && "Fix: upgrade #{f.package} to #{fix}"
     ]
     |> Enum.filter(&is_binary/1)

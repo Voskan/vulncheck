@@ -54,7 +54,7 @@ defmodule Mix.Tasks.Vulncheck do
   @impl Mix.Task
   def run(argv) do
     warn_missing_build(argv)
-    VulnCheck.Mix.exit_with(VulnCheck.CLI.run(argv))
+    VulnCheck.Mix.run(argv)
   end
 
   defp warn_missing_build(argv) do

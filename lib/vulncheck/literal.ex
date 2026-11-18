@@ -47,7 +47,7 @@ defmodule VulnCheck.Literal do
         {:ok, ast}
 
       {:error, {meta, message, token}} ->
-        line = if is_list(meta), do: Keyword.get(meta, :line, 0), else: meta
+        line = Keyword.get(meta, :line, 0)
         {:error, "#{file}:#{line}: syntax error: #{format_message(message)}#{token}"}
     end
   rescue
@@ -193,6 +193,7 @@ defmodule VulnCheck.Literal do
   defp convert_pair!({key, value}), do: {convert!(key), convert!(value)}
   defp convert_pair!(other), do: unsafe!([], other)
 
+  @spec unsafe!(keyword(), term()) :: no_return()
   defp unsafe!(meta, node) do
     throw({:unsafe, Keyword.get(meta, :line, 0), describe(node)})
   end

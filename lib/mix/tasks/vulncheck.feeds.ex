@@ -23,5 +23,5 @@ defmodule Mix.Tasks.Vulncheck.Feeds do
   @requirements ["app.config"]
 
   @impl Mix.Task
-  def run(argv), do: VulnCheck.Mix.exit_with(VulnCheck.CLI.run(["feeds" | argv]))
+  def run(argv), do: VulnCheck.Mix.run(["feeds" | argv])
 end

@@ -19,5 +19,5 @@ defmodule Mix.Tasks.Vulncheck.Explain do
   @requirements ["app.config"]
 
   @impl Mix.Task
-  def run(argv), do: VulnCheck.Mix.exit_with(VulnCheck.CLI.run(["explain" | argv]))
+  def run(argv), do: VulnCheck.Mix.run(["explain" | argv])
 end

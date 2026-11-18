@@ -14,5 +14,5 @@ defmodule Mix.Tasks.Vulncheck.Init do
   use Mix.Task
 
   @impl Mix.Task
-  def run(argv), do: VulnCheck.Mix.exit_with(VulnCheck.CLI.run(["init" | argv]))
+  def run(argv), do: VulnCheck.Mix.run(["init" | argv])
 end

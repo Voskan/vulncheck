@@ -202,7 +202,7 @@ defmodule VulnCheck.HTTP do
           flush(ref)
           {:error, {:body_too_large, max_body}}
         else
-          receive_loop(ref, max_body, deadline, headers, [acc | chunk], size)
+          receive_loop(ref, max_body, deadline, headers, [acc, chunk], size)
         end
 
       {:http, {^ref, :stream_end, raw_headers}} ->

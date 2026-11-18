@@ -3,7 +3,7 @@
 [![Hex.pm](https://img.shields.io/hexpm/v/vulncheck.svg)](https://hex.pm/packages/vulncheck)
 [![HexDocs](https://img.shields.io/badge/hex-docs-purple.svg)](https://hexdocs.pm/vulncheck)
 [![CI](https://github.com/Voskan/vulncheck/actions/workflows/ci.yml/badge.svg)](https://github.com/Voskan/vulncheck/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Voskan/vulncheck/blob/main/LICENSE)
 [![Zero Runtime Deps](https://img.shields.io/badge/runtime%20deps-0-brightgreen.svg)](#design-highlights)
 
 **Function-level reachability vulnerability scanner for Elixir, Erlang, and Gleam (`govulncheck` for the BEAM).**
@@ -19,7 +19,7 @@ Between 2024 and 2026, annual Hex security advisories grew nearly **80x** (from 
 Traditional lockfile scanners suffer from two structural limitations:
 
 1. **Package-Level Alert Fatigue:** Tools that only compare `mix.lock` versions flag an entire dependency even when the CVE affects a single optional parser, unused HTTP adapter, aggregate helper, or an older OTP runtime.
-2. **Unused Official Symbol Data:** EEF CNA CVE 5.1 advisories explicitly publish affected MFA symbols under `programRoutines` (for example, `'Elixir.Plug.Conn.Query':decode/4` or `'Elixir.Ash.Actions.Aggregate':run/4`), yet existing BEAM audit tools ignore symbol-level metadata altogether.
+2. **Unused Official Symbol Data:** EEF CNA CVE 5.1 advisories explicitly publish affected MFA symbols under `programRoutines` (for example, <code>'Elixir.Plug.Conn.Query':decode/4</code> or <code>'Elixir.Ash.Actions.Aggregate':run/4</code>), yet existing BEAM audit tools ignore symbol-level metadata altogether.
 
 At the same time, **a naive static call graph is unsafe on the BEAM**: HTTP servers (`Bandit`, `:cowboy`), `Plug` pipelines, `GenServer` / `Oban` callbacks, and runtime-configured HTTP adapters (`Tesla`, `Swoosh`, `Finch`) are wired via OTP supervision specs, expanded macros, and `Application` environment terms rather than direct `main()` calls. `vulncheck` models BEAM execution semantics soundly so network-exposed daemons and dynamic dispatches are never silently dismissed.
 
@@ -170,4 +170,4 @@ jobs:
 
 ## License
 
-Released under the [MIT License](LICENSE). Copyright (c) 2026 Voskan Voskanyan.
+Released under the [MIT License](https://github.com/Voskan/vulncheck/blob/main/LICENSE). Copyright (c) 2026 Voskan Voskanyan.
