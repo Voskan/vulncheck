@@ -60,7 +60,7 @@
 | `require_ignore_reason` | boolean | `true` | Suppressions without a `reason` are rejected. |
 | `require_ignore_expiry` | boolean | `false` | Suppressions without an `expires` date are rejected. |
 | `forbid_new_suppressions` | boolean | `false` | Fail when the ignore file gains or extends suppressions compared with `diff`. |
-| `diff` | string \| `nil` | `nil` | Git ref; only findings related to dependencies changed since it are reported. |
+| `diff` | string \| `nil` | `nil` | Git ref. Keep findings related to changed packages or files and retain active findings whose prior state is unknown. |
 | `baseline` | string \| `nil` | `nil` | JSON baseline whose findings are hidden. |
 | `cache_dir` | string \| `nil` | `$XDG_CACHE_HOME/vulncheck` or `~/.cache/vulncheck` | Feed and `.beam` summary cache. |
 | `cache_ttl_seconds` | non-negative integer | `3600` | Age after which cached feeds are refreshed. |
@@ -87,6 +87,8 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 - **Expired Suppressions Fail Loudly:** Once `Date.utc_today()` passes `expires`, the suppression becomes inactive and `vulncheck` reports an expired-exception warning alongside the finding.
 - **Stale Entries Are Reported:** A suppression that no longer matches any finding produces a warning, so the file does not accumulate dead exceptions.
 - **Anti-Cheat PR Guardrail (`--forbid-new-suppressions`):** Together with `--diff <ref>`, compares `.vulncheck.ignore` with its version at the base ref (e.g., `origin/main`) and fails with exit code `1` when a change adds a suppression or moves an existing expiry date later.
+- A package-specific rule takes precedence over a global rule for the same finding. Conflicting rules at the same scope leave the finding active and report a policy violation.
+- A baseline can hide a finding when the earlier observation matches its locked package identity, version, scope and suppression state and had at least its current severity. Prefer refreshing baselines via `--write-baseline` when an older baseline lacks these fields.
 
 ---
 
@@ -119,9 +121,9 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 | `--[no-]fail-on-retired` | Fail on retired Hex releases (default: on). |
 | `--no-retired` | Skip the Hex retirement check. |
 | `--show-unreachable` | Detail unreachable advisories. |
-| `--diff REF` | Only report findings related to dependencies changed since the Git ref. |
+| `--diff REF` | Show changes since the Git ref while retaining active findings with no baseline evidence. |
 | `--baseline FILE` | Hide findings recorded in a JSON baseline. |
-| `--write-baseline FILE` | Record the current findings as a baseline. |
+| `--write-baseline FILE` | Record the complete scan as a baseline before display filters. |
 | `--forbid-new-suppressions` | Fail when `.vulncheck.ignore` gains or extends suppressions since `--diff`. |
 | `--ignore-file FILE` | Suppression file (default: `.vulncheck.ignore`). |
 | `--otp-version VER` | OTP release the project runs on (default: the running VM's). |

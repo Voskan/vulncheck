@@ -637,7 +637,7 @@ defmodule VulnCheck.CLI do
       --[no-]fail-on-retired      fail on retired Hex releases (default: on)
       --no-retired                skip the Hex retirement check
       --show-unreachable          detail unreachable advisories
-      --diff REF                  only report findings related to changes since REF
+      --diff REF                  show changes since REF and retain active findings without baseline evidence
       --baseline FILE             hide findings recorded in a JSON baseline
       --write-baseline FILE       record the current findings as a baseline
       --forbid-new-suppressions   fail when .vulncheck.ignore gains entries since --diff

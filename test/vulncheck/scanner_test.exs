@@ -197,9 +197,15 @@ defmodule VulnCheck.ScannerTest do
 
     assert File.exists?(baseline)
 
-    assert {:ok, again} = VulnCheck.scan(%{config | write_baseline: nil, baseline: baseline}, opts)
-    assert again.findings == []
-    assert "2 finding(s) already present in the baseline" in again.warnings
+    next_baseline = Path.join(Path.dirname(baseline), "next.json")
+
+    assert {:ok, again} =
+             VulnCheck.scan(%{config | write_baseline: next_baseline, baseline: baseline}, opts)
+
+    assert [%{suppression_expired: true}] = again.findings
+    assert again.all_findings == with_ignore.findings
+    assert "1 finding(s) already present in the baseline" in again.warnings
+    assert {:ok, [_, _]} = VulnCheck.Diff.read_baseline(next_baseline)
     refute VulnCheck.should_fail?(report, %Config{})
 
     empty = Tmp.mkdir!("scan-empty")

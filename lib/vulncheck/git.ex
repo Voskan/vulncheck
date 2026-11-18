@@ -33,12 +33,13 @@ defmodule VulnCheck.Git do
   def changed_files(root, ref) do
     with :ok <- check_ref(root, ref),
          {:ok, prefix} <- run(root, ["rev-parse", "--show-prefix"]),
-         {:ok, diff} <- run(root, ["diff", "--name-only", ref, "--", "."]),
-         {:ok, untracked} <- run(root, ["ls-files", "--others", "--exclude-standard", "--", "."]) do
-      prefix = String.trim(prefix)
+         {:ok, diff} <- run(root, ["diff", "--name-only", "-z", ref, "--", "."]),
+         {:ok, untracked} <-
+           run(root, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."]) do
+      prefix = String.trim_trailing(prefix, "\n")
 
       files =
-        (lines(diff) |> Enum.map(&String.replace_prefix(&1, prefix, ""))) ++ lines(untracked)
+        (paths(diff) |> Enum.map(&String.replace_prefix(&1, prefix, ""))) ++ paths(untracked)
 
       {:ok, files |> Enum.uniq() |> Enum.sort()}
     end
@@ -81,5 +82,5 @@ defmodule VulnCheck.Git do
     error -> {:error, Exception.message(error)}
   end
 
-  defp lines(output), do: output |> String.split("\n", trim: true) |> Enum.map(&String.trim/1)
+  defp paths(output), do: :binary.split(output, <<0>>, [:global, :trim_all])
 end

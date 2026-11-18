@@ -137,6 +137,22 @@ defmodule VulnCheck.IgnoreAndDiffTest do
       assert f.suppressed
     end
 
+    test "specific rules and conflicting aliases are evaluated independently of order" do
+      f = finding("A", "plug", :reachable, aliases: ["B"])
+      broad = %Ignore.Rule{id: "A", reason: "general"}
+      specific = %Ignore.Rule{id: "B", package: "plug", expires: ~D[2025-01-01], reason: "specific"}
+
+      for rules <- [[broad, specific], [specific, broad]] do
+        assert {[%Finding{suppressed: false, suppression_expired: true}], [_], []} =
+                 Ignore.apply_rules([f], rules, @today)
+      end
+
+      competing = %{broad | package: "plug"}
+
+      assert {[%Finding{suppressed: false}], ["conflicting suppressions for A (plug)"], []} =
+               Ignore.apply_rules([f], [specific, competing], @today)
+    end
+
     test "package-scoped rules only match that package", %{config: config} do
       rules = [%Ignore.Rule{id: "X", package: "plug", reason: "r"}]
       {[f], [], [warning]} = Ignore.apply_rules([finding("X", "ash", :reachable)], rules, @today)
@@ -200,7 +216,7 @@ defmodule VulnCheck.IgnoreAndDiffTest do
       assert violation =~ "cannot verify suppressions"
     end
 
-    test "--diff keeps upgraded packages and findings through changed files", %{dir: dir} do
+    test "--diff keeps active findings without trusted prior evidence", %{dir: dir} do
       Tmp.write!(dir, "mix.lock", """
       %{
         "plug": {:hex, :plug, "1.16.2", "#{String.duplicate("a", 64)}", [:mix], [], "hexpm", "#{String.duplicate("b", 64)}"},
@@ -208,7 +224,10 @@ defmodule VulnCheck.IgnoreAndDiffTest do
       }
       """)
 
-      Tmp.write!(dir, "lib/web.ex", "defmodule Web do\nend\n")
+      path = "lib/web café.ex"
+      Tmp.write!(dir, path, "defmodule Web do\nend\n")
+      assert {:ok, files} = VulnCheck.Git.changed_files(dir, "HEAD")
+      assert path in files
 
       {:ok, packages} = VulnCheck.Workspace.MixLock.parse_file(Path.join(dir, "mix.lock"))
 
@@ -226,7 +245,7 @@ defmodule VulnCheck.IgnoreAndDiffTest do
 
       findings = [
         finding("A-1", "ash", :reachable),
-        finding("P-1", "plug", :reachable, trace: [hop.("lib/web.ex")]),
+        finding("P-1", "plug", :reachable, trace: [hop.(path)]),
         finding("P-2", "plug", :reachable, trace: [hop.("lib/shop.ex")]),
         finding("P-3", "plug", :unreachable)
       ]
@@ -234,16 +253,80 @@ defmodule VulnCheck.IgnoreAndDiffTest do
       config = %Config{project_dir: dir}
       {kept, [], [note]} = run_step(Diff.diff_step("HEAD"), findings, config, ws)
 
-      assert Enum.map(kept, & &1.advisory_id) == ["A-1", "P-1"]
-      assert note =~ "2 finding(s) unrelated to changes since HEAD hidden"
+      assert Enum.map(kept, & &1.advisory_id) == ["A-1", "P-1", "P-2"]
+      assert note =~ "1 finding(s) unrelated to changes since HEAD hidden"
 
       {all, [], [warning]} = run_step(Diff.diff_step("missing-ref"), findings, config, ws)
       assert length(all) == 4
       assert warning =~ "diff against missing-ref ignored"
     end
+
+    test "a permanent suppression is unchanged when recorded in the base", %{dir: dir} do
+      Tmp.write!(dir, ".vulncheck.ignore", "[%{id: \"A\", reason: \"accepted\"}]")
+      git!(dir, ["commit", "-qam", "accept permanent suppression"])
+      config = %Config{project_dir: dir, forbid_new_suppressions: true, diff: "HEAD"}
+      assert {[], [], _} = run_step(Ignore.step(today: @today), [], config)
+    end
+
+    test "--diff detects a checksum replacement at the same version", %{dir: dir} do
+      lock = Path.join(dir, "mix.lock")
+      source = File.read!(lock)
+      {:ok, before} = VulnCheck.Workspace.MixLock.parse(source)
+      old = before["plug"].checksum
+      new = String.duplicate("c", 64)
+      File.write!(lock, String.replace(source, old, new))
+      {:ok, packages} = VulnCheck.Workspace.MixLock.parse_file(lock)
+
+      ws = %Workspace{
+        root_dir: dir,
+        project_name: "shop",
+        project_type: :mix,
+        env: :prod,
+        otp_release: "27",
+        lockfile: lock,
+        packages: packages
+      }
+
+      assert {:ok, changed} = Diff.changed_packages(ws, dir, "HEAD")
+      assert "plug" in changed
+      assert packages["plug"].version == before["plug"].version
+    end
   end
 
   describe "baselines" do
+    test "keeps changed locked identity, severity and suppression state" do
+      dir = Tmp.mkdir!("baseline-identity")
+      path = Path.join(dir, "baseline.json")
+
+      package = %VulnCheck.Types.Package{
+        name: "plug",
+        version: "1.0.0",
+        source: :hex,
+        scope: :prod,
+        checksum: "first"
+      }
+
+      ws = %Workspace{
+        root_dir: dir,
+        project_name: "shop",
+        project_type: :mix,
+        env: :prod,
+        otp_release: "27",
+        packages: %{"plug" => package}
+      }
+
+      original = finding("A", "plug", :potentially_reachable, severity: :low, suppressed: true)
+      :ok = Diff.write_baseline(%ScanReport{workspace: ws, findings: [original]}, path)
+      assert {:ok, entries} = Diff.read_baseline(path)
+      assert {[], [_]} = Diff.apply_baseline([original], entries, ws)
+      escalated = %{original | severity: :high}
+      active = %{original | suppressed: false}
+      changed = put_in(ws.packages["plug"].checksum, "second")
+      assert {[^escalated], []} = Diff.apply_baseline([escalated], entries, ws)
+      assert {[^active], []} = Diff.apply_baseline([active], entries, ws)
+      assert {[^original], []} = Diff.apply_baseline([original], entries, changed)
+    end
+
     test "hide known findings and report escalations" do
       dir = Tmp.mkdir!("baseline")
       path = Path.join(dir, "baseline.json")

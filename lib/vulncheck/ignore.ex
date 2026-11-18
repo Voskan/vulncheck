@@ -90,13 +90,16 @@ defmodule VulnCheck.Ignore do
   @spec apply_rules([Finding.t()], [Rule.t()], Date.t()) ::
           {[Finding.t()], [String.t()], [String.t()]}
   def apply_rules(findings, rules, %Date{} = today) do
-    {findings, used} =
-      Enum.map_reduce(findings, MapSet.new(), fn finding, used ->
-        case Enum.find(rules, &matches?(&1, finding)) do
-          nil ->
-            {finding, used}
+    {findings, {used, conflicts}} =
+      Enum.map_reduce(findings, {MapSet.new(), []}, fn finding, {used, conflicts} ->
+        matching = Enum.filter(rules, &matches?(&1, finding))
+        used = Enum.reduce(matching, used, &MapSet.put(&2, &1))
 
-          %Rule{} = rule ->
+        case preferred_rules(matching) do
+          [] ->
+            {finding, {used, conflicts}}
+
+          [%Rule{} = rule] ->
             expired? = rule.expires != nil and Date.compare(today, rule.expires) == :gt
 
             finding = %{
@@ -107,7 +110,11 @@ defmodule VulnCheck.Ignore do
                 suppression_expires: rule.expires && Date.to_iso8601(rule.expires)
             }
 
-            {finding, MapSet.put(used, rule)}
+            {finding, {used, conflicts}}
+
+          _conflicting ->
+            message = "conflicting suppressions for #{finding.advisory_id} (#{finding.package})"
+            {finding, {used, [message | conflicts]}}
         end
       end)
 
@@ -122,7 +129,13 @@ defmodule VulnCheck.Ignore do
         "suppression of #{rule.id}#{if rule.package, do: " (#{rule.package})"} matches no finding"
       end
 
-    {findings, violations, warnings}
+    {findings, Enum.uniq(violations ++ Enum.reverse(conflicts)), warnings}
+  end
+
+  defp preferred_rules(rules) do
+    specific = Enum.reject(rules, &is_nil(&1.package))
+    candidates = if specific == [], do: rules, else: specific
+    Enum.uniq_by(candidates, &{&1.reason, &1.expires})
   end
 
   @doc """
@@ -159,17 +172,23 @@ defmodule VulnCheck.Ignore do
 
     with {:ok, base} <- Git.default_base(root, config.diff),
          {:ok, base_rules} <- base_rules(root, base, relative, config) do
-      known = Map.new(base_rules, &{{&1.id, &1.package}, &1})
+      known = Enum.group_by(base_rules, &{&1.id, &1.package}, & &1.expires)
 
       Enum.flat_map(rules, fn %Rule{} = rule ->
         case Map.fetch(known, {rule.id, rule.package}) do
           :error ->
             ["new suppression of #{rule.id} added since #{base}"]
 
-          {:ok, old} ->
-            if extended?(old.expires, rule.expires),
-              do: ["suppression of #{rule.id} extended since #{base}"],
-              else: []
+          {:ok, expiries} ->
+            case Enum.uniq(expiries) do
+              [old] ->
+                if extended?(old, rule.expires),
+                  do: ["suppression of #{rule.id} extended since #{base}"],
+                  else: []
+
+              _ ->
+                ["conflicting base suppressions for #{rule.id} at #{base}"]
+            end
         end
       end)
     else
@@ -199,6 +218,7 @@ defmodule VulnCheck.Ignore do
     end
   end
 
+  defp extended?(nil, nil), do: false
   defp extended?(_old, nil), do: true
   defp extended?(nil, _new), do: false
   defp extended?(old, new), do: Date.compare(new, old) == :gt

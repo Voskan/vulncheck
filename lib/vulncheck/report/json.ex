@@ -10,6 +10,7 @@ defmodule VulnCheck.Report.JSON do
   @behaviour VulnCheck.Report.Formatter
 
   alias VulnCheck.Report.Formatter
+  alias VulnCheck.Diff
   alias VulnCheck.Types.{Finding, ScanReport, Summary, TraceHop, Workspace}
 
   @schema_version "1.0.0"
@@ -29,7 +30,7 @@ defmodule VulnCheck.Report.JSON do
       "duration_ms" => report.duration_ms,
       "target" => target(report.workspace),
       "summary" => summary(report.summary),
-      "findings" => Enum.map(report.findings, &finding/1),
+      "findings" => Enum.map(report.findings, &finding(&1, report.workspace)),
       "policy_violations" => report.policy_violations,
       "warnings" => report.warnings
     }
@@ -63,7 +64,7 @@ defmodule VulnCheck.Report.JSON do
     }
   end
 
-  defp finding(%Finding{} = f) do
+  defp finding(%Finding{} = f, workspace) do
     %{
       "advisory_id" => f.advisory_id,
       "aliases" => f.aliases,
@@ -92,6 +93,7 @@ defmodule VulnCheck.Report.JSON do
     |> put_optional("cvss_vector", f.cvss_vector)
     |> put_optional("cvss_method", f.cvss_method)
     |> put_optional("cvss_source", f.cvss_source)
+    |> put_optional("package_identity", Diff.package_identity(workspace, f.package))
   end
 
   defp put_optional(map, _key, nil), do: map

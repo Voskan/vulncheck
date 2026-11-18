@@ -45,14 +45,24 @@ defmodule VulnCheck.Scanner do
 
       context = %{workspace: workspace, config: config}
 
+      {all_findings, ignore_violations, ignore_warnings} =
+        if Keyword.get(opts, :ignore, true) do
+          Ignore.step(Keyword.take(opts, [:today])).(findings, context)
+        else
+          {findings, [], []}
+        end
+
       {findings, violations, post_warnings} =
         config
-        |> default_steps(opts)
+        |> filters()
         |> Kernel.++(Keyword.get(opts, :postprocess, []))
-        |> Enum.reduce({findings, [], []}, fn step, {findings, violations, warnings} ->
-          {findings, new_violations, new_warnings} = step.(findings, context)
-          {findings, violations ++ new_violations, warnings ++ new_warnings}
-        end)
+        |> Enum.reduce(
+          {all_findings, ignore_violations, ignore_warnings},
+          fn step, {findings, violations, warnings} ->
+            {findings, new_violations, new_warnings} = step.(findings, context)
+            {findings, violations ++ new_violations, warnings ++ new_warnings}
+          end
+        )
 
       findings = Solver.sort(findings)
 
@@ -62,6 +72,7 @@ defmodule VulnCheck.Scanner do
           generated_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
           tool_version: VulnCheck.version(),
           findings: findings,
+          all_findings: Solver.sort(all_findings),
           summary: Summary.from_findings(findings),
           policy_violations: violations,
           warnings:
@@ -89,13 +100,10 @@ defmodule VulnCheck.Scanner do
     end
   end
 
-  defp default_steps(config, opts) do
-    ignore =
-      if Keyword.get(opts, :ignore, true), do: [Ignore.step(Keyword.take(opts, [:today]))], else: []
-
+  defp filters(config) do
     baseline = if config.baseline, do: [Diff.baseline_step(config.baseline)], else: []
     diff = if config.diff, do: [Diff.diff_step(config.diff)], else: []
-    ignore ++ baseline ++ diff
+    baseline ++ diff
   end
 
   defp write_baseline(report, %Config{write_baseline: nil}), do: {:ok, report}

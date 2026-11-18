@@ -29,7 +29,7 @@ defmodule Mix.Tasks.Vulncheck do
       `any` or `none`
     * `--min-severity SEV` — `low` (default), `medium`, `high`, `critical`
     * `--show-unreachable` — detail unreachable advisories
-    * `--diff REF` — only report findings related to changes since `REF`
+    * `--diff REF` — show changes since `REF` and retain active findings without baseline evidence
     * `--baseline FILE` / `--write-baseline FILE` — compare with or record
       a JSON baseline
     * `--forbid-new-suppressions` — fail when `.vulncheck.ignore` gains

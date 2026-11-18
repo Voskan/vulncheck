@@ -257,6 +257,7 @@ defmodule VulnCheck.Types.ScanReport do
   defstruct [
     :workspace,
     :generated_at,
+    :all_findings,
     tool_version: "",
     findings: [],
     summary: %Summary{},
@@ -269,6 +270,7 @@ defmodule VulnCheck.Types.ScanReport do
   @type t :: %__MODULE__{
           workspace: Workspace.t() | nil,
           generated_at: String.t() | nil,
+          all_findings: [Finding.t()] | nil,
           tool_version: String.t(),
           findings: [Finding.t()],
           summary: Summary.t(),
@@ -277,4 +279,8 @@ defmodule VulnCheck.Types.ScanReport do
           duration_ms: non_neg_integer(),
           stats: map()
         }
+
+  @doc "Findings before baseline, diff and presentation filters."
+  @spec complete_findings(t()) :: [Finding.t()]
+  def complete_findings(%__MODULE__{} = report), do: report.all_findings || report.findings
 end

@@ -22,7 +22,7 @@ inputs:
     description: "Minimum severity that fails the job: low, medium, high or critical."
     default: low
   diff:
-    description: Git ref; only findings related to dependencies changed since this ref are reported. Requires a checkout with history (fetch-depth 0).
+    description: Git ref for related changes. Active findings without baseline evidence are retained. Requires a checkout with history (fetch-depth 0).
     default: ""
   forbid-new-suppressions:
     description: Fail when .vulncheck.ignore gains or extends suppressions compared to the diff base.
