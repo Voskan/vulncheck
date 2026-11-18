@@ -283,6 +283,29 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
       assert EefCna.apply_record(advisory, %{}).enriched
     end
 
+    test "keeps the highest score of the merged records and the CVE record" do
+      v3 = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+
+      merged = %Advisory{
+        id: "EEF-CVE-2026-2",
+        aliases: ["CVE-2026-2", "GHSA-x"],
+        package: "bandit",
+        cvss_score: 7.5,
+        cvss_vector: v3,
+        severity: :high
+      }
+
+      higher = Feeds.cve_record("CVE-2026-2", "bandit", [], cvss: {9.1, "CVSS:3.1/higher"})
+      enriched = EefCna.apply_record(merged, higher)
+
+      assert {enriched.cvss_score, enriched.cvss_vector, enriched.severity} ==
+               {9.1, "CVSS:3.1/higher", :critical}
+
+      lower = Feeds.cve_record("CVE-2026-2", "bandit", [], cvss: {5.0, "CVSS:3.1/lower"})
+      kept = EefCna.apply_record(merged, lower)
+      assert {kept.cvss_score, kept.cvss_vector, kept.severity} == {7.5, v3, :high}
+    end
+
     test "advisories without a CVE id are not fetched" do
       advisory = %Advisory{id: "GHSA-only", package: "x"}
       assert {:ok, ^advisory} = EefCna.enrich(advisory, config(offline: true))

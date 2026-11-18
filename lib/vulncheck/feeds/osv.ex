@@ -5,11 +5,12 @@ defmodule VulnCheck.Feeds.OSV do
   The archive is downloaded through `VulnCheck.Cache` (ETag revalidation,
   offline support), unpacked in memory with size and entry-count limits, and
   every record is converted into one `VulnCheck.Types.Advisory` per affected
-  Hex package.
+  Hex package. Records of the same vulnerability (for example the EEF and
+  GitHub records of one CVE) are merged by `VulnCheck.Feeds.Merge`.
   """
 
   alias VulnCheck.{Cache, Config, Semver}
-  alias VulnCheck.Feeds.{CVSS, TextHints}
+  alias VulnCheck.Feeds.{CVSS, Merge, TextHints}
   alias VulnCheck.Types.{Advisory, MFA}
 
   @default_url "https://osv-vulnerabilities.storage.googleapis.com/Hex/all.zip"
@@ -58,6 +59,7 @@ defmodule VulnCheck.Feeds.OSV do
             _ -> []
           end
         end)
+        |> Merge.merge()
 
       {:ok, advisories}
     end

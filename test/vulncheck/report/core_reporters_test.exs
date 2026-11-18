@@ -183,7 +183,7 @@ defmodule VulnCheck.Report.CoreReportersTest do
                "Lockfile: 4 prod packages (1 dev/test excluded) · Scan time: 142 ms (cached)"
 
       assert output =~
-               "[REACHABLE] CVE-2026-101028 (HIGH · CVSS 7.5) — ash 3.34.2 (fix: >= 3.34.6)"
+               "[REACHABLE] CVE-2026-101028 (GHSA-xj24-8f5c-pp5p) (HIGH · CVSS 7.5) — ash 3.34.2 (fix: >= 3.34.6)"
 
       assert output =~ "  Target:  Ash.Actions.Aggregate.run/4"
 
@@ -260,7 +260,7 @@ defmodule VulnCheck.Report.CoreReportersTest do
       refute output =~ "[REACHABLE]"
 
       assert output =~
-               "Suppressed by .vulncheck.ignore (1):\n  • CVE-2026-101028 in ash 3.34.2 (fixed upstream, until 2027-01-01)"
+               "Suppressed by .vulncheck.ignore (1):\n  • CVE-2026-101028 (GHSA-xj24-8f5c-pp5p) in ash 3.34.2 (fixed upstream, until 2027-01-01)"
     end
 
     test "an empty report says so" do
@@ -364,7 +364,7 @@ defmodule VulnCheck.Report.CoreReportersTest do
       assert output =~ "| Metric | Count |\n| --- | ---: |\n| Reachable | 1 |"
       assert output =~ "| Noise reduction | 57% |"
       assert output =~ "### Reachable (1)"
-      assert output =~ "#### CVE-2026-101028 — `ash` 3.34.2"
+      assert output =~ "#### CVE-2026-101028 (GHSA-xj24-8f5c-pp5p) — `ash` 3.34.2"
       assert output =~ "- **Fix:** `>= 3.34.6`"
       assert output =~ "| # | Call | Location |\n| ---: | --- | --- |"
 

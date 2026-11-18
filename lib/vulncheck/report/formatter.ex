@@ -26,6 +26,21 @@ defmodule VulnCheck.Report.Formatter do
   @spec display_id(Finding.t()) :: String.t()
   def display_id(%Finding{} = finding), do: Finding.cve_id(finding) || finding.advisory_id
 
+  @doc """
+  Identifier with the other names of the vulnerability, for example
+  `CVE-2026-39804 (GHSA-frh3-6pv6-rc8j)`. Identifiers that only wrap the CVE
+  (such as `EEF-CVE-…`) are left out.
+  """
+  @spec title_id(Finding.t()) :: String.t()
+  def title_id(%Finding{advisory_id: id, aliases: aliases} = finding) do
+    shown = display_id(finding)
+
+    case Enum.reject(Enum.uniq([id | aliases]), &String.contains?(&1, shown)) do
+      [] -> shown
+      others -> "#{shown} (#{Enum.join(others, ", ")})"
+    end
+  end
+
   @doc "Upper-case severity label."
   @spec severity_label(Advisory.severity()) :: String.t()
   def severity_label(severity), do: severity |> Atom.to_string() |> String.upcase()

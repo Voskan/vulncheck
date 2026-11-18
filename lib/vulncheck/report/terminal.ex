@@ -107,12 +107,7 @@ defmodule VulnCheck.Report.Terminal do
       if(fix, do: " (fix: #{fix})", else: "")
   end
 
-  defp identifier(%Finding{advisory_id: id} = finding) do
-    case Finding.cve_id(finding) do
-      nil -> id
-      cve -> if String.contains?(id, cve), do: cve, else: "#{cve} (#{id})"
-    end
-  end
+  defp identifier(%Finding{} = finding), do: Formatter.title_id(finding)
 
   defp field(_name, value) when value in [nil, ""], do: nil
   defp field(name, value), do: String.pad_trailing("  #{name}:", 11) <> one_line(value)

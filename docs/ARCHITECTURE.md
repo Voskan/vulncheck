@@ -29,6 +29,7 @@ Standard OSV Hex exports omit function-level symbols (`ecosystem_specific` is `n
 
 1. **OSV.dev Hex Bulk Archive (`https://osv-vulnerabilities.storage.googleapis.com/Hex/all.zip`):**
    - Downloaded as a single compressed archive, size- and entry-limited before decompression, and revalidated with HTTP `ETag` / `If-None-Match` once the cache TTL expires.
+   - Records of the same vulnerability of a package (the EEF `EEF-CVE-*` and GitHub `GHSA-*` records of one CVE share the CVE alias) are merged into one advisory: canonical id `EEF-CVE-*`, then `CVE-*`, then `GHSA-*`; united version ranges, symbols and references; the highest CVSS score.
    - Matched in memory against locked package versions in milliseconds.
 2. **EEF CNA CVE 5.1 Enricher (`https://cna.erlef.org/cves/<CVE-ID>.json`, fallback `https://cveawg.mitre.org/api/cve/<CVE-ID>`):**
    - Fetched **only** for advisories whose package and version range match the target project's lockfile.

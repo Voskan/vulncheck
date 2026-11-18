@@ -122,6 +122,21 @@ defmodule VulnCheck.Types.Advisory do
   def severity_from_score(_score), do: :unknown
 
   @doc """
+  The more severe of two severities; `:unknown` loses to any known severity.
+
+      iex> VulnCheck.Types.Advisory.max_severity(:medium, :high)
+      :high
+      iex> VulnCheck.Types.Advisory.max_severity(:unknown, :low)
+      :low
+  """
+  @spec max_severity(severity(), severity()) :: severity()
+  def max_severity(a, b) do
+    if Enum.find_index(@severities, &(&1 == a)) <= Enum.find_index(@severities, &(&1 == b)),
+      do: a,
+      else: b
+  end
+
+  @doc """
   Parses a qualitative severity label (`"HIGH"`, `"moderate"`, ...) without
   creating atoms.
   """

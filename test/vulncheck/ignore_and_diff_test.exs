@@ -125,6 +125,18 @@ defmodule VulnCheck.IgnoreAndDiffTest do
              )
     end
 
+    test "a suppression written for the GitHub id matches the merged finding" do
+      rules = [%Ignore.Rule{id: "GHSA-frh3-6pv6-rc8j", package: "bandit", reason: "r"}]
+
+      merged =
+        finding("EEF-CVE-2026-39804", "bandit", :reachable,
+          aliases: ["CVE-2026-39804", "GHSA-frh3-6pv6-rc8j"]
+        )
+
+      {[f], [], []} = Ignore.apply_rules([merged], rules, @today)
+      assert f.suppressed
+    end
+
     test "package-scoped rules only match that package", %{config: config} do
       rules = [%Ignore.Rule{id: "X", package: "plug", reason: "r"}]
       {[f], [], [warning]} = Ignore.apply_rules([finding("X", "ash", :reachable)], rules, @today)
@@ -267,6 +279,36 @@ defmodule VulnCheck.IgnoreAndDiffTest do
 
       assert {:error, message} = Diff.read_baseline(Path.join(dir, "missing.json"))
       assert message =~ "no such file"
+    end
+
+    test "baselines recorded under an alias still match after the records were merged" do
+      dir = Tmp.mkdir!("baseline-alias")
+      path = Path.join(dir, "baseline.json")
+
+      old = [
+        finding("GHSA-frh3-6pv6-rc8j", "bandit", :potentially_reachable),
+        finding("GHSA-375f-4r2h-f99j", "bandit", :unreachable)
+      ]
+
+      :ok = Diff.write_baseline(%ScanReport{findings: old, tool_version: "1.0.0"}, path)
+
+      current = [
+        finding("EEF-CVE-2026-39804", "bandit", :potentially_reachable,
+          aliases: ["CVE-2026-39804", "GHSA-frh3-6pv6-rc8j"]
+        ),
+        finding("EEF-CVE-2026-39807", "bandit", :reachable,
+          aliases: ["CVE-2026-39807", "GHSA-375f-4r2h-f99j"]
+        )
+      ]
+
+      {kept, [], warnings} = run_step(Diff.baseline_step(path), current, %Config{project_dir: dir})
+
+      assert Enum.map(kept, & &1.advisory_id) == ["EEF-CVE-2026-39807"]
+
+      assert warnings == [
+               "EEF-CVE-2026-39807 (bandit) escalated from unreachable to reachable",
+               "1 finding(s) already present in the baseline"
+             ]
     end
   end
 end

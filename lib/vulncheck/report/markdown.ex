@@ -89,7 +89,7 @@ defmodule VulnCheck.Report.Markdown do
       |> Enum.reject(fn {_k, v} -> v in [nil, ""] end)
       |> Enum.map_join("\n", fn {k, v} -> "- **#{k}:** #{v}" end)
 
-    heading = "#### #{escape(Formatter.display_id(f))} — `#{f.package}` #{f.installed_version}"
+    heading = "#### #{escape(Formatter.title_id(f))} — `#{f.package}` #{f.installed_version}"
     Enum.reject([heading, facts, trace_table(f)], &is_nil/1) |> Enum.join("\n\n")
   end
 

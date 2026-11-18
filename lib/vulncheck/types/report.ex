@@ -131,6 +131,20 @@ defmodule VulnCheck.Types.Finding do
     :crypto.hash(:sha256, material) |> Base.encode16(case: :lower)
   end
 
+  @doc """
+  Fingerprints the finding would have under each of its identifiers. A
+  baseline recorded while the advisory was known by an alias (for example its
+  GitHub id before the records of one CVE were merged) still matches.
+  """
+  @spec fingerprints(t()) :: [String.t()]
+  def fingerprints(%__MODULE__{} = finding) do
+    alternatives =
+      for id <- Enum.uniq([finding.advisory_id | finding.aliases]),
+          do: fingerprint(id, finding.package, finding.verdict, finding.target_mfa)
+
+    Enum.uniq([finding.fingerprint | alternatives])
+  end
+
   @doc "Returns `true` when the finding is active (not suppressed by a valid ignore rule)."
   @spec active?(t()) :: boolean()
   def active?(%__MODULE__{suppressed: suppressed}), do: not suppressed

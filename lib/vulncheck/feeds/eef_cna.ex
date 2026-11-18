@@ -148,14 +148,15 @@ defmodule VulnCheck.Feeds.EefCna do
         advisory.version_ranges
       end
 
-    cvss_score = advisory.cvss_score || score
+    {cvss_score, cvss_vector} =
+      strongest({advisory.cvss_score, advisory.cvss_vector}, {score, vector})
 
-    severity =
-      cond do
-        advisory.severity != :unknown -> advisory.severity
-        cvss_score != nil -> Advisory.severity_from_score(cvss_score)
-        true -> Advisory.parse_severity(label)
-      end
+    record_severity =
+      if score != nil,
+        do: Advisory.severity_from_score(score),
+        else: Advisory.parse_severity(label)
+
+    severity = Advisory.max_severity(advisory.severity, record_severity)
 
     %{
       advisory
@@ -163,7 +164,7 @@ defmodule VulnCheck.Feeds.EefCna do
         affected_modules: Enum.uniq(advisory.affected_modules ++ modules),
         symbol_source: if(routines != [], do: :cve, else: advisory.symbol_source),
         cvss_score: cvss_score,
-        cvss_vector: advisory.cvss_vector || vector,
+        cvss_vector: cvss_vector,
         severity: severity,
         cwes: Enum.uniq(advisory.cwes ++ cwes),
         version_ranges: ranges,
@@ -172,6 +173,14 @@ defmodule VulnCheck.Feeds.EefCna do
         enriched: true
     }
   end
+
+  # Merged advisories keep the highest score of their sources.
+  defp strongest({nil, own_vector}, {nil, vector}), do: {nil, own_vector || vector}
+  defp strongest({nil, _own_vector}, {score, vector}), do: {score, vector}
+  defp strongest({own, own_vector}, {nil, _vector}), do: {own, own_vector}
+
+  defp strongest({own, own_vector}, {score, vector}),
+    do: if(score > own, do: {score, vector}, else: {own, own_vector})
 
   defp matches_package?(entry, package) when is_map(entry) do
     names =

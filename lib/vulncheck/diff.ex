@@ -77,12 +77,16 @@ defmodule VulnCheck.Diff do
   def apply_baseline(findings, entries) do
     known = MapSet.new(entries, & &1.fingerprint)
     previous = Map.new(entries, &{{&1.advisory_id, &1.package}, &1.verdict})
-    {kept, hidden} = Enum.split_with(findings, &(not MapSet.member?(known, &1.fingerprint)))
+
+    {kept, hidden} =
+      Enum.split_with(findings, fn f ->
+        not Enum.any?(Finding.fingerprints(f), &MapSet.member?(known, &1))
+      end)
 
     escalations =
       for %Finding{verdict: verdict} = f <- kept,
           verdict in [:reachable, :potentially_reachable],
-          old = previous[{f.advisory_id, f.package}],
+          old = previous_verdict(previous, f),
           old in ["unreachable", "retired"] or
             (old == "potentially_reachable" and verdict == :reachable) do
         "#{f.advisory_id} (#{f.package}) escalated from #{old} to #{verdict}"
@@ -94,6 +98,10 @@ defmodule VulnCheck.Diff do
         else: ["#{length(hidden)} finding(s) already present in the baseline"]
 
     {kept, escalations ++ hidden_note}
+  end
+
+  defp previous_verdict(previous, %Finding{} = f) do
+    Enum.find_value(Enum.uniq([f.advisory_id | f.aliases]), &previous[{&1, f.package}])
   end
 
   @doc "Scanner post-processing step for `--baseline`."
