@@ -8,7 +8,7 @@ defmodule VulnCheck.Cache do
       feeds/osv_hex_all.zip.entry            OSV Hex archive and metadata
       feeds/cves/<CVE-ID>.json.entry         EEF CNA / MITRE records and metadata
       feeds/hex/packages/<name>.json.entry   Hex.pm package metadata
-      beam-v3/<sha256>.etf                   cached module summaries
+      beam-v4/<sha256>.etf                   cached module summaries
 
   Every write goes to a unique temporary file that is then renamed into
   place, so concurrent CI jobs sharing a cache never observe partial files.
@@ -60,7 +60,7 @@ defmodule VulnCheck.Cache do
 
   @doc "Directory holding cached `.beam` summaries."
   @spec beam_dir(Config.t()) :: String.t()
-  def beam_dir(config), do: Path.join(dir(config), "beam-v3")
+  def beam_dir(config), do: Path.join(dir(config), "beam-v4")
 
   defp default_dir do
     case System.get_env("XDG_CACHE_HOME") do
@@ -423,7 +423,7 @@ defmodule VulnCheck.Cache do
   end
 
   defp beam_root(%Config{} = config), do: beam_dir(config)
-  defp beam_root(opts) when is_list(opts), do: Path.join(dir(opts), "beam-v3")
+  defp beam_root(opts) when is_list(opts), do: Path.join(dir(opts), "beam-v4")
 
   defp safe_decode(data) do
     :erlang.binary_to_term(data, [:safe])
