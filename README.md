@@ -14,7 +14,7 @@
 
 ## Why VulnCheck Exists
 
-Between 2024 and 2026, annual Hex security advisories grew nearly **80x** (from single-digit annual disclosures to hundreds of structured CVEs across core packages such as `plug`, `phoenix`, `bandit`, `ash`, `mint`, `hackney`, `cowlib`, and `tesla`).
+Recent Hex ecosystem disclosures include dozens of structured CVEs across core packages such as `plug`, `phoenix`, `bandit`, `ash`, `mint`, `hackney`, `cowlib`, and `tesla`.
 
 Traditional lockfile scanners suffer from two structural limitations:
 
@@ -50,7 +50,7 @@ At the same time, **a naive static call graph is unsafe on the BEAM**: HTTP serv
 | OTP supervision & `Plug` / `Tesla` adapter awareness | No | No | No | **Yes (sound 3-tier model)** |
 | OTP runtime version gating (`--otp-version`) | No | No | No | **Yes** (Elixir version in metadata is the scanner VM) |
 | SARIF 2.1.0 `codeFlows` & OpenVEX / CycloneDX 1.6 | No | No | SARIF (app rules) | **Yes** |
-| Air-gapped offline bundle mode | No | No | Yes | **Yes (`--offline` / `--bundle`)** |
+| Air-gapped offline bundle mode | No | No | N/A (SAST only) | **Yes (`--offline` / `--bundle`)** |
 
 ---
 
@@ -78,9 +78,11 @@ mix vulncheck
 
 ### Standalone Escript (Erlang `rebar3`, Gleam, or CI Containers)
 
+Build the standalone escript from source (or install from Hex once `1.0.0` is published via `mix escript.install hex vulncheck`):
+
 ```bash
-mix escript.install hex vulncheck
-vulncheck --project-dir /path/to/service
+MIX_ENV=prod mix escript.build
+./vulncheck --project-dir /path/to/service
 ```
 
 ---
