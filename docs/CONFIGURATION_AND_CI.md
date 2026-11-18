@@ -147,7 +147,7 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 
 An online scan can use a verified previous OSV archive after a failed refresh if it is within its configured age limit. A cold scan or one past the limit returns exit `2`. The native JSON `feed` object contains the source, status, age, refresh error and discarded record count. `feeds status` reports a missing archive, a validated archive or an invalid archive with exit `2`.
 
-`explain` shows whether the installed version matches the advisory, the local reachability verdict when available, and the effect of suppressions or display filters. A missing or incomplete local scan is reported separately from an unaffected installed version.
+`explain` shows whether the installed version matches the advisory, the local reachability verdict when available, and the effect of suppressions or display filters. A missing or incomplete local scan is reported separately from an unaffected installed version. Unsupported lockfile entries, partially parsed `mix.exs` files, and profile mismatches between `_build/<env>` and `--env` are recorded as warnings and mark `analysis.status` incomplete (`partial`) so unparsed dependencies are never silently dismissed.
 
 ### Exit Codes
 

@@ -14,17 +14,44 @@ defmodule VulnCheck.Workspace.RebarLock do
   @lock_entries ~r/%[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\{\s*<<\s*("(?:\\.|[^"\\])*")\s*>>\s*,\s*\{\s*(?:pkg|git)\s*,/s
 
   @doc "Parses `rebar.lock` content into `name => Package`."
-  @spec parse(String.t()) :: {:ok, %{String.t() => Package.t()}} | {:error, String.t()}
-  def parse(content) do
+  @spec parse(String.t(), keyword()) :: {:ok, %{String.t() => Package.t()}} | {:error, String.t()}
+  def parse(content, opts \\ []) do
+    with {:ok, packages, _warnings} <- parse_with_warnings(content, opts), do: {:ok, packages}
+  end
+
+  @doc "Like `parse/2`, also returning warnings for unsupported lock entries."
+  @spec parse_with_warnings(String.t(), keyword()) ::
+          {:ok, %{String.t() => Package.t()}, [String.t()]} | {:error, String.t()}
+  def parse_with_warnings(content, opts \\ []) do
+    file = Keyword.get(opts, :file, "rebar.lock")
+
     with {:ok, terms} <- ErlTerm.parse(content),
          {:ok, entries, extra} <- split_terms(terms) do
       hashes = hash_table(extra, "pkg_hash")
       ext_hashes = hash_table(extra, "pkg_hash_ext")
       lines = name_lines(content)
 
+      {rev_pkgs, rev_warns} =
+        Enum.reduce(entries, {[], []}, fn item, {pkgs, warns} ->
+          case entry(item) do
+            [%Package{} = pkg] ->
+              {[pkg | pkgs], warns}
+
+            [] ->
+              label =
+                case item do
+                  {:tuple, [name | _]} when is_binary(name) -> name
+                  other -> inspect(other)
+                end
+
+              {pkgs,
+               ["unsupported entry #{label} in #{file}; dependency could not be parsed" | warns]}
+          end
+        end)
+
       packages =
-        entries
-        |> Enum.flat_map(&entry/1)
+        rev_pkgs
+        |> Enum.reverse()
         |> Map.new(fn package ->
           checksum = Map.get(ext_hashes, package.name) || Map.get(hashes, package.name)
 
@@ -37,7 +64,7 @@ defmodule VulnCheck.Workspace.RebarLock do
            }}
         end)
 
-      {:ok, packages}
+      {:ok, packages, Enum.reverse(rev_warns)}
     end
   end
 
@@ -52,10 +79,17 @@ defmodule VulnCheck.Workspace.RebarLock do
   @doc "Reads and parses a `rebar.lock` file."
   @spec parse_file(Path.t()) :: {:ok, %{String.t() => Package.t()}} | {:error, String.t()}
   def parse_file(path) do
+    with {:ok, packages, _warnings} <- parse_file_with_warnings(path), do: {:ok, packages}
+  end
+
+  @doc "Reads and parses a `rebar.lock` file, also returning unsupported-entry warnings."
+  @spec parse_file_with_warnings(Path.t()) ::
+          {:ok, %{String.t() => Package.t()}, [String.t()]} | {:error, String.t()}
+  def parse_file_with_warnings(path) do
     case File.read(path) do
       {:ok, content} ->
-        case parse(content) do
-          {:ok, packages} -> {:ok, packages}
+        case parse_with_warnings(content, file: path) do
+          {:ok, packages, warnings} -> {:ok, packages, warnings}
           {:error, message} -> {:error, "#{path}: #{message}"}
         end
 

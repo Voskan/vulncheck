@@ -555,11 +555,27 @@ defmodule VulnCheck.WorkspaceTest do
     ]
     """)
 
+    compile_erl_app!(
+      Path.join(dir, "build/dev/erlang/gleam_stdlib/ebin"),
+      "gleam_stdlib",
+      "gleam_stdlib_mod",
+      "-module(gleam_stdlib_mod).\n-export([id/1]).\nid(X) -> X.\n"
+    )
+
+    compile_erl_app!(
+      Path.join(dir, "build/dev/erlang/gleeunit/ebin"),
+      "gleeunit",
+      "gleeunit_mod",
+      "-module(gleeunit_mod).\n-export([test/0]).\ntest() -> ok.\n"
+    )
+
     assert {:ok, prod_ws} = Workspace.load(config(dir, ["--env", "prod"]))
     assert prod_ws.packages["gleeunit"].scope == :non_prod
+    assert Enum.any?(prod_ws.warnings, &(&1 =~ "build/prod not found; analyzing build/dev instead"))
 
     assert {:ok, dev_ws} = Workspace.load(config(dir, ["--env", "dev"]))
     assert dev_ws.packages["gleeunit"].scope == :prod
+    assert File.regular?(Path.join(dev_ws.packages["gleeunit"].ebin_dir, "gleeunit_mod.beam"))
   end
 
   test "rebar3 prefers requested non-prod profile and keeps level 0 direct_deps" do
@@ -572,12 +588,26 @@ defmodule VulnCheck.WorkspaceTest do
       {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.13.0">>},1}]}.
     """)
 
-    Tmp.write!(dir, "_build/default/lib/cowboy/ebin/cowboy.app", "{application,cowboy,[]}.\n")
-    Tmp.write!(dir, "_build/test/lib/cowboy/ebin/cowboy.app", "{application,cowboy,[]}.\n")
+    File.mkdir_p!(Path.join(dir, "_build/test/lib/cowboy/ebin"))
+
+    compile_erl_app!(
+      Path.join(dir, "_build/default/lib/cowboy/ebin"),
+      "cowboy",
+      "cowboy_default",
+      "-module(cowboy_default).\n-export([go/0]).\ngo() -> ok.\n"
+    )
+
+    compile_erl_app!(
+      Path.join(dir, "_build/test/lib/cowboy/ebin"),
+      "cowboy",
+      "cowboy_test",
+      "-module(cowboy_test).\n-export([go/0]).\ngo() -> ok.\n"
+    )
 
     assert {:ok, ws} = Workspace.load(config(dir, ["--env", "test"]))
     assert ws.build_env == "test"
     assert ws.direct_deps == ["cowboy"]
+    assert File.regular?(Path.join(ws.packages["cowboy"].ebin_dir, "cowboy_test.beam"))
   end
 
   test "umbrella does not misalign root_ebins when an earlier app is uncompiled" do
@@ -610,16 +640,106 @@ defmodule VulnCheck.WorkspaceTest do
     end
     """)
 
-    Tmp.write!(
-      dir,
-      "_build/prod/lib/beta/ebin/beta.app",
-      "{application,beta,[{applications,[plug]}]}.\n"
+    compile_erl_app!(
+      Path.join(dir, "_build/prod/lib/beta/ebin"),
+      "beta",
+      "beta_mod",
+      "-module(beta_mod).\n-export([run/0]).\nrun() -> ok.\n",
+      ["plug"]
     )
 
     assert {:ok, ws} = Workspace.load(config(dir))
     assert ws.root_apps == ["alpha", "beta"]
     assert ws.root_ebin_dirs == [Path.join(dir, "_build/prod/lib/beta/ebin")]
     assert ws.packages["plug"].scope == :prod
+    assert File.regular?(Path.join(hd(ws.root_ebin_dirs), "beta_mod.beam"))
+  end
+
+  test "reports unsupported lock entries, partially parsed path mix.exs and profile mismatch" do
+    mix_dir = Tmp.mkdir!("diag-mix")
+    sub = Path.join(mix_dir, "local_dyn")
+
+    Tmp.write!(mix_dir, "mix.exs", """
+    defmodule DiagMix.MixProject do
+      use Mix.Project
+      def project, do: [app: :diag_mix, version: "0.1.0", deps: [{:local_dyn, path: "local_dyn"}]]
+    end
+    """)
+
+    Tmp.write!(mix_dir, "mix.lock", """
+    %{
+      "jason": {:hex, :jason, "1.4.4", "aaa", [:mix], [], "hexpm", "bbb"},
+      "mystery": {:svn, "https://example.com/mystery", "123"}
+    }
+    """)
+
+    Tmp.write!(sub, "mix.exs", """
+    defmodule LocalDyn.MixProject do
+      use Mix.Project
+      def project, do: [app: :local_dyn, version: "0.1.0", deps: Enum.map([], & &1)]
+    end
+    """)
+
+    compile_erl_app!(
+      Path.join(mix_dir, "_build/dev/lib/jason/ebin"),
+      "jason",
+      "jason_mod",
+      "-module(jason_mod).\n-export([ok/0]).\nok() -> ok.\n"
+    )
+
+    assert {:ok, ws} = Workspace.load(config(mix_dir, ["--env", "prod"]))
+    assert Enum.any?(ws.warnings, &(&1 =~ "unsupported entry mystery in" and &1 =~ "mix.lock"))
+    assert Enum.any?(ws.warnings, &(&1 =~ "local_dyn/mix.exs" and &1 =~ "local_dyn"))
+    assert Enum.any?(ws.warnings, &(&1 =~ "_build/prod not found; analyzing _build/dev instead"))
+    assert Enum.any?(ws.artifact_issues, fn {_, msg} -> msg =~ "unsupported entry mystery" end)
+    assert Enum.any?(ws.artifact_issues, fn {_, msg} -> msg =~ "local_dyn/mix.exs" end)
+
+    loaded = VulnCheck.Beam.Loader.load_workspace(ws)
+    refute loaded.profile_matches
+
+    profile_issues =
+      Enum.filter(loaded.artifact_issues, fn {_, msg} ->
+        msg =~ "compiled profile dev differs from requested environment prod"
+      end)
+
+    assert length(profile_issues) == 1
+
+    rebar_dir = Tmp.mkdir!("diag-rebar")
+    Tmp.write!(rebar_dir, "rebar.config", "{deps, [cowboy]}.\n")
+
+    Tmp.write!(rebar_dir, "rebar.lock", """
+    {"1.2.0",
+     [{<<"cowboy">>,{pkg,<<"cowboy">>,<<"2.12.0">>},0},
+      {<<"odd">>,{hg,"https://example.com/odd",{ref,"1"}},0}]}.
+    """)
+
+    assert {:ok, rws} = Workspace.load(config(rebar_dir))
+    assert Enum.any?(rws.warnings, &(&1 =~ "unsupported entry odd in" and &1 =~ "rebar.lock"))
+    assert Enum.any?(rws.artifact_issues, fn {_, msg} -> msg =~ "unsupported entry odd" end)
+  end
+
+  defp compile_erl_app!(ebin_dir, app, mod_name, erl_source, deps \\ []) do
+    File.mkdir_p!(ebin_dir)
+    {:ok, tokens, _} = :erl_scan.string(String.to_charlist(erl_source))
+
+    {forms, []} =
+      Enum.reduce(tokens, {[], []}, fn
+        {:dot, _} = dot, {forms, cur} ->
+          {:ok, form} = :erl_parse.parse_form(Enum.reverse([dot | cur]))
+          {[form | forms], []}
+
+        tok, {forms, cur} ->
+          {forms, [tok | cur]}
+      end)
+
+    {:ok, mod, beam} = :compile.forms(Enum.reverse(forms), [:debug_info, :return_errors])
+    File.write!(Path.join(ebin_dir, "#{mod}.beam"), beam)
+
+    apps_term = Enum.join(deps, ", ")
+
+    File.write!(Path.join(ebin_dir, "#{app}.app"), """
+    {application,#{app},[{vsn,"1.0.0"},{modules,[#{mod_name}]},{applications,[#{apps_term}]}]}.
+    """)
   end
 
   test "--otp-version overrides the runtime release" do
