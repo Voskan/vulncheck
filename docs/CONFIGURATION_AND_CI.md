@@ -55,6 +55,10 @@
 | `offline` | boolean | `false` | Never use the network; use the cache or a bundle. |
 | `bundle` | string \| `nil` | `nil` | Advisory bundle imported before the scan. |
 | `max_feed_age_seconds` | integer \| `nil` | `nil` | OSV freshness limit. The default is 24 hours online and unlimited in explicit offline mode. |
+| `beam_timeout` | positive integer | `15000` | Per-file `.beam` worker timeout in milliseconds. |
+| `max_beam_files` | positive integer | `20000` | Maximum number of `.beam` files analyzed in a workspace. |
+| `max_beam_bytes` | positive integer | `67108864` | Maximum `.beam` file size in bytes (64 MiB). |
+| `max_beam_heap_bytes` | positive integer | `134217728` | Per-worker heap limit in bytes for `.beam` analysis (128 MiB). |
 | `configured_adapters` | keyword list | `[]` | Adapter modules per family: `tesla`, `swoosh`, `ecto`, `phoenix_pubsub`, `finch`, `req`. A family may list several modules. |
 | `extra_entrypoints` | list of `{Module, :function, arity}` | `[]` | Functions treated as roots in addition to the detected ones. |
 | `ignore_file` | string | `".vulncheck.ignore"` | Suppression file, relative to the project. |
@@ -159,7 +163,13 @@ An online scan can use a verified previous OSV archive after a failed refresh if
 
 ### GitHub Actions (composite action)
 
+**Trusted branches (with compilation and SARIF upload):**
+
 ```yaml
+on:
+  push:
+    branches: [main]
+
 jobs:
   vulncheck:
     runs-on: ubuntu-latest
@@ -177,12 +187,39 @@ jobs:
       - uses: Voskan/vulncheck@v1.0.0
         with:
           fail-on: potentially_reachable
-          diff: origin/${{ github.base_ref }}
-          forbid-new-suppressions: true
           upload-sarif: true
 ```
 
-The action builds the escript, compiles the project (`compile: false` skips this for prepared artifacts), and caches advisory feeds. Annotations, the job summary and optional SARIF come from one scan. A policy failure records exit `1` and uploads available SARIF before enforcing the policy. Execution errors record exit `2` and skip the upload. The action provides `exit-code` and `sarif-file` outputs.
+**Pull requests (untrusted checkouts):**
+
+By default `compile` is `"true"`, which executes the project's build tools and macros. For untrusted pull requests (such as forks), never grant `security-events: write` or secrets to a job that compiles untrusted code: run without `security-events: write` (or scan prebuilt artifacts with `compile: "false"`), and upload SARIF from a separate `workflow_run` job if needed:
+
+```yaml
+on:
+  pull_request:
+
+jobs:
+  vulncheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.2"
+          elixir-version: "1.18"
+      - uses: Voskan/vulncheck@v1.0.0
+        with:
+          fail-on: potentially_reachable
+          diff: origin/${{ github.base_ref }}
+          forbid-new-suppressions: true
+          upload-sarif: false
+```
+
+The action builds the escript, compiles the project (`compile: false` skips this for prepared artifacts), and caches advisory feeds (`~/.cache/vulncheck/feeds`). Annotations, the job summary and optional SARIF come from one scan. A policy failure records exit `1` and uploads available SARIF before enforcing the policy. Execution errors record exit `2` and skip the upload. The action provides `exit-code` and `sarif-file` outputs.
 
 ### GitLab CI (Code Quality widget)
 

@@ -60,6 +60,10 @@ defmodule VulnCheck.Config do
             feed_snapshot: nil,
             cache_ttl_seconds: 3600,
             max_feed_age_seconds: nil,
+            beam_timeout: 15_000,
+            max_beam_files: 20_000,
+            max_beam_bytes: 64 * 1024 * 1024,
+            max_beam_heap_bytes: 128 * 1024 * 1024,
             color: true,
             quiet: false,
             force: false,
@@ -99,6 +103,10 @@ defmodule VulnCheck.Config do
           feed_snapshot: String.t() | nil,
           cache_ttl_seconds: non_neg_integer(),
           max_feed_age_seconds: non_neg_integer() | nil,
+          beam_timeout: pos_integer(),
+          max_beam_files: pos_integer(),
+          max_beam_bytes: pos_integer(),
+          max_beam_heap_bytes: pos_integer(),
           color: boolean(),
           quiet: boolean(),
           force: boolean(),
@@ -140,6 +148,7 @@ defmodule VulnCheck.Config do
   @file_keys ~w(env format output sarif sbom vex fail_on min_severity fail_on_retired check_retired
                 show_unreachable otp_version offline bundle configured_adapters extra_entrypoints
                 ignore_file require_ignore_reason require_ignore_expiry cache_dir cache_ttl_seconds max_feed_age_seconds
+                beam_timeout max_beam_files max_beam_bytes max_beam_heap_bytes
                 forbid_new_suppressions diff baseline)
 
   @doc "Supported output formats."
@@ -521,6 +530,15 @@ defmodule VulnCheck.Config do
       {:ok, %{config | max_feed_age_seconds: value}}
     else
       {:error, "max_feed_age_seconds must be a non-negative integer"}
+    end
+  end
+
+  defp file_option(config, key, value)
+       when key in ~w(beam_timeout max_beam_files max_beam_bytes max_beam_heap_bytes) do
+    if is_integer(value) and value > 0 do
+      {:ok, Map.put(config, String.to_existing_atom(key), value)}
+    else
+      {:error, "#{key} must be a positive integer"}
     end
   end
 
