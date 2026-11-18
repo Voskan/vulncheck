@@ -1,13 +1,22 @@
 defmodule VulnCheck.Types.TraceHop do
   @moduledoc """
   One hop of a witness call chain from an entrypoint to a vulnerable routine.
+
+  A chain whose entrypoint is not called by the project itself (protocol
+  handlers of a network daemon, modules named in the configuration) starts
+  with an activation hop (`:daemon_activation` or `:config_activation`): the
+  place in the project that makes the entrypoint live, with `note` saying
+  how. Its `mfa` is `nil` when that place is not a function (a `.app` file
+  or a configuration file).
   """
 
   @enforce_keys [:mfa]
-  defstruct [:mfa, :file, :line, :kind]
+  defstruct [:mfa, :file, :line, :kind, :note]
 
   @type kind ::
-          :entrypoint
+          :daemon_activation
+          | :config_activation
+          | :entrypoint
           | :static_call
           | :macro_expanded
           | :behaviour_callback
@@ -16,11 +25,16 @@ defmodule VulnCheck.Types.TraceHop do
           | :imports
 
   @type t :: %__MODULE__{
-          mfa: VulnCheck.Types.MFA.t(),
+          mfa: VulnCheck.Types.MFA.t() | nil,
           file: String.t() | nil,
           line: non_neg_integer() | nil,
-          kind: kind() | nil
+          kind: kind() | nil,
+          note: String.t() | nil
         }
+
+  @doc "`true` for the activation hop that starts a chain."
+  @spec activation?(t()) :: boolean()
+  def activation?(%__MODULE__{kind: kind}), do: kind in [:daemon_activation, :config_activation]
 end
 
 defmodule VulnCheck.Types.Finding do
@@ -33,6 +47,7 @@ defmodule VulnCheck.Types.Finding do
   @type verdict :: :reachable | :potentially_reachable | :unreachable | :retired
   @type reason ::
           :call_chain_proven
+          | :daemon_call_chain
           | :active_network_daemon
           | :unresolved_dynamic_dispatch
           | :missing_symbol_granularity
@@ -101,6 +116,7 @@ defmodule VulnCheck.Types.Finding do
   @verdicts [:reachable, :potentially_reachable, :retired, :unreachable]
   @reasons [
     :call_chain_proven,
+    :daemon_call_chain,
     :active_network_daemon,
     :unresolved_dynamic_dispatch,
     :missing_symbol_granularity,

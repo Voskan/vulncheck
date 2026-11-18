@@ -7,7 +7,9 @@ defmodule VulnCheck.Integration.SoundnessCorpusTest do
 
   import VulnCheck.Test.FixtureBuilder
 
-  alias VulnCheck.Types.{Finding, MFA}
+  alias VulnCheck.Config
+  alias VulnCheck.Report.{Markdown, SARIF}
+  alias VulnCheck.Types.{Finding, MFA, TraceHop}
 
   defp hops(%Finding{trace: trace}), do: Enum.map(trace, &{MFA.format(&1.mfa), &1.file, &1.line})
 
@@ -325,6 +327,160 @@ defmodule VulnCheck.Integration.SoundnessCorpusTest do
     assert finding.verdict == :potentially_reachable
     assert finding.reason == :active_network_daemon
     refute finding.verdict == :unreachable
+  end
+
+  @thousand_island %{
+    name: "thousand_island",
+    version: "1.3.5",
+    ex: [
+      {"lib/thousand_island/handler.ex",
+       """
+       defmodule ThousandIsland.Handler do
+         @callback handle_data(term(), term(), term()) :: term()
+       end
+       """}
+    ]
+  }
+
+  @bandit_daemon %{
+    name: "bandit",
+    version: "1.5.0",
+    deps: [{"thousand_island", false}],
+    applications: [:thousand_island],
+    ex: [
+      {"lib/bandit.ex",
+       """
+       defmodule Bandit do
+         def child_spec(opts), do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+         def start_link(_opts), do: :ignore
+       end
+       """},
+      {"lib/bandit/http2/handler.ex",
+       """
+       defmodule Bandit.HTTP2.Handler do
+         @behaviour ThousandIsland.Handler
+
+         def handle_data(data, _socket, state) do
+           Bandit.HTTP2.Connection.handle_frame(data, state)
+         end
+       end
+
+       defmodule Bandit.HTTP2.Connection do
+         def handle_frame(data, state) do
+           Bandit.HTTP2.Frame.Continuation.deserialize(9, 0, {data, state})
+         end
+       end
+
+       defmodule Bandit.HTTP2.Frame.Continuation do
+         def deserialize(_type, flags, payload), do: {:ok, {flags, payload}}
+       end
+       """}
+    ]
+  }
+
+  test "3: a protocol handler chain starts at the child spec that starts Bandit" do
+    root =
+      mix_project!("relay",
+        mod: "Relay.Application",
+        applications: [:bandit],
+        packages: [@thousand_island, @bandit_daemon],
+        ex: [
+          {"lib/relay/application.ex",
+           """
+           defmodule Relay.Application do
+             def start(_type, _args) do
+               Supervisor.start_link([{Bandit, plug: Relay.Router}], strategy: :one_for_one)
+             end
+           end
+           """}
+        ]
+      )
+
+    report = scan!(root)
+    finding = finding!(report, "EEF-CVE-2026-60102")
+
+    assert {finding.verdict, finding.reason} == {:reachable, :daemon_call_chain}
+
+    assert [activation | chain] = finding.trace
+
+    assert activation == %TraceHop{
+             mfa: MFA.new("Elixir.Relay.Application", "start", 2),
+             file: "lib/relay/application.ex",
+             line: 3,
+             kind: :daemon_activation,
+             note: "starts Bandit"
+           }
+
+    assert Enum.map(chain, &{MFA.format(&1.mfa), &1.kind}) == [
+             {"Bandit.HTTP2.Handler.handle_data/3", :entrypoint},
+             {"Bandit.HTTP2.Connection.handle_frame/2", :static_call},
+             {"Bandit.HTTP2.Frame.Continuation.deserialize/3", :static_call}
+           ]
+
+    config = %Config{format: :json}
+    json = report |> VulnCheck.Report.JSON.render(config) |> JSON.decode!()
+    [reported] = Enum.filter(json["findings"], &(&1["advisory_id"] == "EEF-CVE-2026-60102"))
+    assert reported["reason"] == "daemon_call_chain"
+
+    assert hd(reported["trace"]) == %{
+             "mfa" => "Relay.Application.start/2",
+             "file" => "lib/relay/application.ex",
+             "line" => 3,
+             "kind" => "daemon_activation",
+             "note" => "starts Bandit"
+           }
+
+    sarif = report |> SARIF.render(config) |> JSON.decode!()
+
+    [flow] =
+      for run <- sarif["runs"],
+          result <- run["results"],
+          result["ruleId"] == "EEF-CVE-2026-60102",
+          flow <- result["codeFlows"],
+          do: flow
+
+    [first, second | _] = hd(flow["threadFlows"])["locations"]
+    assert {first["executionOrder"], first["kinds"]} == {0, ["daemon_activation"]}
+    assert first["location"]["message"]["text"] == "0. Relay.Application.start/2 starts Bandit"
+    assert {second["executionOrder"], second["kinds"]} == {1, ["enter"]}
+
+    markdown = Markdown.render(report, config)
+
+    assert markdown =~
+             "| 0 | `Relay.Application.start/2` starts Bandit | `lib/relay/application.ex:3` |"
+  end
+
+  test "3: a call chain from the project wins over a shorter one from a daemon" do
+    root =
+      mix_project!("relay",
+        mod: "Relay.Application",
+        applications: [:bandit],
+        packages: [@thousand_island, @bandit_daemon],
+        ex: [
+          {"lib/relay/application.ex",
+           """
+           defmodule Relay.Application do
+             def start(_type, _args) do
+               Relay.Frames.warm()
+               Supervisor.start_link([{Bandit, plug: Relay.Router}], strategy: :one_for_one)
+             end
+           end
+
+           defmodule Relay.Frames do
+             def warm, do: prepare()
+             defp prepare, do: decode()
+             defp decode, do: Bandit.HTTP2.Frame.Continuation.deserialize(9, 0, "")
+           end
+           """}
+        ]
+      )
+
+    finding = root |> scan!() |> finding!("EEF-CVE-2026-60102")
+
+    assert {finding.verdict, finding.reason} == {:reachable, :call_chain_proven}
+    assert hd(finding.trace).kind == :entrypoint
+    assert hd(finding.trace).mfa == MFA.new("Elixir.Relay.Application", "start", 2)
+    assert length(finding.trace) == 5
   end
 
   # -- 4. unconfigured transitive HTTP adapter ---------------------------------

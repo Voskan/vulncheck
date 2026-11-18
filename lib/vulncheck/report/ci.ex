@@ -81,10 +81,10 @@ defmodule VulnCheck.Report.GitHub do
         hops ->
           ["Trace:"] ++
             (hops
-             |> Enum.with_index(1)
+             |> Formatter.numbered()
              |> Enum.map(fn {hop, i} ->
                location = Formatter.location(hop)
-               "  #{i}. #{Formatter.mfa(hop.mfa)}" <> if(location, do: " (#{location})", else: "")
+               "  #{i}. #{Formatter.hop(hop)}" <> if(location, do: " (#{location})", else: "")
              end))
       end
 

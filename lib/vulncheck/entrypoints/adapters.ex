@@ -65,6 +65,7 @@ defmodule VulnCheck.Entrypoints.Adapters do
           configured: %{atom() => [String.t()]},
           inactive: %{String.t() => String.t()},
           config_refs: [String.t()],
+          config_sites: %{String.t() => {String.t(), non_neg_integer() | nil}},
           notes: [String.t()]
         }
 
@@ -77,7 +78,8 @@ defmodule VulnCheck.Entrypoints.Adapters do
   """
   @spec resolve(Workspace.t(), %{String.t() => ModuleSummary.t()}, Config.t() | nil) :: result()
   def resolve(%Workspace{} = workspace, modules, config) do
-    {config_refs, dynamic?, notes} = read_config_files(workspace)
+    {config_sites, dynamic?, notes} = read_config_files(workspace)
+    config_refs = Enum.map(config_sites, &elem(&1, 0))
 
     code_refs =
       modules
@@ -142,6 +144,10 @@ defmodule VulnCheck.Entrypoints.Adapters do
       configured: configured,
       inactive: inactive,
       config_refs: Enum.uniq(config_refs),
+      config_sites:
+        config_sites
+        |> Enum.reverse()
+        |> Map.new(fn {name, file, line} -> {name, {file, line}} end),
       notes: notes ++ Enum.reverse(family_notes)
     }
   end
@@ -162,10 +168,12 @@ defmodule VulnCheck.Entrypoints.Adapters do
 
   @doc """
   Reads the configuration files of the project. Returns every module alias
-  mentioned in them, whether an adapter key had a non-literal value, and
-  notes about unreadable files.
+  mentioned in them with the file (relative to the project) and line where
+  it appears, whether an adapter key had a non-literal value, and notes
+  about unreadable files.
   """
-  @spec read_config_files(Workspace.t()) :: {[String.t()], boolean(), [String.t()]}
+  @spec read_config_files(Workspace.t()) ::
+          {[{String.t(), String.t(), non_neg_integer() | nil}], boolean(), [String.t()]}
   def read_config_files(%Workspace{root_dir: root, env: env}) do
     ["config.exs", "#{env}.exs", "runtime.exs"]
     |> Enum.uniq()
@@ -175,7 +183,9 @@ defmodule VulnCheck.Entrypoints.Adapters do
       with {:ok, source} <- File.read(path),
            {:ok, ast} <- Literal.quote_string(source, file: path) do
         {file_refs, file_dynamic?} = scan(ast)
-        {refs ++ file_refs, dynamic? or file_dynamic?, notes}
+        relative = Path.relative_to(path, root)
+        sites = Enum.map(file_refs, fn {name, line} -> {name, relative, line} end)
+        {refs ++ sites, dynamic? or file_dynamic?, notes}
       else
         _ ->
           {refs, true, notes ++ ["could not parse #{Path.relative_to(path, root)}; adapters kept"]}
@@ -186,10 +196,10 @@ defmodule VulnCheck.Entrypoints.Adapters do
   defp scan(ast) do
     {_, {refs, dynamic?}} =
       Macro.prewalk(ast, {[], false}, fn
-        {:__aliases__, _, _} = node, {refs, dynamic?} ->
+        {:__aliases__, meta, _} = node, {refs, dynamic?} ->
           case Literal.alias_name(node) do
             nil -> {node, {refs, dynamic?}}
-            name -> {node, {[name | refs], dynamic?}}
+            name -> {node, {[{name, Keyword.get(meta, :line)} | refs], dynamic?}}
           end
 
         {{:__lit_atom__, "config"}, _, args} = node, {refs, dynamic?} when is_list(args) ->

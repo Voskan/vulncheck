@@ -162,9 +162,9 @@ defmodule VulnCheck.Report.SARIF do
   defp put_code_flows(result, %Finding{trace: hops}) do
     locations =
       hops
-      |> Enum.with_index(1)
+      |> Formatter.numbered()
       |> Enum.map(fn {%TraceHop{} = hop, step} ->
-        text = "#{step}. #{Formatter.mfa(hop.mfa)}"
+        text = "#{step}. #{Formatter.hop(hop)}"
 
         %{
           "executionOrder" => step,
@@ -175,7 +175,7 @@ defmodule VulnCheck.Report.SARIF do
 
     Map.put(result, "codeFlows", [
       %{
-        "message" => %{"text" => "Call chain from #{Formatter.mfa(hd(hops).mfa)}"},
+        "message" => %{"text" => "Call chain from #{Formatter.hop(hd(hops))}"},
         "threadFlows" => [%{"locations" => locations}]
       }
     ])

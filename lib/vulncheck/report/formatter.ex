@@ -9,6 +9,7 @@ defmodule VulnCheck.Report.Formatter do
 
   @reason_labels %{
     call_chain_proven: "call chain proven",
+    daemon_call_chain: "called from an active network daemon",
     active_network_daemon: "active network daemon",
     unresolved_dynamic_dispatch: "unresolved dynamic dispatch",
     missing_symbol_granularity: "no function-level advisory data",
@@ -76,6 +77,27 @@ defmodule VulnCheck.Report.Formatter do
   def mfa(nil), do: nil
   def mfa(%MFA{} = mfa), do: MFA.format(mfa)
 
+  @doc """
+  Text of a trace hop: the function, followed by what an activation hop
+  does (`MyApp.Application.start/2 starts Bandit`), or the note alone when
+  the activation is not a function.
+  """
+  @spec hop(TraceHop.t()) :: String.t()
+  def hop(%TraceHop{mfa: nil, note: note}), do: note || ""
+  def hop(%TraceHop{mfa: mfa, note: nil}), do: MFA.format(mfa)
+  def hop(%TraceHop{mfa: mfa, note: note}), do: "#{MFA.format(mfa)} #{note}"
+
+  @doc """
+  Trace hops with their step numbers. The activation hop is step 0, so the
+  entrypoint is step 1 in every chain.
+  """
+  @spec numbered([TraceHop.t()]) :: [{TraceHop.t(), non_neg_integer()}]
+  def numbered([%TraceHop{} = first | _] = hops) do
+    Enum.with_index(hops, if(TraceHop.activation?(first), do: 0, else: 1))
+  end
+
+  def numbered([]), do: []
+
   @doc "Location of a trace hop (`file:line`), or `nil`."
   @spec location(TraceHop.t()) :: String.t() | nil
   def location(%TraceHop{file: nil}), do: nil
@@ -117,8 +139,9 @@ defmodule VulnCheck.Report.Formatter do
 
   @doc """
   Location used to annotate a finding: the call site in the project's own
-  code from which the vulnerable dependency is entered or, when the chain
-  starts in configuration or supervision, the package entry in the lockfile.
+  code from which the vulnerable dependency is entered (for a chain from a
+  daemon or a configured module, the project line that starts or names it)
+  or, when no hop is in the project, the package entry in the lockfile.
   """
   @spec primary_location(Finding.t(), Workspace.t() | nil) :: {String.t(), pos_integer()}
   def primary_location(%Finding{trace: trace} = finding, workspace) do

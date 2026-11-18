@@ -297,7 +297,7 @@ defmodule VulnCheck.Report.CycloneDX do
   defp trace_summary(%Finding{trace: []} = f), do: detail(f)
 
   defp trace_summary(%Finding{trace: hops}) do
-    "Reachable call chain: " <> Enum.map_join(hops, " -> ", &Formatter.mfa(&1.mfa))
+    "Reachable call chain: " <> Enum.map_join(hops, " -> ", &Formatter.hop/1)
   end
 
   defp serial_number(body) do

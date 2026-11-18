@@ -92,12 +92,14 @@ defmodule VulnCheck.Report.JSON do
   end
 
   defp hop(%TraceHop{} = hop) do
-    %{
+    base = %{
       "mfa" => Formatter.mfa(hop.mfa),
       "file" => hop.file,
       "line" => hop.line,
       "kind" => hop.kind && Atom.to_string(hop.kind)
     }
+
+    if hop.note, do: Map.put(base, "note", hop.note), else: base
   end
 
   @doc """

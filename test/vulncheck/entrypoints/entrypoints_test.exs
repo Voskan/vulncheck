@@ -6,7 +6,7 @@ defmodule VulnCheck.Entrypoints.EntrypointsTest do
   alias VulnCheck.Entrypoints
   alias VulnCheck.Entrypoints.{Adapters, Behaviours, OtpApp}
   alias VulnCheck.Test.{Beams, Tmp}
-  alias VulnCheck.Types.{Entrypoint, EntrypointModel, MFA, Package, Workspace}
+  alias VulnCheck.Types.{Entrypoint, EntrypointModel, MFA, Package, TraceHop, Workspace}
 
   defp package(name, ebin, extra \\ []) do
     struct(
@@ -612,9 +612,111 @@ defmodule VulnCheck.Entrypoints.EntrypointsTest do
     {model, _graph, reachable} = analyze(ws)
 
     assert model.active_daemon_packages == ["thousand_island"]
-    assert Enum.any?(model.roots, &(&1.kind == :daemon))
+    assert %Entrypoint{activation: boot} = Enum.find(model.roots, &(&1.kind == :daemon))
+
+    assert boot == %TraceHop{
+             mfa: nil,
+             file: "_build/prod/lib/ep_d/ebin/ep_d.app",
+             kind: :daemon_activation,
+             note: "the ep_d application starts thousand_island at boot"
+           }
+
     assert mfa("Elixir.EpFix.Daemon.Conn", "handle_data", 3) in reachable
     assert Entrypoints.daemon_packages() |> Enum.member?("bandit")
+  end
+
+  test "roots the project does not call carry the place that activates them" do
+    root = Tmp.mkdir!("ep-activation")
+
+    Beams.compile!(ebin(root, "thousand_island"), [
+      {"thousand_island.ex",
+       """
+       defmodule ThousandIsland.Handler do
+         @callback handle_data(term(), term(), term()) :: term()
+       end
+
+       defmodule EpAct.Island.Echo do
+         @behaviour ThousandIsland.Handler
+         def handle_data(data, _socket, state), do: {data, state}
+       end
+       """}
+    ])
+
+    Beams.write_app!(ebin(root, "thousand_island"), "thousand_island")
+
+    Beams.compile!(ebin(root, "bandit"), [
+      {"bandit.ex",
+       """
+       defmodule Bandit do
+         def child_spec(opts), do: %{id: __MODULE__, start: {__MODULE__, :start_link, [opts]}}
+         def start_link(_opts), do: :ignore
+       end
+
+       defmodule EpAct.Bandit.Handler do
+         @behaviour ThousandIsland.Handler
+         def handle_data(data, _socket, state), do: {data, state}
+       end
+       """}
+    ])
+
+    Beams.write_app!(ebin(root, "bandit"), "bandit", applications: [:thousand_island])
+
+    Beams.compile!(ebin(root, "ep_mailer"), [
+      {"mailer.ex",
+       "defmodule EpAct.Mailer.Adapter do\n  def start_link(opts), do: {:ok, opts}\nend\n"}
+    ])
+
+    Beams.write_app!(ebin(root, "ep_mailer"), "ep_mailer")
+
+    Beams.compile!(ebin(root, "ep_act"), [
+      {"application.ex",
+       """
+       defmodule EpAct.Application do
+         def start(_type, _args) do
+           Supervisor.start_link([{Bandit, plug: EpAct.Router}], strategy: :one_for_one)
+         end
+       end
+       """}
+    ])
+
+    Beams.write_app!(ebin(root, "ep_act"), "ep_act",
+      applications: [:bandit, :ep_mailer],
+      mod: "Elixir.EpAct.Application"
+    )
+
+    File.mkdir_p!(Path.join(root, "config"))
+
+    File.write!(
+      Path.join(root, "config/config.exs"),
+      "import Config\n\nconfig :ep_act, mailer: EpAct.Mailer.Adapter\n"
+    )
+
+    ws =
+      workspace(root, ["ep_act"], [
+        package("bandit", ebin(root, "bandit"), deps: ["thousand_island"]),
+        package("thousand_island", ebin(root, "thousand_island")),
+        package("ep_mailer", ebin(root, "ep_mailer"))
+      ])
+
+    {model, _graph, _reachable} = analyze(ws)
+    activation = fn module -> Enum.find(model.roots, &(&1.mfa.module == module)).activation end
+    start = mfa("Elixir.EpAct.Application", "start", 2)
+
+    assert %TraceHop{mfa: ^start, kind: :daemon_activation, line: 3, note: "starts Bandit"} =
+             activation.("Elixir.EpAct.Bandit.Handler")
+
+    assert %TraceHop{mfa: ^start, line: 3, note: "starts Bandit, which runs thousand_island"} =
+             activation.("Elixir.EpAct.Island.Echo")
+
+    assert activation.("Elixir.EpAct.Mailer.Adapter") == %TraceHop{
+             mfa: nil,
+             file: "config/config.exs",
+             line: 3,
+             kind: :config_activation,
+             note: "the configuration names EpAct.Mailer.Adapter"
+           }
+
+    assert activation.("Elixir.EpAct.Application") == nil
   end
 
   test "OTP application tree follows included applications" do

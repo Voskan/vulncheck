@@ -6,7 +6,11 @@ defmodule VulnCheck.Solver do
   A single breadth-first traversal from the entrypoints computes the
   reachable functions and a parent edge for each of them, so the shortest
   witness trace of any reachable function is rebuilt in time proportional
-  to its length.
+  to its length. The traversal first visits everything reachable from the
+  project's own entrypoints and only then continues from the protocol
+  handlers of network daemons, so a function is attributed to a daemon only
+  when no proven chain reaches it. Chains from a root the project does not
+  call itself start with the root's activation hop.
 
   Routines and modules of the advisory that belong to other packages or to
   Erlang/OTP and Elixir are context only (`VulnCheck.Solver.RoutineScope`).
@@ -16,8 +20,10 @@ defmodule VulnCheck.Solver do
     1. retired release → `:retired`
     2. `pkg` outside the production closure → `:non_prod_dependency`
     3. runtime OTP release outside the affected range → `:otp_version_unaffected`
-    4. an affected routine is reachable → `:reachable` with a trace; an
-       affected module is reachable without routine data → potentially
+    4. an affected routine is reachable → `:reachable` with a trace
+       (`:daemon_call_chain` when the chain starts at a daemon's protocol
+       handler); an affected module is reachable without routine data →
+       potentially
     5. unused adapter / application not started, with nothing of `pkg`
        reachable → `:adapter_not_configured` / `:otp_app_not_started`
     6. soundness boundaries → `:missing_beam_debug_info`,
@@ -89,7 +95,8 @@ defmodule VulnCheck.Solver do
       :atoms_constructed,
       :atom_modules,
       :started,
-      :app_by_package
+      :app_by_package,
+      :activations
     ]
   end
 
@@ -98,8 +105,8 @@ defmodule VulnCheck.Solver do
   """
   @spec index(Workspace.t(), CallGraph.t(), EntrypointModel.t(), Config.t()) :: %Index{}
   def index(%Workspace{} = workspace, %CallGraph{} = graph, %EntrypointModel{} = model, config) do
-    roots = model.roots |> Enum.map(fn %Entrypoint{mfa: mfa} -> mfa end) |> Enum.uniq()
-    parents = bfs(graph, roots)
+    {daemon_roots, proven_roots} = Enum.split_with(model.roots, &(&1.kind == :daemon))
+    parents = bfs(graph, [Enum.map(proven_roots, & &1.mfa), Enum.map(daemon_roots, & &1.mfa)])
     reachable = parents |> Map.keys() |> MapSet.new()
 
     package_of = Map.new(graph.modules, fn {name, summary} -> {name, summary.package} end)
@@ -152,7 +159,13 @@ defmodule VulnCheck.Solver do
       atom_modules: atom_constructing_modules(graph, reachable),
       started: MapSet.new(model.started_otp_apps),
       app_by_package:
-        Map.new(workspace.packages, fn {name, package} -> {name, package.otp_app || name} end)
+        Map.new(workspace.packages, fn {name, package} -> {name, package.otp_app || name} end),
+      activations:
+        for(
+          %Entrypoint{activation: %TraceHop{} = hop, mfa: mfa} <- model.roots,
+          into: %{},
+          do: {mfa, hop}
+        )
     }
   end
 
@@ -274,9 +287,7 @@ defmodule VulnCheck.Solver do
             trace
           )
         else
-          {:reachable, :call_chain_proven,
-           "#{MFA.format(reachable_routine)} is called from an entrypoint", reachable_routine,
-           trace}
+          proven(reachable_routine, trace)
         end
 
       hit != nil ->
@@ -397,6 +408,20 @@ defmodule VulnCheck.Solver do
     end
   end
 
+  # A chain from a daemon's protocol handler rests on the model of the
+  # daemon (it receives requests once started), not on a call written in
+  # the project, so it gets its own reason.
+  defp proven(routine, [%TraceHop{kind: :daemon_activation}, %TraceHop{mfa: root} | _] = trace) do
+    {:reachable, :daemon_call_chain,
+     "#{MFA.format(routine)} is called from #{MFA.format(root)}, " <>
+       "a protocol handler of an active network daemon", routine, trace}
+  end
+
+  defp proven(routine, trace) do
+    {:reachable, :call_chain_proven, "#{MFA.format(routine)} is called from an entrypoint", routine,
+     trace}
+  end
+
   defp unreachable(reason, detail), do: {:unreachable, reason, detail, nil, []}
 
   defp potentially(reason, detail, target, trace),
@@ -488,9 +513,14 @@ defmodule VulnCheck.Solver do
 
   # -- traversal ---------------------------------------------------------------------
 
-  defp bfs(graph, roots) do
-    parents = Map.new(roots, &{&1, {:root, 0}})
-    bfs_loop(graph, :queue.from_list(roots), parents)
+  # Root groups are traversed in order; a later group only reaches
+  # functions that no earlier group reached.
+  defp bfs(graph, root_groups) do
+    Enum.reduce(root_groups, %{}, fn roots, parents ->
+      fresh = roots |> Enum.uniq() |> Enum.reject(&Map.has_key?(parents, &1))
+      parents = Enum.reduce(fresh, parents, &Map.put(&2, &1, {:root, 0}))
+      bfs_loop(graph, :queue.from_list(fresh), parents)
+    end)
   end
 
   defp bfs_loop(graph, queue, parents) do
@@ -526,11 +556,17 @@ defmodule VulnCheck.Solver do
       kinds = [:entrypoint | Enum.map(edges, & &1.kind)]
       sites = Enum.map(edges, &{&1.file, &1.line}) ++ [last || definition(index, mfa)]
 
-      [mfas, kinds, sites]
-      |> Enum.zip()
-      |> Enum.map(fn {hop, kind, {file, line}} ->
-        %TraceHop{mfa: hop, file: display_path(index, hop, file), line: line, kind: kind}
-      end)
+      hops =
+        [mfas, kinds, sites]
+        |> Enum.zip()
+        |> Enum.map(fn {hop, kind, {file, line}} ->
+          %TraceHop{mfa: hop, file: display_path(index, hop, file), line: line, kind: kind}
+        end)
+
+      case Map.fetch(index.activations, hd(mfas)) do
+        {:ok, activation} -> [activation | hops]
+        :error -> hops
+      end
     else
       []
     end

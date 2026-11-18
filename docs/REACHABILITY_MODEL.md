@@ -19,7 +19,7 @@ On the BEAM, four runtime mechanisms invoke functions without a direct static `M
 
 ## Three-Tier Verdict Taxonomy
 
-Every advisory matching a package version in the lockfile receives exactly one of three verdicts. A fourth, `RETIRED` (reason `package_retired`), reports a locked release that its maintainers retired on Hex.pm (severity follows the retirement reason: `security` is high, `invalid` medium, `deprecated` and `renamed` low); it is a package lifecycle status and is excluded from SBOM vulnerabilities and VEX statements.
+Every advisory matching a package version in the lockfile receives exactly one of three verdicts, each with one of thirteen reason codes. A fourth, `RETIRED` (reason `package_retired`), reports a locked release that its maintainers retired on Hex.pm (severity follows the retirement reason: `security` is high, `invalid` medium, `deprecated` and `renamed` low); it is a package lifecycle status and is excluded from SBOM vulnerabilities and VEX statements.
 
 ### 1. `REACHABLE` (High-Confidence Proof of Execution Path)
 
@@ -28,6 +28,18 @@ Assigned when **both** conditions hold:
 - There exists a directed path in the post-macro `.beam` + behaviour-linked call graph from a production root $r \in R$ to at least one vulnerable `Module.fun/arity`.
 
 **Output:** `vulncheck` prints the shortest witness call trace from the entrypoint in user code down to the vulnerable dependency function, with source file and line numbers at each hop.
+
+Two reason codes tell how the chain starts:
+
+- `call_chain_proven` — the chain starts at a function the project runs itself (an application `start/2`, a module named in the configuration, an `extra_entrypoints` function, or an exported function of a library).
+- `daemon_call_chain` — the chain starts at a protocol handler of an active network daemon (for example `Bandit.HTTP2.Handler.handle_data/3`). Nothing in the project calls that handler: the daemon calls it for every request once it is started, which is part of the model rather than a call written in code. Chains from the project's own entrypoints always take precedence, so this reason only appears when no such chain reaches the routine.
+
+A chain that starts at a root the project does not call itself begins with a step 0 activation hop that says why the root is live:
+
+| Hop kind | Points to | Example |
+| :--- | :--- | :--- |
+| `daemon_activation` | The project function that names the daemon module (application `start/2` callbacks first), with its `file:line`. When the project only names a daemon that depends on the package (`Bandit` for `thousand_island`), that function is used and the note says so. Without such a reference, the `.app` file of the project's application whose boot tree starts the daemon. | `0. MyApp.Application.start/2 starts Bandit (lib/my_app/application.ex:12)` |
+| `config_activation` | The configuration line that names a module of a dependency, or the `.vulncheck.exs` file for `extra_entrypoints`. | `0. the configuration names Swoosh.Adapters.Sendgrid (config/runtime.exs:41)` |
 
 ### 2. `POTENTIALLY_REACHABLE` (Conservative Soundness Boundary)
 

@@ -42,7 +42,7 @@ defmodule VulnCheck.Types.TypesTest do
 
     assert Finding.cve_id(finding) == "CVE-2026-101028"
     assert Finding.active?(finding)
-    assert length(Finding.reasons()) == 12
+    assert length(Finding.reasons()) == 13
     assert Finding.verdicts() == [:reachable, :potentially_reachable, :retired, :unreachable]
   end
 

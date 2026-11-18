@@ -31,7 +31,7 @@ At the same time, **a naive static call graph is unsafe on the BEAM**: HTTP serv
 - **Post-Macro `.beam` Analysis:** Inspects compiled `:abstract_code` chunks inside `.beam` artifacts—after `use Phoenix.Router`, `plug Plug.Parsers`, `Ecto.Query`, `Ash`, and `Oban.Worker` macros have already been expanded by the compiler—preserving exact `file:line` call-site locations.
 - **Dual-Feed Advisory Intelligence:** Combines the OSV.dev Hex feed with EEF CNA CVE 5.1 records (`cna.erlef.org` / MITRE CVE API) to recover exact `programRoutines` MFA targets, affected modules, and OTP runtime constraints, plus Hex.pm package retirement checks.
 - **Sound Three-Tier Verdicts:**
-  - `REACHABLE` — Concrete call chain from an application/OTP entrypoint to a vulnerable `Module.fun/arity` (printed with exact `file:line` hops).
+  - `REACHABLE` — Concrete call chain from an application/OTP entrypoint to a vulnerable `Module.fun/arity` (printed with exact `file:line` hops), either `call_chain_proven` or `daemon_call_chain` when it starts at the protocol handler of a network daemon the project starts (the trace then opens with the line that starts it).
   - `POTENTIALLY_REACHABLE` — Package runs as an active OTP daemon/supervisor child, participates in an unresolved `apply/3` boundary, or lacks symbol-level CVE granularity while loaded in `:prod`.
   - `UNREACHABLE` — Mathematically excluded (`function_not_called`, `module_not_loaded`, `adapter_not_configured`, `otp_app_not_started`, `non_prod_dependency`, or `otp_version_unaffected`).
 - **Multi-Language BEAM Support:** Works as `mix vulncheck` inside Elixir / Umbrella projects and as a standalone `vulncheck` escript for Erlang (`rebar3`) and Gleam (`manifest.toml`) builds.

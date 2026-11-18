@@ -129,6 +129,8 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
 }
 ```
 
+`trace[].kind` is how each hop was reached: `entrypoint` for the root, then `static_call`, `macro_expanded`, `behaviour_callback`, `supervisor_child`, `dynamic_apply` or `imports`. A chain whose root the project does not call itself (`reason: "daemon_call_chain"`, or a module named in the configuration) starts with a step 0 hop of kind `daemon_activation` or `config_activation`. That hop points to the project code, configuration line or `.app` file that makes the root live, and has a `note` such as `"starts Bandit"`. Its `mfa` is `null` when it points to a file rather than a function. Only activation hops carry `note`.
+
 `context_routines` lists functions that the advisory names on the vulnerable path but that belong to Erlang/OTP, Elixir or another dependency (for example `List.delete/2` in an HTTP/2 advisory). They explain the advisory and are never used as reachability targets.
 
 ---
@@ -138,8 +140,8 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
 Designed for **GitHub Code Scanning** (`github/codeql-action/upload-sarif`):
 
 - Each unique advisory maps to a `reportingDescriptor` in `tool.driver.rules` with `security-severity` populated from CVSS so GitHub displays accurate `Critical` / `High` / `Medium` / `Low` badges.
-- The primary location is the **last call site in the project's own code** before the trace enters the dependency (or the package's line in the lockfile when no project frame is involved, e.g. an active OTP daemon), so GitHub annotates pull requests on the code that makes the vulnerable call.
-- `codeFlows[].threadFlows[].locations` encodes the complete multi-hop call trace from entrypoint to vulnerable dependency routine.
+- The primary location is the **last call site in the project's own code** before the trace enters the dependency, so GitHub annotates pull requests on the code that makes the vulnerable call. For a chain from a daemon or a configured module, this is the project line that starts or names it. When no project frame is involved (for example a daemon started only through the boot tree), it is the package's line in the lockfile.
+- `codeFlows[].threadFlows[].locations` encodes the complete multi-hop call trace from entrypoint to vulnerable dependency routine. An activation hop has `executionOrder: 0` and `kinds: ["daemon_activation"]` or `["config_activation"]`; the entrypoint has `executionOrder: 1` and `kinds: ["enter"]`.
 - `properties.contextRoutines` lists routines named by the advisory that live outside the vulnerable package (see `context_routines` below); they are never targets.
 - `UNREACHABLE` advisories are omitted by default (or emitted with `level: "none"` when `--show-unreachable` is passed).
 - `partialFingerprints.primaryLocationLineHash` carries the finding fingerprint (stable across runs), so Code Scanning tracks alerts across commits instead of reopening them.

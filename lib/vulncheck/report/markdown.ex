@@ -11,7 +11,7 @@ defmodule VulnCheck.Report.Markdown do
   @behaviour VulnCheck.Report.Formatter
 
   alias VulnCheck.Report.Formatter
-  alias VulnCheck.Types.{Finding, ScanReport, Summary, Workspace}
+  alias VulnCheck.Types.{Finding, ScanReport, Summary, TraceHop, Workspace}
 
   @impl true
   def render(%ScanReport{} = report, _config) do
@@ -98,19 +98,25 @@ defmodule VulnCheck.Report.Markdown do
   defp trace_table(%Finding{trace: hops}) do
     rows =
       hops
-      |> Enum.with_index(1)
+      |> Formatter.numbered()
       |> Enum.map(fn {hop, index} ->
         location = Formatter.location(hop)
 
         [
           to_string(index),
-          cell_code(Formatter.mfa(hop.mfa)),
+          hop_cell(hop),
           (location && cell_code(location)) || ""
         ]
       end)
 
     table(["#", "Call", "Location"], [:right, :left, :left], rows)
   end
+
+  defp hop_cell(%TraceHop{mfa: nil, note: note}), do: inline(note || "")
+  defp hop_cell(%TraceHop{note: nil} = hop), do: cell_code(Formatter.mfa(hop.mfa))
+
+  defp hop_cell(%TraceHop{note: note} = hop),
+    do: cell_code(Formatter.mfa(hop.mfa)) <> " " <> inline(note)
 
   defp unreachable([]), do: nil
 

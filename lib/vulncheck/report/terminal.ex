@@ -131,9 +131,9 @@ defmodule VulnCheck.Report.Terminal do
   defp trace(%Finding{trace: hops}) do
     entries =
       hops
-      |> Enum.with_index(1)
+      |> Formatter.numbered()
       |> Enum.map(fn {hop, index} ->
-        {"#{index}. #{Formatter.mfa(hop.mfa)}", Formatter.location(hop)}
+        {"#{index}. #{Formatter.hop(hop)}", Formatter.location(hop)}
       end)
 
     width = entries |> Enum.map(&String.length(elem(&1, 0))) |> Enum.max()

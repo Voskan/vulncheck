@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New reason code `daemon_call_chain` for reachable findings whose call chain starts at a protocol handler of an active network daemon rather than at code the project runs itself. Chains from the project's own entrypoints take precedence.
+- Call chains from roots the project does not call itself start with a step 0 activation hop (`daemon_activation` or `config_activation` in JSON `trace[].kind` and SARIF `threadFlowLocation.kinds`). The hop names the project function and line that starts the daemon (for example `MyApp.Application.start/2 starts Bandit`), the `.app` file whose boot tree starts it, or the configuration line that names a dependency module. JSON hops of this kind carry a `note`.
+
 ### Fixed
 
 - `Plug.Parsers` parsers are linked to the functions named by their options (the body reader, by default `Plug.Conn.read_body/2`, and the JSON decoder) instead of being left unresolved, and a custom body reader is now reachable.

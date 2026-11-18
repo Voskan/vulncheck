@@ -80,10 +80,15 @@ defmodule VulnCheck.Types.Entrypoint do
   @moduledoc """
   A root of the reachability analysis (application callback, configured
   adapter, extra entrypoint, exported library function, ...).
+
+  `activation` is the hop that explains why a root the project does not
+  call itself is live (see `VulnCheck.Types.TraceHop`): the project
+  function that starts a network daemon, the `.app` file whose boot tree
+  starts it, or the configuration file that names a module.
   """
 
   @enforce_keys [:mfa, :kind]
-  defstruct [:mfa, :kind, source: ""]
+  defstruct [:mfa, :kind, :activation, source: ""]
 
   @type kind ::
           :application_start
@@ -96,7 +101,8 @@ defmodule VulnCheck.Types.Entrypoint do
   @type t :: %__MODULE__{
           mfa: VulnCheck.Types.MFA.t(),
           kind: kind(),
-          source: String.t()
+          source: String.t(),
+          activation: VulnCheck.Types.TraceHop.t() | nil
         }
 end
 
