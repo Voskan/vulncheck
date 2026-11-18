@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ELIXIR_VERSION: "1.18"
+  OTP_VERSION: "27.2"
+
+jobs:
+  lint-and-typecheck:
+    name: Lint, docs and Dialyzer
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: lint-${{ runner.os }}-otp${{ steps.beam.outputs.otp-version }}-elixir${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            lint-${{ runner.os }}-otp${{ steps.beam.outputs.otp-version }}-elixir${{ steps.beam.outputs.elixir-version }}-
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix format --check-formatted
+      - run: mix docs --warnings-as-errors
+
+      - name: Restore Dialyzer PLTs
+        uses: actions/cache@v4
+        with:
+          path: _build/plts
+          key: plts-${{ runner.os }}-otp${{ steps.beam.outputs.otp-version }}-elixir${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            plts-${{ runner.os }}-otp${{ steps.beam.outputs.otp-version }}-elixir${{ steps.beam.outputs.elixir-version }}-
+
+      - run: mkdir -p _build/plts && mix dialyzer --plt
+      - run: mix dialyzer --format github
+
+  test-matrix:
+    name: Test (OTP ${{ matrix.otp }}, Elixir ${{ matrix.elixir }})
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - otp: "26.2"
+            elixir: "1.18"
+            experimental: false
+          - otp: "27.2"
+            elixir: "1.18"
+            experimental: false
+            coverage: true
+          - otp: "28"
+            elixir: "1.19"
+            experimental: true
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          elixir-version: ${{ matrix.elixir }}
+          otp-version: ${{ matrix.otp }}
+
+      - name: Restore deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: test-${{ runner.os }}-otp${{ steps.beam.outputs.otp-version }}-elixir${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            test-${{ runner.os }}-otp${{ steps.beam.outputs.otp-version }}-elixir${{ steps.beam.outputs.elixir-version }}-
+
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+
+      - name: Run tests
+        if: ${{ !matrix.coverage }}
+        run: mix test --trace --include escript
+
+      - name: Run tests with coverage
+        if: ${{ matrix.coverage }}
+        run: mix test --trace --include escript --cover
+
+      - name: Build and smoke-test the escript
+        env:
+          MIX_ENV: prod
+        run: |
+          mix escript.build
+          ./vulncheck --version
+          ./vulncheck --help > /dev/null
+
+  dogfood-security-audit:
+    name: Scan VulnCheck with VulnCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+
+      - name: Restore advisory feeds
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/vulncheck
+          key: vulncheck-feeds-${{ github.run_id }}
+          restore-keys: |
+            vulncheck-feeds-
+
+      - run: mix deps.get
+
+      - name: Compile the production build
+        env:
+          MIX_ENV: prod
+        run: mix compile --warnings-as-errors
+
+      - name: Audit dependencies
+        run: mix vulncheck --fail-on potentially_reachable --format github
+
+      - name: Audit through the GitHub Action
+        uses: ./
+        with:
+          fail-on: potentially_reachable
+          compile: "false"

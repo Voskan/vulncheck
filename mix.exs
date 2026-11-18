@@ -22,6 +22,8 @@ defmodule VulnCheck.MixProject do
       test_coverage: [summary: [threshold: 85], ignore_modules: [~r/^VulnCheck\.Test\./]],
       dialyzer: [
         plt_add_apps: [:mix, :ex_unit, :inets, :ssl, :public_key, :crypto, :tools],
+        plt_core_path: "_build/plts",
+        plt_local_path: "_build/plts",
         flags: [:error_handling, :unknown]
       ]
     ]

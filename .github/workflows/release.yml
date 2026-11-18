@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      MIX_ENV: prod
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27.2"
+
+      - run: mix deps.get
+
+      - name: Check that the tag matches the project version
+        run: |
+          version="$(sed -n 's/^  @version "\(.*\)"$/\1/p' mix.exs)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match mix.exs version ${version}"
+            exit 1
+          fi
+
+      - name: Build the escript
+        run: |
+          mix compile --warnings-as-errors
+          mix escript.build
+          ./vulncheck --version
+          sha256sum vulncheck > vulncheck.sha256
+          cat vulncheck.sha256
+
+      - name: Create the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            vulncheck
+            vulncheck.sha256
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Publish to Hex.pm
+        if: ${{ env.HEX_API_KEY != '' }}
+        env:
+          MIX_ENV: dev
+        run: mix hex.publish --yes

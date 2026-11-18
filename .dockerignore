@@ -1,0 +1,13 @@
+# Only mix.exs, mix.lock and lib/ are needed to build the escript
+.git
+.github
+_build
+deps
+doc
+cover
+benchmarks
+test
+vulncheck
+*.ez
+erl_crash.dump
+.elixir_ls
