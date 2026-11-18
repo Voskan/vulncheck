@@ -120,6 +120,23 @@ defmodule VulnCheck.CacheTest do
       assert {:ok, "v1", :stale} = Cache.fetch(url, "feed", config, @fast)
       assert {:error, _} = Cache.fetch(url, "other", config, @fast)
     end
+
+    test "a partial refresh leaves the complete cached body intact" do
+      server = HTTPServer.start!(fn _ -> {200, [], "complete"} end)
+      config = config(cache_ttl_seconds: 0)
+
+      assert {:ok, "complete", :network} = Cache.fetch(server.url, "feed", config, @fast)
+
+      HTTPServer.set_handler(server, fn _ ->
+        {206, [{"content-range", "bytes 0-3/8"}], "part"}
+      end)
+
+      assert {:ok, "complete", :stale} = Cache.fetch(server.url, "feed", config, @fast)
+      assert {:ok, "complete"} = Cache.read_feed(config, "feed")
+
+      assert Cache.read_meta(Path.join(Cache.feeds_dir(config), "feed"))["sha256"] ==
+               Cache.sha256("complete")
+    end
   end
 
   describe "beam summaries" do

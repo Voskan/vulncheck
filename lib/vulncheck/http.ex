@@ -6,8 +6,10 @@ defmodule VulnCheck.HTTP do
       operating system trust store (`:public_key.cacerts_get/0`) and check the
       hostname.
     * Plain `http://` is only allowed for loopback hosts (local test servers).
-    * Response bodies are streamed and aborted beyond `:max_body_bytes`
-      (default 50 MiB) to protect against memory and decompression bombs.
+    * Successful responses are streamed with backpressure and aborted beyond
+      `:max_body_bytes` (default 50 MiB). For other responses, `:httpc` delivers
+      the buffered body before the client can check its size.
+    * Partial responses are rejected because feed requests require a complete body.
     * Transient failures (`502`, `503`, `504`, timeouts, closed sockets) are
       retried up to two times with jitter.
     * Redirects are followed manually (at most 3) so every hop is validated.
@@ -43,7 +45,8 @@ defmodule VulnCheck.HTTP do
   Performs a GET request.
 
   Options: `:timeout`, `:connect_timeout`, `:max_body_bytes`, `:retries`
-  (default 2) and `:retry_delay_ms` (default 300).
+  (default 2), `:retry_delay_ms` (default 300) and `:cacerts` (trusted DER
+  certificates, defaults to the operating system trust store).
   """
   @impl true
   @spec get(String.t(), [{String.t(), String.t()}], keyword()) ::
@@ -80,11 +83,11 @@ defmodule VulnCheck.HTTP do
   def validate_url(url), do: {:error, {:invalid_url, url}}
 
   @doc "TLS options used for `https://` requests."
-  @spec ssl_options() :: keyword()
-  def ssl_options do
+  @spec ssl_options(keyword()) :: keyword()
+  def ssl_options(opts \\ []) do
     [
       verify: :verify_peer,
-      cacerts: :public_key.cacerts_get(),
+      cacerts: Keyword.get_lazy(opts, :cacerts, &:public_key.cacerts_get/0),
       depth: 4,
       customize_hostname_check: [
         match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
@@ -172,9 +175,9 @@ defmodule VulnCheck.HTTP do
         timeout: timeout,
         connect_timeout: Keyword.get(opts, :connect_timeout, @default_connect_timeout),
         autoredirect: false
-      ] ++ if(String.starts_with?(url, "https://"), do: [ssl: ssl_options()], else: [])
+      ] ++ if(URI.parse(url).scheme == "https", do: [ssl: ssl_options(opts)], else: [])
 
-    options = [sync: false, stream: :self, body_format: :binary]
+    options = [sync: false, stream: {:self, :once}, body_format: :binary]
 
     case :httpc.request(:get, {String.to_charlist(url), request_headers}, http_opts, options) do
       {:ok, ref} -> receive_response(ref, max_body, timeout + 1_000)
@@ -187,27 +190,41 @@ defmodule VulnCheck.HTTP do
     receive_loop(ref, max_body, deadline, nil, [], 0)
   end
 
-  defp receive_loop(ref, max_body, deadline, headers, acc, size) do
+  defp receive_loop(ref, max_body, deadline, stream, acc, size) do
     remaining = max(deadline - System.monotonic_time(:millisecond), 0)
 
     receive do
-      {:http, {^ref, :stream_start, raw_headers}} ->
-        receive_loop(ref, max_body, deadline, normalize_headers(raw_headers), acc, size)
+      {:http, {^ref, :stream_start, raw_headers, pid}} ->
+        headers = normalize_headers(raw_headers)
+
+        if partial?(headers) do
+          cancel(ref, :partial_response)
+        else
+          :httpc.stream_next(pid)
+          receive_loop(ref, max_body, deadline, {pid, headers}, acc, size)
+        end
 
       {:http, {^ref, :stream, chunk}} ->
+        {pid, _headers} = stream
         size = size + byte_size(chunk)
 
         if size > max_body do
-          :httpc.cancel_request(ref)
-          flush(ref)
-          {:error, {:body_too_large, max_body}}
+          cancel(ref, {:body_too_large, max_body})
         else
-          receive_loop(ref, max_body, deadline, headers, [acc, chunk], size)
+          :httpc.stream_next(pid)
+          receive_loop(ref, max_body, deadline, stream, [acc, chunk], size)
         end
 
       {:http, {^ref, :stream_end, raw_headers}} ->
-        headers = Map.merge(headers || %{}, normalize_headers(raw_headers))
-        {:ok, %{status: 200, headers: headers, body: IO.iodata_to_binary(acc)}}
+        {_pid, headers} = stream
+        headers = Map.merge(headers, normalize_headers(raw_headers))
+
+        if partial?(headers),
+          do: {:error, :partial_response},
+          else: {:ok, %{status: 200, headers: headers, body: IO.iodata_to_binary(acc)}}
+
+      {:http, {^ref, {{_version, 206, _reason}, _headers, _body}}} ->
+        {:error, :partial_response}
 
       {:http, {^ref, {{_version, status, _reason}, raw_headers, body}}} ->
         body = IO.iodata_to_binary(body)
@@ -222,16 +239,30 @@ defmodule VulnCheck.HTTP do
         {:error, normalize_error(reason)}
     after
       remaining ->
-        :httpc.cancel_request(ref)
-        flush(ref)
-        {:error, :timeout}
+        cancel(ref, :timeout)
     end
+  end
+
+  # OTP streams both 200 and 206 without a status line. A single range is
+  # marked by Content-Range, while multiple ranges use a multipart media type.
+  defp partial?(headers) do
+    media_type = headers |> Map.get("content-type", "") |> String.downcase()
+
+    Map.has_key?(headers, "content-range") or
+      String.starts_with?(media_type, "multipart/byteranges")
+  end
+
+  defp cancel(ref, reason) do
+    :httpc.cancel_request(ref)
+    flush(ref)
+    {:error, reason}
   end
 
   defp flush(ref) do
     receive do
       {:http, {^ref, _}} -> flush(ref)
       {:http, {^ref, _, _}} -> flush(ref)
+      {:http, {^ref, _, _, _}} -> flush(ref)
     after
       0 -> :ok
     end
