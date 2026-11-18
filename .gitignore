@@ -1,0 +1,27 @@
+# Build artifacts
+/_build/
+/deps/
+/*.ez
+/vulncheck
+/vulncheck-*
+
+# Crash dumps & profiling
+erl_crash.dump
+*.beam
+*.plt
+*.plt.hash
+
+# Test coverage & generated docs
+/cover/
+/doc/
+
+# Local caches & temporary outputs
+/.vulncheck-cache/
+/tmp/
+
+# OS & editor metadata
+.DS_Store
+*.swp
+*~
+.elixir_ls/
+.lexical/
