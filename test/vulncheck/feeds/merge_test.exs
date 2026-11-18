@@ -43,8 +43,8 @@ defmodule VulnCheck.Feeds.MergeTest do
         advisory("EEF-CVE-2026-39804", ["CVE-2026-39804"],
           summary: "HTTP/2 flow control bypass",
           severity: :high,
-          cvss_score: 8.7,
-          cvss_vector: "CVSS:4.0/AV:N",
+          cvss_score: 9.3,
+          cvss_vector: "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N",
           version_ranges: [range("0", "1.11.0")],
           fixed_versions: ["1.11.0"],
           affected_routines: [%MFA{module: "Elixir.Bandit.HTTP2", function: "recv", arity: 2}],
@@ -78,8 +78,8 @@ defmodule VulnCheck.Feeds.MergeTest do
       assert merged.aliases == ["CVE-2026-39804", "GHSA-frh3-6pv6-rc8j"]
       assert merged.summary == "HTTP/2 flow control bypass"
       assert merged.details == "GitHub description"
-      assert {merged.severity, merged.cvss_score} == {:high, 8.7}
-      assert merged.cvss_vector == "CVSS:4.0/AV:N"
+      assert {merged.severity, merged.cvss_score} == {:critical, 9.3}
+      assert merged.cvss_vector == "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
       assert merged.version_ranges == [range("0", "1.11.0"), range("1.0.0", "1.11.0")]
       assert merged.fixed_versions == ["1.11.0"]
       assert merged.cwes == ["CWE-400", "CWE-770"]
@@ -142,7 +142,7 @@ defmodule VulnCheck.Feeds.MergeTest do
       assert [merged] = Merge.merge([a, b])
 
       assert {merged.severity, merged.cvss_score, merged.cvss_vector} ==
-               {:medium, nil, "CVSS:4.0/X"}
+               {:medium, nil, nil}
     end
 
     test "leaves single advisories untouched" do

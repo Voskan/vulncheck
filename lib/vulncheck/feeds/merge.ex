@@ -24,6 +24,7 @@ defmodule VulnCheck.Feeds.Merge do
   """
 
   alias VulnCheck.Semver
+  alias VulnCheck.Feeds.CVSS
   alias VulnCheck.Types.{Advisory, VersionRange}
 
   @doc """
@@ -88,7 +89,8 @@ defmodule VulnCheck.Feeds.Merge do
     [%Advisory{} = canonical | _] = ordered = Enum.sort_by(members, &{rank(&1.id), &1.id})
     ids = ordered |> Enum.flat_map(&[&1.id | &1.aliases]) |> Enum.uniq()
     ranges = ranges(ordered)
-    {score, vector} = cvss(ordered)
+    ratings = Enum.flat_map(ordered, &ratings/1)
+    label = qualitative_severity(ordered)
     {otp_constraints, otp_conflict?} = otp_constraints(ordered)
 
     %Advisory{
@@ -96,9 +98,8 @@ defmodule VulnCheck.Feeds.Merge do
       | aliases: ids |> List.delete(canonical.id) |> Enum.sort(),
         summary: first_present(ordered, & &1.summary) || "",
         details: first_present(ordered, & &1.details) || "",
-        severity: severity(ordered),
-        cvss_score: score,
-        cvss_vector: vector,
+        qualitative_severity: label,
+        cvss_ratings: ratings,
         cwes: union_of(ordered, & &1.cwes) |> Enum.sort(),
         references: union_of(ordered, & &1.references),
         published_at:
@@ -116,6 +117,7 @@ defmodule VulnCheck.Feeds.Merge do
         otp_constraints_conflict: otp_conflict?,
         enriched: Enum.any?(ordered, & &1.enriched)
     }
+    |> CVSS.apply_rating(CVSS.select(ratings, nil), label)
   end
 
   defp rank("EEF-CVE-" <> _), do: 0
@@ -133,15 +135,24 @@ defmodule VulnCheck.Feeds.Merge do
     |> Enum.uniq()
   end
 
-  defp cvss(members) do
-    case members |> Enum.filter(& &1.cvss_score) |> Enum.max_by(& &1.cvss_score, fn -> nil end) do
-      nil -> {nil, Enum.find_value(members, & &1.cvss_vector)}
-      best -> {best.cvss_score, best.cvss_vector || Enum.find_value(members, & &1.cvss_vector)}
-    end
-  end
+  defp ratings(%Advisory{cvss_ratings: []} = advisory),
+    do: [
+      %{
+        default: CVSS.current(advisory),
+        scoped: [],
+        ranges: advisory.version_ranges,
+        versions: advisory.affected_versions
+      }
+    ]
 
-  defp severity(members) do
-    members |> Enum.map(& &1.severity) |> Enum.reduce(&Advisory.max_severity/2)
+  defp ratings(%Advisory{cvss_ratings: ratings}), do: ratings
+
+  defp qualitative_severity(members) do
+    members
+    |> Enum.map(fn member ->
+      if member.cvss_score == nil, do: member.severity, else: member.qualitative_severity
+    end)
+    |> Enum.reduce(&Advisory.max_severity/2)
   end
 
   defp otp_constraints(members) do

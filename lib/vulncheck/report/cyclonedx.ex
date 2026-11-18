@@ -242,10 +242,17 @@ defmodule VulnCheck.Report.CycloneDX do
   defp rating(%Finding{} = f) do
     base = %{
       "severity" => Atom.to_string(f.severity),
-      "source" => %{"name" => source_name(f.advisory_id)}
+      "source" => %{"name" => f.cvss_source || source_name(f.advisory_id)}
     }
 
-    if is_number(f.cvss_score), do: Map.put(base, "score", f.cvss_score), else: base
+    for {key, value} <- [
+          {"score", f.cvss_score},
+          {"vector", f.cvss_vector},
+          {"method", f.cvss_method}
+        ],
+        value != nil,
+        into: base,
+        do: {key, value}
   end
 
   defp cwes(cwes) do

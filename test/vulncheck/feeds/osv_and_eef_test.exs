@@ -2,10 +2,10 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
   # Measures the global atom table, so it must not run concurrently.
   use ExUnit.Case, async: false
 
-  alias VulnCheck.{Cache, Config}
-  alias VulnCheck.Feeds.{CVSS, EefCna, OSV, Store, TextHints}
+  alias VulnCheck.{Cache, Config, Solver}
+  alias VulnCheck.Feeds.{CVSS, EefCna, Merge, OSV, Store, TextHints}
   alias VulnCheck.Test.{Feeds, HTTPServer, Tmp}
-  alias VulnCheck.Types.{Advisory, Finding, MFA, Package, Workspace}
+  alias VulnCheck.Types.{Advisory, Finding, MFA, Package, ScanReport, Workspace}
 
   doctest VulnCheck.Feeds.CVSS
   doctest VulnCheck.Feeds.TextHints
@@ -102,6 +102,63 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
 
     test "rejects invalid archives" do
       assert {:error, {:invalid_archive, _}} = OSV.parse_archive("not a zip")
+    end
+
+    test "uses a valid rating for the installed package and version in the CI gate" do
+      low = "CVSS:3.1/AV:P/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N"
+      high = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+      malformed = "CVSS:3.1/AV:N"
+      scores = fn vectors -> Enum.map(vectors, &%{"type" => "CVSS_V3", "score" => &1}) end
+
+      block = fn name, version, vectors ->
+        %{
+          "package" => %{"ecosystem" => "Hex", "name" => name},
+          "versions" => [version],
+          "severity" => scores.(vectors)
+        }
+      end
+
+      osv = %{
+        "id" => "RATING-1",
+        "severity" => scores.(~w(18.5)),
+        "affected" => [
+          block.("fixture", "1.0.0", [low]),
+          block.("fixture", "2.0.0", [malformed, high]),
+          block.("other", "1.0.0", [high])
+        ]
+      }
+
+      alias_record = %{
+        "id" => "RATING-2",
+        "aliases" => ["RATING-1"],
+        "severity" => scores.([high]),
+        "affected" => [block.("fixture", "2.0.0", [])]
+      }
+
+      advisories = Merge.merge(OSV.parse_record(osv) ++ OSV.parse_record(alias_record))
+      index = OSV.index(advisories)
+      gate = %Config{min_severity: :high}
+
+      for {name, version, vector, failure?} <- [
+            {"fixture", "1.0.0", low, false},
+            {"fixture", "2.0.0", high, true},
+            {"other", "1.0.0", high, true}
+          ] do
+        ws = workspace([{name, version}])
+        [advisory] = Store.match(index, ws)
+        assert advisory.cvss_vector == vector
+        assert advisory.cvss_method == "CVSSv31"
+        assert advisory.cvss_score == CVSS.base_score(vector)
+
+        [finding] = Solver.solve(ws, nil, nil, [advisory], gate)
+        assert VulnCheck.should_fail?(%ScanReport{findings: [finding]}, gate) == failure?
+      end
+
+      source = [%{"type" => "CVSS_V3", "score" => "18.5"}]
+      assert CVSS.ratings(source, "RATING-INVALID") == nil
+
+      assert CVSS.ratings(scores.([high, low]), "RATING-TIE") ==
+               CVSS.ratings(scores.([low, high]), "RATING-TIE")
     end
   end
 
@@ -370,7 +427,7 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
       enriched = EefCna.apply_record(merged, higher)
 
       assert {enriched.cvss_score, enriched.cvss_vector, enriched.severity} ==
-               {9.1, "CVSS:3.1/higher", :critical}
+               {9.1, nil, :critical}
 
       lower = Feeds.cve_record("CVE-2026-2", "bandit", [], cvss: {5.0, "CVSS:3.1/lower"})
       kept = EefCna.apply_record(merged, lower)
@@ -420,5 +477,13 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
     assert CVSS.base_score("CVSS:3.1/AV:X/AC:L") == nil
     assert CVSS.version("CVSS:4.0/AV:N") == 4
     assert CVSS.version(nil) == nil
+  end
+
+  test "rejects unknown revisions, repeated fields and invalid optional fields" do
+    base = "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    assert CVSS.base_score("CVSS:3.9/" <> base) == nil
+    assert CVSS.base_score("CVSS:3.1/" <> base <> "/AV:L") == nil
+    assert CVSS.base_score("CVSS:3.1/" <> base <> "/RL:invalid") == nil
+    assert CVSS.base_score("CVSS:3.1/" <> base <> "/RL:X") == 9.8
   end
 end

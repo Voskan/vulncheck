@@ -15,7 +15,7 @@ defmodule VulnCheck.Feeds.Store do
   """
 
   alias VulnCheck.{Cache, Config, Semver}
-  alias VulnCheck.Feeds.{EefCna, HexRetired, OSV, TextHints}
+  alias VulnCheck.Feeds.{CVSS, EefCna, HexRetired, OSV, TextHints}
   alias VulnCheck.Types.{Advisory, Package, Workspace}
 
   @type result :: %{
@@ -87,7 +87,7 @@ defmodule VulnCheck.Feeds.Store do
       |> Map.get(package.hex_name || package.name, [])
       |> Enum.filter(&Semver.affected?(package.version, &1))
       |> Enum.map(fn advisory ->
-        scoped = OSV.scope_symbols(advisory, package.version)
+        scoped = advisory |> OSV.scope_symbols(package.version) |> CVSS.for_version(package.version)
 
         %{
           scoped

@@ -11,7 +11,7 @@ defmodule VulnCheck.Feeds.EefCna do
   """
 
   alias VulnCheck.{Cache, Config, Semver}
-  alias VulnCheck.Feeds.TextHints
+  alias VulnCheck.Feeds.{CVSS, TextHints}
   alias VulnCheck.Types.{Advisory, MFA}
 
   @cna_base "https://cna.erlef.org/cves"
@@ -135,7 +135,7 @@ defmodule VulnCheck.Feeds.EefCna do
         true -> :osv_and_cve
       end
 
-    {score, vector, label} = metrics(cna)
+    {cna_rating, cna_label} = metrics(cna, "CNA " <> (Advisory.cve_id(advisory) || advisory.id))
 
     cwes =
       cna
@@ -162,15 +162,8 @@ defmodule VulnCheck.Feeds.EefCna do
         advisory.version_ranges
       end
 
-    {cvss_score, cvss_vector} =
-      strongest({advisory.cvss_score, advisory.cvss_vector}, {score, vector})
-
-    record_severity =
-      if score != nil,
-        do: Advisory.severity_from_score(score),
-        else: Advisory.parse_severity(label)
-
-    severity = Advisory.max_severity(advisory.severity, record_severity)
+    rating = CVSS.strongest([CVSS.current(advisory), cna_rating])
+    label = Advisory.max_severity(advisory.severity, cna_label)
 
     %{
       advisory
@@ -178,15 +171,13 @@ defmodule VulnCheck.Feeds.EefCna do
         affected_modules: all_modules,
         symbol_source: symbol_source,
         symbol_gaps: symbol_gaps,
-        cvss_score: cvss_score,
-        cvss_vector: cvss_vector,
-        severity: severity,
         cwes: Enum.uniq(advisory.cwes ++ cwes),
         version_ranges: ranges,
         fixed_versions: Enum.uniq(advisory.fixed_versions ++ Semver.fixed_versions(ranges)),
         otp_constraints: otp_constraints(advisory, descriptions),
         enriched: true
     }
+    |> CVSS.apply_rating(rating, label)
   end
 
   defp applies_to_version?(_entry, nil), do: true
@@ -220,14 +211,6 @@ defmodule VulnCheck.Feeds.EefCna do
   defp otp_constraints(advisory, descriptions),
     do: advisory.otp_constraints || TextHints.otp_constraint(descriptions)
 
-  # Merged advisories keep the highest score of their sources.
-  defp strongest({nil, own_vector}, {nil, vector}), do: {nil, own_vector || vector}
-  defp strongest({nil, _own_vector}, {score, vector}), do: {score, vector}
-  defp strongest({own, own_vector}, {nil, _vector}), do: {own, own_vector}
-
-  defp strongest({own, own_vector}, {score, vector}),
-    do: if(score > own, do: {score, vector}, else: {own, own_vector})
-
   defp matches_package?(entry, package) when is_map(entry) do
     package = String.downcase(package)
 
@@ -248,18 +231,26 @@ defmodule VulnCheck.Feeds.EefCna do
 
   defp matches_package?(_entry, _package), do: false
 
-  defp metrics(cna) do
-    metrics = list(cna, "metrics")
+  defp metrics(cna, source) do
+    entries =
+      for metric <- list(cna, "metrics"),
+          {key, method} <- [{"cvssV4_0", "CVSSv4"}, {"cvssV3_1", "CVSSv31"}, {"cvssV3_0", "CVSSv3"}],
+          %{^key => %{} = data} <- [metric],
+          do: {method, data}
 
-    Enum.find_value(["cvssV4_0", "cvssV3_1", "cvssV3_0"], {nil, nil, nil}, fn key ->
-      Enum.find_value(metrics, fn
-        %{^key => %{"baseScore" => score} = m} when is_number(score) ->
-          {score * 1.0, m["vectorString"], m["baseSeverity"]}
-
-        _ ->
-          nil
+    rating =
+      entries
+      |> Enum.map(fn {method, data} ->
+        CVSS.published(data["baseScore"], data["vectorString"], method, source)
       end)
-    end)
+      |> CVSS.preferred()
+
+    label =
+      Enum.reduce(entries, :unknown, fn {_method, data}, best ->
+        Advisory.max_severity(best, Advisory.parse_severity(data["baseSeverity"]))
+      end)
+
+    {rating, label}
   end
 
   defp parse_routine(name) do

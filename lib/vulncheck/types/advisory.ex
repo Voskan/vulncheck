@@ -64,6 +64,10 @@ defmodule VulnCheck.Types.Advisory do
     severity: :unknown,
     cvss_score: nil,
     cvss_vector: nil,
+    cvss_method: nil,
+    cvss_source: nil,
+    cvss_ratings: [],
+    qualitative_severity: :unknown,
     cwes: [],
     references: [],
     published_at: nil,
@@ -93,6 +97,17 @@ defmodule VulnCheck.Types.Advisory do
           severity: severity(),
           cvss_score: float() | nil,
           cvss_vector: String.t() | nil,
+          cvss_method: String.t() | nil,
+          cvss_source: String.t() | nil,
+          cvss_ratings: [
+            %{
+              default: VulnCheck.Feeds.CVSS.rating() | nil,
+              scoped: [{[VersionRange.t()], [String.t()], VulnCheck.Feeds.CVSS.rating()}],
+              ranges: [VersionRange.t()],
+              versions: [String.t()]
+            }
+          ],
+          qualitative_severity: severity(),
           cwes: [String.t()],
           references: [String.t()],
           published_at: String.t() | nil,
@@ -137,7 +152,7 @@ defmodule VulnCheck.Types.Advisory do
       :unknown
   """
   @spec severity_from_score(number() | nil) :: severity()
-  def severity_from_score(nil), do: :unknown
+  def severity_from_score(score) when not is_number(score) or score < 0 or score > 10, do: :unknown
   def severity_from_score(score) when score >= 9.0, do: :critical
   def severity_from_score(score) when score >= 7.0, do: :high
   def severity_from_score(score) when score >= 4.0, do: :medium

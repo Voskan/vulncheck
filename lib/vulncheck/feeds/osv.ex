@@ -79,7 +79,7 @@ defmodule VulnCheck.Feeds.OSV do
   def parse_record(%{"withdrawn" => withdrawn}) when is_binary(withdrawn), do: []
 
   def parse_record(%{"id" => id} = record) when is_binary(id) do
-    {score, vector} = cvss(record["severity"])
+    default_rating = CVSS.ratings(record["severity"], id)
     database = map(record["database_specific"])
     summary = string(record["summary"])
     details = string(record["details"])
@@ -95,17 +95,19 @@ defmodule VulnCheck.Feeds.OSV do
       ranges = Enum.flat_map(blocks, & &1.ranges)
       versions = Enum.flat_map(blocks, & &1.versions)
       ranges = include_unbounded_blocks(blocks, ranges, versions)
-      {entry_score, entry_vector} = entries |> Enum.flat_map(&list(&1, "severity")) |> cvss()
-      score = score || entry_score
-      vector = vector || entry_vector
+
+      scoped_ratings =
+        for {entry, block} <- Enum.zip(entries, blocks),
+            rating = CVSS.ratings(entry["severity"], id),
+            do: {block.ranges, block.versions, rating}
+
+      ratings = [
+        %{default: default_rating, scoped: scoped_ratings, ranges: ranges, versions: versions}
+      ]
+
+      severity = Advisory.parse_severity(database["severity"])
       modules = blocks |> Enum.flat_map(& &1.modules) |> Enum.uniq()
       routines = blocks |> Enum.flat_map(& &1.routines) |> Enum.uniq()
-
-      severity =
-        case Advisory.severity_from_score(score) do
-          :unknown -> Advisory.parse_severity(database["severity"])
-          other -> other
-        end
 
       %Advisory{
         id: id,
@@ -114,9 +116,8 @@ defmodule VulnCheck.Feeds.OSV do
         source_package: package,
         summary: summary,
         details: details,
-        severity: severity,
-        cvss_score: score,
-        cvss_vector: vector,
+        qualitative_severity: severity,
+        cvss_ratings: ratings,
         cwes: database |> Map.get("cwe_ids", []) |> List.wrap() |> Enum.filter(&is_binary/1),
         references:
           record
@@ -138,6 +139,7 @@ defmodule VulnCheck.Feeds.OSV do
           string_or_nil(database["otp_constraints"]) ||
             TextHints.otp_constraint(summary <> "\n" <> details)
       }
+      |> CVSS.apply_rating(CVSS.select(ratings, nil), severity)
     end)
     |> Enum.sort_by(& &1.package)
   end
@@ -226,34 +228,6 @@ defmodule VulnCheck.Feeds.OSV do
       :error -> []
     end
   end
-
-  defp cvss(entries) when is_list(entries) do
-    vectors =
-      for %{"type" => type, "score" => score} <- entries, is_binary(score), do: {type, score}
-
-    v3 = Enum.find_value(vectors, fn {_type, vector} -> CVSS.version(vector) == 3 && vector end)
-    v4 = Enum.find_value(vectors, fn {_type, vector} -> CVSS.version(vector) == 4 && vector end)
-
-    numeric =
-      Enum.find_value(vectors, fn {_type, value} ->
-        case Float.parse(value) do
-          {float, ""} -> float
-          _ -> nil
-        end
-      end)
-
-    v4_score = CVSS.base_score(v4)
-
-    cond do
-      v4_score -> {v4_score, v4}
-      v3 -> {CVSS.base_score(v3), v3}
-      numeric -> {numeric, v4}
-      v4 -> {nil, v4}
-      true -> {nil, nil}
-    end
-  end
-
-  defp cvss(_), do: {nil, nil}
 
   defp check_limits(zip) do
     case :zip.list_dir(zip) do

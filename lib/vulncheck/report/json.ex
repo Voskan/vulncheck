@@ -89,7 +89,13 @@ defmodule VulnCheck.Report.JSON do
       "suppression_expires" => f.suppression_expires,
       "suppression_expired" => f.suppression_expired
     }
+    |> put_optional("cvss_vector", f.cvss_vector)
+    |> put_optional("cvss_method", f.cvss_method)
+    |> put_optional("cvss_source", f.cvss_source)
   end
+
+  defp put_optional(map, _key, nil), do: map
+  defp put_optional(map, key, value), do: Map.put(map, key, value)
 
   defp hop(%TraceHop{} = hop) do
     base = %{

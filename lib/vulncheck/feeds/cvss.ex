@@ -5,6 +5,33 @@ defmodule VulnCheck.Feeds.CVSS do
   """
 
   alias VulnCheck.Feeds.CVSS.V4
+  alias VulnCheck.Semver
+  alias VulnCheck.Types.Advisory
+
+  @type rating :: %{
+          score: float(),
+          vector: String.t() | nil,
+          method: String.t(),
+          source: String.t()
+        }
+
+  @v3_optional %{
+    "E" => ~w(X U P F H),
+    "RL" => ~w(X O T W U),
+    "RC" => ~w(X U R C),
+    "CR" => ~w(X H M L),
+    "IR" => ~w(X H M L),
+    "AR" => ~w(X H M L),
+    "MAV" => ~w(X N A L P),
+    "MAC" => ~w(X L H),
+    "MPR" => ~w(X N L H),
+    "MUI" => ~w(X N R),
+    "MS" => ~w(X U C),
+    "MC" => ~w(X N L H),
+    "MI" => ~w(X N L H),
+    "MA" => ~w(X N L H)
+  }
+  @v3_base ~w(AV AC PR UI S C I A)
 
   @doc """
   Computes the score of a CVSS v3.x or v4.0 vector, or `nil` when the
@@ -21,10 +48,9 @@ defmodule VulnCheck.Feeds.CVSS do
       nil
   """
   @spec base_score(String.t() | nil) :: float() | nil
-  def base_score("CVSS:3." <> _ = vector) do
-    metrics = parse_metrics(vector)
-
-    with {:ok, av} <- lookup(metrics, "AV", %{"N" => 0.85, "A" => 0.62, "L" => 0.55, "P" => 0.2}),
+  def base_score(<<"CVSS:3.", revision, "/", metrics::binary>>) when revision in [?0, ?1] do
+    with {:ok, metrics} <- parse_metrics(metrics),
+         {:ok, av} <- lookup(metrics, "AV", %{"N" => 0.85, "A" => 0.62, "L" => 0.55, "P" => 0.2}),
          {:ok, ac} <- lookup(metrics, "AC", %{"L" => 0.77, "H" => 0.44}),
          {:ok, ui} <- lookup(metrics, "UI", %{"N" => 0.85, "R" => 0.62}),
          {:ok, scope} <- lookup(metrics, "S", %{"U" => :unchanged, "C" => :changed}),
@@ -52,27 +78,151 @@ defmodule VulnCheck.Feeds.CVSS do
     end
   end
 
-  def base_score("CVSS:4." <> _ = vector), do: V4.score(vector)
+  def base_score("CVSS:4.0/" <> _ = vector), do: V4.score(vector)
 
   def base_score(_), do: nil
 
   @doc "Returns the CVSS major version of a vector string (`3` or `4`), or `nil`."
   @spec version(String.t() | nil) :: 3 | 4 | nil
-  def version("CVSS:3." <> _), do: 3
-  def version("CVSS:4." <> _), do: 4
-  def version(_), do: nil
+  def version(vector) do
+    case method(vector) do
+      method when method in ["CVSSv3", "CVSSv31"] -> 3
+      "CVSSv4" -> 4
+      _ -> nil
+    end
+  end
 
-  defp parse_metrics(vector) do
-    vector
+  @doc "CycloneDX method name corresponding to the vector header."
+  @spec method(term()) :: String.t() | nil
+  def method("CVSS:3.0/" <> _), do: "CVSSv3"
+  def method("CVSS:3.1/" <> _), do: "CVSSv31"
+  def method("CVSS:4.0/" <> _), do: "CVSSv4"
+  def method(_), do: nil
+
+  @doc false
+  def ratings(entries, source) when is_list(entries) do
+    entries
+    |> Enum.flat_map(fn
+      %{"score" => value} when is_binary(value) ->
+        case base_score(value) do
+          score when is_number(score) -> [rating(score, value, method(value), source)]
+          nil -> numeric_rating(value, source)
+        end
+
+      _ ->
+        []
+    end)
+    |> preferred()
+  end
+
+  def ratings(_entries, _source), do: nil
+
+  defp numeric_rating(value, source) do
+    case Float.parse(value) do
+      {score, ""} when score >= 0.0 and score <= 10.0 -> [rating(score, nil, "other", source)]
+      _ -> []
+    end
+  end
+
+  @doc false
+  def published(score, vector, method, source) do
+    vector_score = if method(vector) == method, do: base_score(vector)
+    score = if valid_score?(score), do: score, else: vector_score
+
+    if valid_score?(score) do
+      rating(score, if(vector_score != nil, do: vector), method, source)
+    end
+  end
+
+  @doc false
+  def preferred(ratings) do
+    ratings
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(&{method_rank(&1.method), &1.score, &1.vector || "", &1.source}, fn -> nil end)
+  end
+
+  @doc false
+  def strongest(ratings) do
+    ratings
+    |> Enum.reject(&is_nil/1)
+    |> Enum.max_by(&{&1.score, method_rank(&1.method), &1.vector || "", &1.source}, fn -> nil end)
+  end
+
+  @doc false
+  def select(sources, version) do
+    for source <- sources,
+        version == nil or Semver.affected?(version, source.ranges, source.versions) do
+      scoped =
+        for {ranges, versions, rating} <- source.scoped,
+            version == nil or Semver.affected?(version, ranges, versions),
+            do: rating
+
+      preferred(scoped) || source.default
+    end
+    |> strongest()
+  end
+
+  @doc false
+  def for_version(%Advisory{cvss_ratings: []} = advisory, _version), do: advisory
+
+  def for_version(%Advisory{} = advisory, version) do
+    apply_rating(advisory, select(advisory.cvss_ratings, version), advisory.qualitative_severity)
+  end
+
+  @doc false
+  def current(%Advisory{} = advisory) do
+    if valid_score?(advisory.cvss_score) do
+      vector = if base_score(advisory.cvss_vector) != nil, do: advisory.cvss_vector
+      source = advisory.cvss_source || advisory.id
+      rating(advisory.cvss_score, vector, advisory.cvss_method || method(vector) || "other", source)
+    end
+  end
+
+  @doc false
+  def apply_rating(advisory, nil, label) do
+    %{
+      advisory
+      | cvss_score: nil,
+        cvss_vector: nil,
+        cvss_method: nil,
+        cvss_source: nil,
+        severity: label
+    }
+  end
+
+  def apply_rating(advisory, rating, _label) do
+    %{
+      advisory
+      | cvss_score: rating.score,
+        cvss_vector: rating.vector,
+        cvss_method: rating.method,
+        cvss_source: rating.source,
+        severity: Advisory.severity_from_score(rating.score)
+    }
+  end
+
+  defp rating(score, vector, method, source),
+    do: %{score: score * 1.0, vector: vector, method: method, source: source}
+
+  defp method_rank("CVSSv4"), do: 3
+  defp method_rank("CVSSv31"), do: 2
+  defp method_rank("CVSSv3"), do: 1
+  defp method_rank(_method), do: 0
+
+  defp valid_score?(score), do: is_number(score) and score >= 0.0 and score <= 10.0
+
+  defp parse_metrics(metrics) do
+    metrics
     |> String.split("/")
-    |> Enum.drop(1)
-    |> Enum.flat_map(fn part ->
-      case String.split(part, ":", parts: 2) do
-        [k, v] -> [{k, v}]
-        _ -> []
+    |> Enum.reduce_while({:ok, %{}}, fn part, {:ok, parsed} ->
+      with [key, value] <- String.split(part, ":", parts: 2),
+           false <- Map.has_key?(parsed, key),
+           true <- key in @v3_base or value in Map.get(@v3_optional, key, []) do
+        {:cont, {:ok, Map.put(parsed, key, value)}}
+      else
+        _ -> {:halt, :error}
       end
     end)
-    |> Map.new()
   end
 
   defp lookup(metrics, key, table) do
