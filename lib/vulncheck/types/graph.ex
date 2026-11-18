@@ -52,20 +52,28 @@ end
 defmodule VulnCheck.Types.DynamicCall do
   @moduledoc """
   A dynamic dispatch site (`apply/2,3` or `mod.fun(...)` with a non-literal
-  module or function) that could not be resolved statically.
+  module or function) that could not be resolved statically. `min_arity`
+  is the number of arguments known to be passed when the exact arity is
+  not (`apply(m, f, [env | rest])` passes at least one).
   """
 
   @enforce_keys [:caller]
-  defstruct [:caller, :known_module, :known_function, :arity, :file, :line]
+  defstruct [:caller, :known_module, :known_function, :arity, :file, :line, min_arity: 0]
 
   @type t :: %__MODULE__{
           caller: VulnCheck.Types.MFA.t(),
           known_module: String.t() | nil,
           known_function: String.t() | nil,
           arity: non_neg_integer() | nil,
+          min_arity: non_neg_integer(),
           file: String.t() | nil,
           line: non_neg_integer() | nil
         }
+
+  @doc "`true` when a function of `arity` may be the target of the call."
+  @spec arity_compatible?(t(), non_neg_integer()) :: boolean()
+  def arity_compatible?(%__MODULE__{arity: nil, min_arity: min}, arity), do: arity >= min
+  def arity_compatible?(%__MODULE__{arity: known}, arity), do: known == arity
 end
 
 defmodule VulnCheck.Types.Entrypoint do
@@ -177,6 +185,7 @@ defmodule VulnCheck.Types.EntrypointModel do
             configured_adapters: %{},
             inactive_adapter_packages: %{},
             resolved_dynamic_modules: %{},
+            resolved_dynamic_calls: MapSet.new(),
             active_plug_parsers: [],
             boot_tree_known: true,
             notes: []
@@ -189,6 +198,7 @@ defmodule VulnCheck.Types.EntrypointModel do
           configured_adapters: %{atom() => [String.t()]},
           inactive_adapter_packages: %{String.t() => String.t()},
           resolved_dynamic_modules: %{String.t() => [String.t()]},
+          resolved_dynamic_calls: MapSet.t(VulnCheck.Types.DynamicCall.t()),
           active_plug_parsers: [String.t()] | :all,
           boot_tree_known: boolean(),
           notes: [String.t()]

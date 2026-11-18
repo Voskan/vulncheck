@@ -311,6 +311,56 @@ defmodule VulnCheck.Entrypoints.EntrypointsTest do
       assert mfa("Elixir.Plug.Parsers.MULTIPART.Vuln", "boundary", 1) in reachable
     end
 
+    test "parsers call the body reader named in their options", %{root: root} do
+      Beams.compile!(ebin(root, "plug"), [
+        {"reader.ex",
+         """
+         defmodule Plug.Conn do
+           def read_body(conn, _opts), do: {:ok, "", conn}
+           def read_part_headers(conn, _opts), do: {:ok, [], conn}
+         end
+
+         defmodule Plug.Parsers.READER do
+           def init(opts), do: Keyword.get(opts, :body_reader, {Plug.Conn, :read_body, []})
+
+           def parse(conn, _type, _subtype, _headers, {mod, fun, args}),
+             do: apply(mod, fun, [conn, [] | args])
+         end
+         """}
+      ])
+
+      Beams.compile!(ebin(root, "ep_reader"), [
+        {"reader.ex",
+         """
+         defmodule EpFix.CachingReader do
+           def read_body(conn, _opts), do: {:ok, "", conn}
+           def unrelated(conn, _opts), do: conn
+         end
+         """}
+      ])
+
+      ws =
+        plug_workspace(root, """
+        defmodule EpFix.ReaderEndpoint do
+          def call(conn, _opts) do
+            opts = Plug.Parsers.init(parsers: [Plug.Parsers.READER], body_reader: {EpFix.CachingReader, :read_body, []})
+            Plug.Parsers.call(conn, opts)
+          end
+        end
+        """)
+
+      reader = package("ep_reader", ebin(root, "ep_reader"))
+
+      {model, _graph, reachable} =
+        analyze(%{ws | packages: Map.put(ws.packages, "ep_reader", reader)})
+
+      assert model.active_plug_parsers == ["Elixir.Plug.Parsers.READER"]
+      assert mfa("Elixir.EpFix.CachingReader", "read_body", 2) in reachable
+      refute mfa("Elixir.EpFix.CachingReader", "unrelated", 2) in reachable
+      assert mfa("Elixir.Plug.Conn", "read_body", 2) in reachable
+      refute mfa("Elixir.Plug.Conn", "read_part_headers", 2) in reachable
+    end
+
     test "dynamic parser lists activate every parser", %{root: root} do
       ws =
         plug_workspace(root, """
@@ -324,6 +374,129 @@ defmodule VulnCheck.Entrypoints.EntrypointsTest do
       {model, _graph, reachable} = analyze(ws)
       assert model.active_plug_parsers == :all
       assert mfa("Elixir.Plug.Parsers.MULTIPART.Vuln", "boundary", 1) in reachable
+    end
+  end
+
+  describe "framework dispatch through module variables" do
+    test "transport calls reach the implementations of the transport behaviour" do
+      root = Tmp.mkdir!("ep-transport")
+
+      Beams.compile!(ebin(root, "thousand_island"), [
+        {"listener.ex",
+         """
+         defmodule ThousandIsland.Transport do
+           @callback close(term()) :: :ok
+         end
+
+         defmodule ThousandIsland.Transports.TCP do
+           @behaviour ThousandIsland.Transport
+           def close(_socket), do: :ok
+         end
+
+         defmodule ThousandIsland.Listener do
+           def stop(transport, socket) do
+             transport.close(socket)
+             transport.wrap_error(socket)
+           end
+         end
+         """}
+      ])
+
+      Beams.compile!(ebin(root, "other_client"), [
+        {"client.ex", "defmodule OtherClient do\n  def close(_conn), do: :ok\nend\n"}
+      ])
+
+      Beams.compile!(ebin(root, "ep_web"), [
+        {"server.ex",
+         """
+         defmodule EpFix.Server do
+           def stop(socket) do
+             _ = OtherClient
+             ThousandIsland.Listener.stop(ThousandIsland.Transports.TCP, socket)
+           end
+         end
+         """}
+      ])
+
+      ws =
+        workspace(root, ["ep_web"], [
+          package("thousand_island", ebin(root, "thousand_island")),
+          package("other_client", ebin(root, "other_client"))
+        ])
+
+      {model, _graph, reachable} = analyze(ws)
+
+      assert mfa("Elixir.ThousandIsland.Transports.TCP", "close", 1) in reachable
+      refute mfa("Elixir.OtherClient", "close", 1) in reachable
+
+      resolved = Enum.map(model.resolved_dynamic_calls, & &1.known_function)
+      assert "close" in resolved
+      # no transport exports wrap_error/1, so that call stays unresolved
+      refute "wrap_error" in resolved
+    end
+
+    test "the Tesla stack reaches named middlewares and the configured adapter only" do
+      root = Tmp.mkdir!("ep-tesla-stack")
+
+      Beams.compile!(ebin(root, "tesla"), [
+        {"tesla.ex",
+         """
+         defmodule Tesla.Adapter do
+           @callback call(term(), term()) :: term()
+         end
+
+         defmodule Tesla do
+           def execute(env, stack), do: run(env, stack)
+
+           def run(env, []), do: {:ok, env}
+           def run(env, [{m, f, a}]), do: apply(m, f, [env | a])
+           def run(env, [{m, f, a} | rest]), do: apply(m, f, [env, rest | a])
+         end
+
+         defmodule Tesla.Middleware.Json do
+           def call(env, next, _opts), do: Tesla.run(env, next)
+         end
+
+         defmodule Tesla.Middleware.Redirects do
+           def call(env, next, _opts), do: Tesla.run(env, next)
+           def again(env), do: Tesla.run(env, [{__MODULE__, :call, [[]]}])
+         end
+
+         defmodule Tesla.Adapter.Mint do
+           @behaviour Tesla.Adapter
+           def call(env, _opts), do: {:ok, env}
+         end
+
+         defmodule Tesla.Adapter.Hackney do
+           @behaviour Tesla.Adapter
+           def call(env, _opts), do: {:ok, env}
+         end
+         """}
+      ])
+
+      Beams.compile!(ebin(root, "ep_web"), [
+        {"client.ex",
+         """
+         defmodule EpFix.Client do
+           def get(env), do: Tesla.execute(env, [{Tesla.Middleware.Json, :call, [[]]}])
+         end
+         """}
+      ])
+
+      File.mkdir_p!(Path.join(root, "config"))
+
+      File.write!(
+        Path.join(root, "config/prod.exs"),
+        "import Config\nconfig :tesla, adapter: Tesla.Adapter.Mint\n"
+      )
+
+      ws = workspace(root, ["ep_web"], [package("tesla", ebin(root, "tesla"))])
+      {_model, _graph, reachable} = analyze(ws)
+
+      assert mfa("Elixir.Tesla.Middleware.Json", "call", 3) in reachable
+      assert mfa("Elixir.Tesla.Adapter.Mint", "call", 2) in reachable
+      refute mfa("Elixir.Tesla.Middleware.Redirects", "call", 3) in reachable
+      refute mfa("Elixir.Tesla.Adapter.Hackney", "call", 2) in reachable
     end
   end
 

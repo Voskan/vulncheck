@@ -125,6 +125,7 @@ defmodule VulnCheck.Solver do
       for {_name, %ModuleSummary{} = summary} <- graph.modules,
           not Map.has_key?(model.resolved_dynamic_modules, summary.module),
           %DynamicCall{known_module: nil} = call <- summary.dynamic_dispatches,
+          not MapSet.member?(model.resolved_dynamic_calls, call),
           MapSet.member?(reachable, call.caller),
           do: call
 
@@ -440,7 +441,8 @@ defmodule VulnCheck.Solver do
 
       Enum.find(index.escapes, fn %DynamicCall{} = call ->
         Enum.any?(targets, fn %MFA{} = target ->
-          call.known_function in [nil, target.function] and call.arity in [nil, target.arity] and
+          call.known_function in [nil, target.function] and
+            DynamicCall.arity_compatible?(call, target.arity) and
             (index.atoms_constructed or
                MapSet.member?(index.atom_modules, call.caller.module) or
                MapSet.member?(index.named_modules, target.module))

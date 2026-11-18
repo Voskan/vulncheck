@@ -17,7 +17,7 @@ defmodule VulnCheck.CacheTest do
     assert Cache.dir(cache_dir: "/opt/c") == "/opt/c"
     assert Cache.dir(%Config{}) =~ "vulncheck"
     assert Cache.feeds_dir(%Config{cache_dir: "/c"}) == "/c/feeds"
-    assert Cache.beam_dir(%Config{cache_dir: "/c"}) == "/c/beam-v2"
+    assert Cache.beam_dir(%Config{cache_dir: "/c"}) == "/c/beam-v3"
   end
 
   test "atomic writes survive 20 concurrent writers" do

@@ -57,7 +57,10 @@ defmodule VulnCheck.Entrypoints do
          daemon_roots(daemons, graph) ++ extra_roots(config))
       |> Enum.uniq_by(& &1.mfa)
 
-    synthetic = synthesize(graph, roots)
+    configured =
+      Enum.uniq(adapters.config_refs ++ Enum.flat_map(adapters.configured, &elem(&1, 1)))
+
+    synthetic = synthesize(graph, roots, configured)
 
     model = %EntrypointModel{
       roots: roots,
@@ -67,6 +70,7 @@ defmodule VulnCheck.Entrypoints do
       configured_adapters: adapters.configured,
       inactive_adapter_packages: adapters.inactive,
       resolved_dynamic_modules: synthetic.resolved_dynamic_modules,
+      resolved_dynamic_calls: synthetic.resolved_dynamic_calls,
       active_plug_parsers: synthetic.active_plug_parsers,
       boot_tree_known: otp.boot_tree_known,
       notes: otp.notes ++ adapters.notes
@@ -75,32 +79,35 @@ defmodule VulnCheck.Entrypoints do
     {model, CallGraph.add_edges(graph, synthetic.edges)}
   end
 
-  # `Plug.Parsers` options written in unreachable code (for example inside
-  # `Plug.Debugger`) are dropped by recomputing the parsers from the
-  # configurations that the previous graph reaches. When no configuration
-  # is reachable every parser stays linked, as without configurations.
-  @parser_rounds 4
+  # Framework rules read configurations and module names, which only count
+  # when written in reachable code: `Plug.Parsers` options inside
+  # `Plug.Debugger` must not enable parsers for the whole application, and a
+  # Tesla middleware that only names itself is not part of any stack. The
+  # rules start from nothing reachable and are recomputed from what the
+  # graph reaches until nothing new is reached (the least fixpoint). If that
+  # takes too many rounds, the rules fall back to every configuration and
+  # name in the code, which over-approximates.
+  @refine_rounds 10
+  @refined_modules ["Elixir.Plug.Parsers", "Elixir.Tesla"]
 
-  defp synthesize(graph, roots) do
-    synthetic = Behaviours.synthesize(graph)
-
-    if CallGraph.module?(graph, "Elixir.Plug.Parsers"),
-      do: refine_parsers(graph, roots, synthetic, @parser_rounds),
-      else: synthetic
+  defp synthesize(graph, roots, configured) do
+    if Enum.any?(@refined_modules, &CallGraph.module?(graph, &1)),
+      do: grow(graph, roots, configured, MapSet.new(), nil, @refine_rounds),
+      else: Behaviours.synthesize(graph, configured_modules: configured)
   end
 
-  defp refine_parsers(_graph, _roots, synthetic, 0), do: synthetic
+  defp grow(graph, _roots, configured, _reachable, _previous, 0),
+    do: Behaviours.synthesize(graph, configured_modules: configured)
 
-  defp refine_parsers(_graph, _roots, %{active_plug_parsers: :all} = synthetic, _rounds),
-    do: synthetic
+  defp grow(graph, roots, configured, reachable, previous, rounds) do
+    synthetic = Behaviours.synthesize(graph, reachable: reachable, configured_modules: configured)
 
-  defp refine_parsers(graph, roots, synthetic, rounds) do
-    reachable = graph |> CallGraph.add_edges(synthetic.edges) |> CallGraph.reachable(roots)
-    refined = Behaviours.synthesize(graph, parser_callers: reachable)
-
-    if refined.active_plug_parsers == synthetic.active_plug_parsers,
-      do: synthetic,
-      else: refine_parsers(graph, roots, refined, rounds - 1)
+    if previous != nil and synthetic.state == previous.state do
+      synthetic
+    else
+      next = graph |> CallGraph.add_edges(synthetic.edges) |> CallGraph.reachable(roots)
+      grow(graph, roots, configured, next, synthetic, rounds - 1)
+    end
   end
 
   defp application_roots(otp) do

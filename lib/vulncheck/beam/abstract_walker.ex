@@ -211,7 +211,7 @@ defmodule VulnCheck.Beam.AbstractWalker do
       cond do
         apply3?(mod, fun, arity) ->
           [m, f, a] = args
-          dynamic_site(facts, ctx, anno, m, f, list_length(a, ctx.env))
+          dynamic_site(facts, ctx, anno, m, f, list_length(a, ctx.env), min_length(a, ctx.env))
 
         {mod, fun, arity} in [{"erlang", "make_fun", 3}, {"Elixir.Function", "capture", 3}] ->
           [m, f, a] = args
@@ -331,7 +331,7 @@ defmodule VulnCheck.Beam.AbstractWalker do
 
   # -- dynamic dispatch ------------------------------------------------------------
 
-  defp dynamic_site(facts, ctx, anno, mod_expr, fun_expr, arity) do
+  defp dynamic_site(facts, ctx, anno, mod_expr, fun_expr, arity, min_arity \\ 0) do
     mods = resolve_atoms(mod_expr, ctx.env, 0)
     funs = resolve_atoms(fun_expr, ctx.env, 0)
 
@@ -361,6 +361,7 @@ defmodule VulnCheck.Beam.AbstractWalker do
               known_module: module,
               known_function: known_function,
               arity: arity,
+              min_arity: if(is_integer(arity), do: arity, else: min_arity),
               file: ctx.file,
               line: line(anno)
             }
@@ -509,6 +510,21 @@ defmodule VulnCheck.Beam.AbstractWalker do
   end
 
   defp list_length(_expr, _env, _depth), do: nil
+
+  # Number of elements known to precede the tail of an argument list:
+  # `[env, next | rest]` has at least two.
+  defp min_length(expr, env, depth \\ 0)
+  defp min_length(_expr, _env, depth) when depth > 8, do: 0
+  defp min_length({:cons, _, _head, tail}, env, depth), do: 1 + min_length(tail, env, depth + 1)
+
+  defp min_length({:var, _, var}, env, depth) do
+    case Map.get(env, var) do
+      [single] -> min_length(single, env, depth + 1)
+      _ -> 0
+    end
+  end
+
+  defp min_length(_expr, _env, _depth), do: 0
 
   defp integer({:integer, _, value}, _env), do: value
 

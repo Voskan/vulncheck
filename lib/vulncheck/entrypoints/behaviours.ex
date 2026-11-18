@@ -14,7 +14,14 @@ defmodule VulnCheck.Entrypoints.Behaviours do
       links every exported function of matching arity (`:dynamic_apply`).
     * Protocol functions are linked to the matching `defimpl` functions.
     * `Plug.Parsers` is linked only to the parsers configured statically
-      (`parsers: [:json]`), or to every parser when the list is dynamic.
+      (`parsers: [:json]`), or to every parser when the list is dynamic;
+      parsers are linked to the callback modules of their options (body
+      reader, JSON decoder).
+    * Framework dispatch through a module held in a variable is linked to
+      the implementations of the framework's behaviour: ThousandIsland
+      transports, Mint connections and transports.
+    * The Tesla middleware stack (`Tesla.run/2`) is linked to the `call`
+      functions of the modules named in reachable code or configuration.
   """
 
   alias VulnCheck.Beam.CallGraph
@@ -71,13 +78,22 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     "multipart" => "Elixir.Plug.Parsers.MULTIPART",
     "json" => "Elixir.Plug.Parsers.JSON"
   }
+  # {caller module prefix, behaviours implemented by every possible target}
+  @behaviour_dispatch [
+    {"Elixir.ThousandIsland.", ["Elixir.ThousandIsland.Transport"]},
+    {"Elixir.Mint.", ["Elixir.Mint.Core.Conn", "Elixir.Mint.Core.Transport"]}
+  ]
+  @tesla_run %MFA{module: "Elixir.Tesla", function: "run", arity: 2}
+
   @default_json_decoders ["Elixir.Jason", "Elixir.JSON", "Elixir.Poison"]
   @protocol_internal ~w(__protocol__/1 impl_for/1 impl_for!/1 __info__/1 module_info/0 module_info/1 behaviour_info/1)
 
   @type result :: %{
           edges: [CallEdge.t()],
           resolved_dynamic_modules: %{String.t() => [String.t()]},
-          active_plug_parsers: [String.t()] | :all
+          resolved_dynamic_calls: MapSet.t(DynamicCall.t()),
+          active_plug_parsers: [String.t()] | :all,
+          state: term()
         }
 
   @doc "Callback signatures (`\"name/arity\"`) known for a behaviour."
@@ -87,27 +103,49 @@ defmodule VulnCheck.Entrypoints.Behaviours do
   @doc """
   Computes all synthetic edges for the loaded modules.
 
-  Option `:parser_callers` (a set of functions) restricts the `Plug.Parsers`
-  configurations taken into account to those written in these functions.
+  Options:
+
+    * `:reachable` (a set of functions, default `:all`) restricts the
+      `Plug.Parsers` configurations and the module names that feed dynamic
+      framework calls to those written in these functions;
+    * `:configured_modules` — modules named by the project configuration.
   """
   @spec synthesize(CallGraph.t(), keyword()) :: result()
   def synthesize(%CallGraph{modules: modules}, opts \\ []) do
     exports = Map.new(modules, fn {name, s} -> {name, MapSet.new(s.exports)} end)
     defined = Map.new(modules, fn {name, s} -> {name, MapSet.new(s.functions)} end)
     sorted = modules |> Map.values() |> Enum.sort_by(& &1.module)
-    callers = Keyword.get(opts, :parser_callers, :all)
+    reachable = Keyword.get(opts, :reachable, :all)
 
-    {parsers, parser_edges, parser_resolved} = plug_parsers(modules, exports, callers)
+    {parsers, parser_edges, parser_resolved, parser_dispatch} =
+      plug_parsers(modules, exports, reachable)
+
     {protocol_edges, protocol_resolved} = protocols(sorted, exports)
     resolved = Map.merge(parser_resolved, protocol_resolved)
+
+    configured = Keyword.get(opts, :configured_modules, [])
+    named = named_modules(sorted, reachable, configured)
+
+    dispatch =
+      parser_dispatch ++
+        behaviour_dispatch(sorted, exports) ++
+        tesla_stack(sorted, modules, exports, named, configured)
+
+    resolved_calls = MapSet.new(dispatch, &elem(&1, 0))
 
     edges =
       Enum.flat_map(sorted, &intra_module_edges(&1, defined)) ++
         Enum.flat_map(sorted, &reference_edges(&1, modules, defined)) ++
-        Enum.flat_map(sorted, &dynamic_edges(&1, exports, resolved)) ++
-        protocol_edges ++ parser_edges
+        Enum.flat_map(sorted, &dynamic_edges(&1, exports, resolved, resolved_calls)) ++
+        protocol_edges ++ parser_edges ++ dispatch_edges(dispatch)
 
-    %{edges: edges, resolved_dynamic_modules: resolved, active_plug_parsers: parsers}
+    %{
+      edges: edges,
+      resolved_dynamic_modules: resolved,
+      resolved_dynamic_calls: resolved_calls,
+      active_plug_parsers: parsers,
+      state: {parsers, Enum.sort(Enum.map(dispatch, fn {call, targets} -> {call, targets} end))}
+    }
   end
 
   @doc """
@@ -160,8 +198,15 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     end)
   end
 
-  defp dynamic_edges(%ModuleSummary{module: module, dynamic_dispatches: calls}, exports, resolved) do
-    Enum.flat_map(calls, fn %DynamicCall{} = call ->
+  defp dynamic_edges(
+         %ModuleSummary{module: module, dynamic_dispatches: calls},
+         exports,
+         resolved,
+         resolved_calls
+       ) do
+    calls
+    |> Enum.reject(&MapSet.member?(resolved_calls, &1))
+    |> Enum.flat_map(fn %DynamicCall{} = call ->
       targets =
         case call.known_module do
           nil -> Map.get(resolved, module, [])
@@ -172,7 +217,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
           {:ok, functions} <- [Map.fetch(exports, target)],
           {function, arity} <- Enum.sort(functions),
           call.known_function in [nil, function],
-          call.arity in [nil, arity],
+          DynamicCall.arity_compatible?(call, arity),
           function not in ["module_info", "__info__"] do
         %CallEdge{
           from: call.caller,
@@ -183,6 +228,100 @@ defmodule VulnCheck.Entrypoints.Behaviours do
         }
       end
     end)
+  end
+
+  # A framework that keeps a transport or connection module in a variable
+  # only ever calls implementations of its own behaviour. Calls whose
+  # function no implementation exports stay unresolved.
+  defp behaviour_dispatch(sorted, exports) do
+    for {prefix, behaviours} <- @behaviour_dispatch,
+        implementers = implementers(sorted, behaviours),
+        implementers != [],
+        %ModuleSummary{module: module, dynamic_dispatches: calls} <- sorted,
+        String.starts_with?(module, prefix),
+        %DynamicCall{known_module: nil, known_function: fun} = call when is_binary(fun) <- calls,
+        targets = matching(implementers, exports, call, fun),
+        targets != [],
+        do: {call, targets}
+  end
+
+  defp implementers(sorted, behaviours) do
+    for %ModuleSummary{module: module, behaviours: declared} <- sorted,
+        Enum.any?(declared, &(&1 in behaviours)),
+        do: module
+  end
+
+  # `Tesla.run/2` applies `{module, :call, args}` entries of the middleware
+  # stack; every entry comes from a literal written in a client, the
+  # configuration or Tesla itself (the default adapter). Middlewares are
+  # `call/3` functions; the last entry is an adapter (`call/2`), which
+  # implements `Tesla.Adapter` or is named by the configuration.
+  defp tesla_stack(sorted, modules, exports, named, configured) do
+    case Map.fetch(modules, "Elixir.Tesla") do
+      {:ok, %ModuleSummary{dynamic_dispatches: calls}} ->
+        adapters = MapSet.new(implementers(sorted, ["Elixir.Tesla.Adapter"]) ++ configured)
+        exported? = fn module, fa -> MapSet.member?(Map.get(exports, module, MapSet.new()), fa) end
+
+        candidates =
+          Enum.filter(named, fn module ->
+            exported?.(module, {"call", 3}) or
+              (exported?.(module, {"call", 2}) and MapSet.member?(adapters, module))
+          end)
+
+        for %DynamicCall{caller: @tesla_run, known_module: nil, known_function: fun} = call <-
+              calls,
+            fun in [nil, "call"],
+            do: {call, tesla_targets(candidates, exports, adapters, call)}
+
+      :error ->
+        []
+    end
+  end
+
+  defp tesla_targets(candidates, exports, adapters, call) do
+    candidates
+    |> matching(exports, call, "call")
+    |> Enum.filter(&(&1.arity == 3 or MapSet.member?(adapters, &1.module)))
+  end
+
+  defp matching(modules, exports, call, fun) do
+    for module <- Enum.sort(modules),
+        {function, arity} <- Enum.sort(Map.get(exports, module, MapSet.new())),
+        function == fun,
+        DynamicCall.arity_compatible?(call, arity),
+        do: %MFA{module: module, function: function, arity: arity}
+  end
+
+  defp dispatch_edges(dispatch) do
+    for {%DynamicCall{} = call, targets} <- dispatch, target <- targets do
+      %CallEdge{
+        from: call.caller,
+        to: target,
+        file: call.file,
+        line: call.line,
+        kind: :dynamic_apply
+      }
+    end
+  end
+
+  # Modules named as values (literals, `{Mod, :fun, args}` triples) in
+  # reachable functions, plus modules named by the configuration.
+  defp named_modules(sorted, reachable, configured) do
+    in_scope? = fn caller -> reachable == :all or MapSet.member?(reachable, caller) end
+
+    refs =
+      for %ModuleSummary{module_refs: refs} <- sorted,
+          {caller, ref, _file, _line} <- refs,
+          in_scope?.(caller),
+          do: ref
+
+    triples =
+      for %ModuleSummary{mfa_refs: edges} <- sorted,
+          %CallEdge{from: from, to: %MFA{module: module}} <- edges,
+          in_scope?.(from),
+          do: module
+
+    Enum.uniq(refs ++ triples ++ configured)
   end
 
   # Protocol dispatch: `Proto.fun(data)` runs `Impl.fun(data)`.
@@ -236,7 +375,8 @@ defmodule VulnCheck.Entrypoints.Behaviours do
   # Plug.Parsers dispatches to parser modules computed from its options.
   # Only sites whose caller is in `callers` (`:all`, or the reachable
   # functions) contribute: `Plug.Debugger` enabling `:urlencoded` must not
-  # widen an endpoint configured with `parsers: [:json]`.
+  # widen an endpoint configured with `parsers: [:json]`. When Plug.Parsers
+  # runs without any known configuration, every parser is linked.
   defp plug_parsers(modules, exports, callers) do
     sites =
       for {_name, summary} <- modules,
@@ -260,6 +400,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
 
     parsers =
       cond do
+        sites == [] and callers != :all and not parsers_reached?(callers) -> []
         sites == [] -> :all
         parsers in [[], :all] -> :all
         true -> parsers |> Enum.uniq() |> Enum.sort()
@@ -286,10 +427,31 @@ defmodule VulnCheck.Entrypoints.Behaviours do
       end
 
     resolved =
-      if Map.has_key?(modules, "Elixir.Plug.Parsers") do
-        %{"Elixir.Plug.Parsers" => parser_modules, "Elixir.Plug.Parsers.JSON" => decoders}
-      else
-        %{}
+      if Map.has_key?(modules, "Elixir.Plug.Parsers"),
+        do: %{"Elixir.Plug.Parsers" => parser_modules},
+        else: %{}
+
+    # Parsers call back into the functions named by their options: the body
+    # reader (`Plug.Conn.read_body/2` by default), the JSON decoder,
+    # multipart callbacks. With runtime-computed options those calls stay
+    # unresolved.
+    dispatch =
+      case parser_callbacks(sites) do
+        :dynamic ->
+          []
+
+        callbacks ->
+          for parser <- parser_modules,
+              {:ok, %ModuleSummary{dynamic_dispatches: calls}} <- [Map.fetch(modules, parser)],
+              %DynamicCall{known_module: nil} = call <- calls do
+            json = if parser == "Elixir.Plug.Parsers.JSON", do: decoders, else: []
+
+            targets =
+              [{"Elixir.Plug.Conn", "read_body"}, {parser, nil} | callbacks] ++
+                Enum.map(json, &{&1, nil})
+
+            {call, callback_targets(Enum.uniq(targets), exports, call)}
+          end
       end
 
     edges =
@@ -301,7 +463,56 @@ defmodule VulnCheck.Entrypoints.Behaviours do
         }
       end
 
-    {parsers, edges, resolved}
+    {parsers, edges, resolved, dispatch}
+  end
+
+  defp parsers_reached?(callers),
+    do: Enum.any?(callers, &(&1.module == "Elixir.Plug.Parsers"))
+
+  defp parser_callbacks([]), do: :dynamic
+
+  defp parser_callbacks(sites) do
+    init? = Enum.any?(sites, &match?({"init", _}, &1))
+
+    sites
+    |> Enum.reduce_while([], fn
+      {"call", [_conn, :dynamic]}, acc when init? -> {:cont, acc}
+      {_fun, [_ | _] = args}, acc -> literal_options(List.last(args), acc)
+      _site, _acc -> {:halt, :dynamic}
+    end)
+    |> case do
+      :dynamic -> :dynamic
+      atoms -> Enum.uniq(atoms)
+    end
+  end
+
+  defp literal_options(opts, acc) do
+    if dynamic?(opts), do: {:halt, :dynamic}, else: {:cont, acc ++ callback_refs(opts)}
+  end
+
+  # `{Mod, :fun, args}` triples name one function; other atoms may be
+  # modules called with any function (`json_decoder: Jason`).
+  defp callback_refs({:tuple, [{:atom, module}, {:atom, function}, args]}) when is_list(args),
+    do: [{module, function} | callback_refs(args)]
+
+  defp callback_refs({:atom, name}), do: [{name, nil}]
+  defp callback_refs({:tuple, items}), do: Enum.flat_map(items, &callback_refs/1)
+
+  defp callback_refs({:map, pairs}),
+    do: Enum.flat_map(pairs, fn {k, v} -> callback_refs(k) ++ callback_refs(v) end)
+
+  defp callback_refs(list) when is_list(list), do: Enum.flat_map(list, &callback_refs/1)
+  defp callback_refs(_), do: []
+
+  defp callback_targets(refs, exports, %DynamicCall{} = call) do
+    for {module, function} <- Enum.sort(refs),
+        {name, arity} <- Enum.sort(Map.get(exports, module, MapSet.new())),
+        function in [nil, name],
+        call.known_function in [nil, name],
+        name not in ["module_info", "__info__"],
+        DynamicCall.arity_compatible?(call, arity),
+        uniq: true,
+        do: %MFA{module: module, function: name, arity: arity}
   end
 
   defp merge(:all, _), do: :all

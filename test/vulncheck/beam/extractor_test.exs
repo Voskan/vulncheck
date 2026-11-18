@@ -345,4 +345,40 @@ defmodule VulnCheck.Beam.ExtractorTest do
 
     assert [%CallEdge{to: %MFA{module: "y", function: "start", arity: 2}}] = summary.mfa_refs
   end
+
+  test "apply/3 with an open argument list records the known minimum arity" do
+    forms = [
+      {:attribute, 1, :file, {~c"/abs/root/lib/z.ex", 1}},
+      {:attribute, 1, :module, :z},
+      {:function, 2, :run, 3,
+       [
+         {:clause, 2, [{:var, 2, :M}, {:var, 2, :F}, {:var, 2, :A}], [],
+          [
+            {:call, 3, {:remote, 3, {:atom, 3, :erlang}, {:atom, 3, :apply}},
+             [{:var, 3, :M}, {:var, 3, :F}, {:cons, 3, {:atom, 3, :env}, {:var, 3, :A}}]},
+            {:call, 4, {:remote, 4, {:atom, 4, :erlang}, {:atom, 4, :apply}},
+             [
+               {:var, 4, :M},
+               {:var, 4, :F},
+               {:cons, 4, {:atom, 4, :env}, {:cons, 4, {:atom, 4, :next}, {:var, 4, :A}}}
+             ]},
+            {:call, 5, {:remote, 5, {:atom, 5, :erlang}, {:atom, 5, :apply}},
+             [{:var, 5, :M}, {:var, 5, :F}, {:var, 5, :A}]}
+          ]}
+       ]}
+    ]
+
+    summary = AbstractWalker.summarize(:z, forms, root_dir: "/abs/root")
+
+    assert [
+             %DynamicCall{arity: nil, min_arity: 1, line: 3} = one,
+             %DynamicCall{arity: nil, min_arity: 2, line: 4} = two,
+             %DynamicCall{arity: nil, min_arity: 0, line: 5}
+           ] = summary.dynamic_dispatches
+
+    refute DynamicCall.arity_compatible?(one, 0)
+    assert DynamicCall.arity_compatible?(one, 1)
+    refute DynamicCall.arity_compatible?(two, 1)
+    assert DynamicCall.arity_compatible?(two, 3)
+  end
 end
