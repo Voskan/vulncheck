@@ -175,7 +175,16 @@ defmodule VulnCheck.Scanner do
         true -> :complete
       end
 
-    %{status: status, build_profile: workspace.build_env, issues: issues}
+    digest =
+      if map_size(loaded.modules) > 0 do
+        files =
+          Enum.map(loaded.modules, fn {name, module} -> {name, module.package, module.sha256} end)
+
+        evidence = {Enum.sort(files), model.roots, model.started_otp_apps, model.synthetic_edges}
+        evidence |> :erlang.term_to_binary([:deterministic]) |> VulnCheck.Cache.sha256()
+      end
+
+    %{status: status, build_profile: workspace.build_env, issues: issues, artifact_digest: digest}
   end
 
   defp timed(fun) do

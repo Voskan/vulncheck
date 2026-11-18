@@ -11,12 +11,11 @@ defmodule VulnCheck.Report.OpenVEX do
   | potentially reachable | `under_investigation` | — |
   | unreachable: function not called, module not loaded, adapter not configured, OTP application not started | `not_affected` | `vulnerable_code_not_in_execute_path` |
   | unreachable: build-time only dependency (`runtime: false`) | `not_affected` | `vulnerable_code_not_in_execute_path` |
-  | unreachable: development or test dependency, OTP version unaffected | `not_affected` | `vulnerable_code_not_present` |
-  | suppressed in `.vulncheck.ignore` (reachable or potentially reachable) | `not_affected` | `inline_mitigations_already_exist` |
+  | unreachable: development or test dependency | `not_affected` | `component_not_present` |
+  | unreachable: OTP version unaffected | `not_affected` | OTP constraint in `impact_statement` |
 
-  Retired releases are a package lifecycle status, not a vulnerability, and
-  are left out. The document `@id` is derived from its content, so the same
-  report always yields the same bytes.
+  Retired releases are left out. With zero statements, no OpenVEX document
+  is available. The document `@id` is derived from its content.
   """
 
   @behaviour VulnCheck.Report.Formatter
@@ -36,24 +35,33 @@ defmodule VulnCheck.Report.OpenVEX do
   @impl true
   def render(%ScanReport{} = report, %Config{} = config), do: encode(report, config)
 
-  @doc "Encodes the VEX document. Options: `:timestamp` (ISO-8601)."
+  @doc "Encodes the VEX document, or returns an empty string when there are no statements."
   @spec encode(ScanReport.t(), Config.t(), keyword()) :: String.t()
   def encode(%ScanReport{} = report, %Config{} = config, opts \\ []) do
-    report |> document(config, opts) |> JSON.encode() |> Kernel.<>("\n")
+    case document(report, config, opts) do
+      nil -> ""
+      document -> JSON.encode(document) <> "\n"
+    end
   end
 
-  @doc "The VEX document as plain maps."
-  @spec document(ScanReport.t(), Config.t(), keyword()) :: map()
+  @doc "The VEX document as plain maps, or nil when there are no statements."
+  @spec document(ScanReport.t(), Config.t(), keyword()) :: map() | nil
   def document(%ScanReport{} = report, %Config{} = _config, opts \\ []) do
-    product = CycloneDX.root_ref(report.workspace)
+    product = CycloneDX.root_ref(report)
+    refs = CycloneDX.component_refs(report.workspace)
 
     statements =
-      report.findings
+      report
+      |> ScanReport.complete_findings()
       |> Enum.reject(&(&1.verdict == :retired))
-      |> Enum.map(&statement(&1, product, report.workspace))
+      |> Enum.map(&statement(&1, product, report.workspace, refs))
       |> Enum.sort_by(&{&1["vulnerability"]["name"], subcomponent(&1)})
       |> Enum.uniq_by(&{&1["vulnerability"]["name"], subcomponent(&1)})
 
+    if statements != [], do: envelope(report, product, statements, opts)
+  end
+
+  defp envelope(report, product, statements, opts) do
     timestamp = Keyword.get(opts, :timestamp) || report.generated_at || now()
 
     digest =
@@ -74,7 +82,7 @@ defmodule VulnCheck.Report.OpenVEX do
 
   defp subcomponent(statement), do: hd(hd(statement["products"])["subcomponents"])["@id"]
 
-  defp statement(%Finding{} = f, product, ws) do
+  defp statement(%Finding{} = f, product, ws, refs) do
     name = Formatter.display_id(f)
 
     vulnerability =
@@ -85,10 +93,17 @@ defmodule VulnCheck.Report.OpenVEX do
       }
       |> put_present("description", f.summary)
 
+    purl = package_ref(f, ws)
+    ref = Map.get(refs, f.package, purl)
+    component = %{"@id" => ref}
+
+    component =
+      if ref == purl, do: component, else: Map.put(component, "identifiers", %{"purl" => purl})
+
     Map.merge(
       %{
         "vulnerability" => vulnerability,
-        "products" => [%{"@id" => product, "subcomponents" => [%{"@id" => package_ref(f, ws)}]}]
+        "products" => [%{"@id" => product, "subcomponents" => [component]}]
       },
       status(f)
     )
@@ -96,20 +111,14 @@ defmodule VulnCheck.Report.OpenVEX do
 
   @doc "Status fields of the statement for a finding."
   @spec status(Finding.t()) :: map()
-  def status(%Finding{suppressed: true, suppression_expired: false, verdict: verdict} = f)
-      when verdict in [:reachable, :potentially_reachable] do
-    %{
-      "status" => "not_affected",
-      "justification" => "inline_mitigations_already_exist",
-      "impact_statement" => present(f.suppression_reason) || "suppressed in .vulncheck.ignore"
-    }
-  end
-
   def status(%Finding{verdict: :reachable} = f),
     do: %{"status" => "affected", "action_statement" => action(f)}
 
   def status(%Finding{verdict: :potentially_reachable} = f),
     do: %{"status" => "under_investigation", "status_notes" => impact(f)}
+
+  def status(%Finding{verdict: :unreachable, reason: :otp_version_unaffected} = f),
+    do: %{"status" => "not_affected", "impact_statement" => impact(f)}
 
   def status(%Finding{verdict: :unreachable, reason: reason, package_scope: scope} = f)
       when reason in @not_in_execute_path or scope == :build_only do
@@ -123,7 +132,7 @@ defmodule VulnCheck.Report.OpenVEX do
   def status(%Finding{verdict: :unreachable} = f) do
     %{
       "status" => "not_affected",
-      "justification" => "vulnerable_code_not_present",
+      "justification" => "component_not_present",
       "impact_statement" => impact(f)
     }
   end

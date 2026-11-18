@@ -124,20 +124,41 @@ defmodule VulnCheck.CLI do
   defp write_outputs(report, config, ctx) do
     primary = render(report, config, config.format)
 
+    vex =
+      cond do
+        config.format == :openvex -> primary
+        config.vex -> render(report, config, :openvex)
+        true -> nil
+      end
+
     artifacts =
       [
         config.sbom && {config.sbom, render(report, config, :cyclonedx)},
-        config.vex && {config.vex, render(report, config, :openvex)}
+        config.vex && vex != "" && {config.vex, vex}
       ]
       |> Enum.filter(& &1)
 
-    with :ok <- write_all(artifacts) do
-      case config.output do
-        nil -> IO.write(ctx.stdout, primary)
-        path -> write_file(path, primary)
+    with :ok <- check_empty_vex(vex, config, ctx),
+         :ok <- write_all(artifacts) do
+      case {primary, config.output} do
+        {"", _} -> :ok
+        {content, nil} -> IO.write(ctx.stdout, content)
+        {content, path} -> write_file(path, content)
       end
     end
   end
+
+  defp check_empty_vex("", config, ctx) do
+    primary_path = if config.format == :openvex, do: config.output
+
+    if path = Enum.find([config.vex, primary_path], &(is_binary(&1) and File.exists?(&1))) do
+      {:error, "no OpenVEX statements to write and the destination already exists: #{path}"}
+    else
+      IO.puts(ctx.stderr, "OpenVEX omitted because the scan has no statements")
+    end
+  end
+
+  defp check_empty_vex(_vex, _config, _ctx), do: :ok
 
   defp write_all(files) do
     Enum.reduce_while(files, :ok, fn {path, data}, :ok ->

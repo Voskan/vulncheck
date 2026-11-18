@@ -16,7 +16,7 @@ defmodule VulnCheck.Report.CycloneDX do
 
   import Bitwise
 
-  alias VulnCheck.Config
+  alias VulnCheck.{Cache, Config}
   alias VulnCheck.Report.{Formatter, JSON}
   alias VulnCheck.Types.{Finding, Package, ScanReport, Workspace}
 
@@ -44,7 +44,8 @@ defmodule VulnCheck.Report.CycloneDX do
   def document(%ScanReport{} = report, %Config{} = _config, opts \\ []) do
     ws = report.workspace
     packages = if ws, do: ws.packages |> Map.values() |> Enum.sort_by(& &1.name), else: []
-    root = root_ref(ws)
+    root = root_ref(report)
+    refs = component_refs(ws)
 
     body = %{
       "bomFormat" => "CycloneDX",
@@ -65,34 +66,69 @@ defmodule VulnCheck.Report.CycloneDX do
           ]
         },
         "component" => root_component(ws, root),
-        "properties" => metadata_properties(ws)
+        "properties" => metadata_properties(report)
       },
-      "components" => Enum.map(packages, &component/1),
-      "dependencies" => dependencies(ws, packages, root),
-      "vulnerabilities" => vulnerabilities(report.findings, ws)
+      "components" => Enum.map(packages, &component(&1, Map.fetch!(refs, &1.name))),
+      "dependencies" => dependencies(ws, packages, root, refs),
+      "vulnerabilities" => vulnerabilities(ScanReport.complete_findings(report), refs)
     }
 
     serial = Keyword.get_lazy(opts, :serial_number, fn -> serial_number(body) end)
     Map.put(body, "serialNumber", serial)
   end
 
-  @doc "Reference of the scanned project."
-  @spec root_ref(Workspace.t() | nil) :: String.t()
-  def root_ref(%Workspace{project_name: name}), do: "pkg:generic/" <> encode_segment(name)
-  def root_ref(_workspace), do: "pkg:generic/project"
+  @doc "Reference of the scanned project and the scope of the analysis."
+  @spec root_ref(ScanReport.t() | Workspace.t() | nil) :: String.t()
+  def root_ref(%ScanReport{workspace: %Workspace{} = ws} = report) do
+    version = if ws.project_version, do: "@" <> encode_segment(ws.project_version), else: ""
 
-  defp root_component(ws, root) do
-    %{"type" => "application", "name" => (ws && ws.project_name) || "project", "bom-ref" => root}
+    inventory =
+      for {name, pkg} <- Enum.sort(ws.packages) do
+        {name, pkg.source, purl(pkg), pkg.checksum, pkg.inner_checksum, pkg.git_url, pkg.scope,
+         Enum.sort(pkg.deps), Enum.sort(pkg.optional_deps)}
+      end
+
+    analysis = Map.get(report.stats, :analysis, %{})
+
+    scope =
+      {ws.project_type, ws.env, ws.build_env, ws.elixir_version, ws.otp_release,
+       Enum.sort(ws.root_apps), Enum.sort(ws.direct_deps), inventory, Map.get(analysis, :status),
+       Map.get(analysis, :artifact_digest)}
+
+    digest = scope |> :erlang.term_to_binary([:deterministic]) |> Cache.sha256()
+    "pkg:generic/" <> encode_segment(ws.project_name) <> version <> "?scan_scope=" <> digest
   end
 
-  defp metadata_properties(nil), do: []
+  def root_ref(%Workspace{} = ws), do: root_ref(%ScanReport{workspace: ws})
+  def root_ref(_report), do: "urn:vulncheck:project:unspecified"
 
-  defp metadata_properties(%Workspace{} = ws) do
+  defp root_component(ws, root) do
+    base = %{
+      "type" => "application",
+      "name" => (ws && ws.project_name) || "project",
+      "bom-ref" => root
+    }
+
+    if ws && ws.project_version, do: Map.put(base, "version", ws.project_version), else: base
+  end
+
+  defp metadata_properties(%ScanReport{workspace: nil}), do: []
+
+  defp metadata_properties(%ScanReport{workspace: ws, stats: stats}) do
+    analysis = Map.get(stats, :analysis, %{})
+    status = Map.get(analysis, :status)
+    digest = Map.get(analysis, :artifact_digest)
+    scope = if digest, do: "compiled_workspace_snapshot", else: "dependency_inventory_snapshot"
+
     [
       {"vulncheck:project_type", Atom.to_string(ws.project_type)},
       {"vulncheck:env", Atom.to_string(ws.env)},
       {"vulncheck:elixir_version", ws.elixir_version},
-      {"vulncheck:otp_release", ws.otp_release}
+      {"vulncheck:otp_release", ws.otp_release},
+      {"vulncheck:product_scope", scope},
+      {"vulncheck:build_profile", ws.build_env},
+      {"vulncheck:build_analysis", status && Atom.to_string(status)},
+      {"vulncheck:compiled_evidence_digest", digest}
     ]
     |> Enum.reject(fn {_name, value} -> is_nil(value) end)
     |> Enum.map(fn {name, value} -> %{"name" => name, "value" => value} end)
@@ -138,15 +174,31 @@ defmodule VulnCheck.Report.CycloneDX do
 
   defp encode_segment(text), do: URI.encode(text, &URI.char_unreserved?/1)
 
-  defp component(%Package{} = pkg) do
-    ref = purl(pkg)
+  @doc "References of locked components, including distinct lock aliases of the same package."
+  @spec component_refs(Workspace.t() | nil) :: %{String.t() => String.t()}
+  def component_refs(nil), do: %{}
 
+  def component_refs(%Workspace{packages: packages}) do
+    purls = Map.new(packages, fn {name, pkg} -> {name, purl(pkg)} end)
+    counts = purls |> Map.values() |> Enum.frequencies()
+
+    Map.new(purls, fn {name, url} ->
+      ref =
+        if counts[url] == 1,
+          do: url,
+          else: "urn:vulncheck:component:" <> Cache.sha256([url, 0, name])
+
+      {name, ref}
+    end)
+  end
+
+  defp component(%Package{} = pkg, ref) do
     %{
       "type" => "library",
       "bom-ref" => ref,
       "name" => pkg.name,
       "version" => pkg.version,
-      "purl" => ref,
+      "purl" => purl(pkg),
       "scope" => if(pkg.scope == :prod, do: "required", else: "excluded")
     }
     |> put_hashes(pkg)
@@ -171,10 +223,9 @@ defmodule VulnCheck.Report.CycloneDX do
 
   defp put_references(map, _pkg), do: map
 
-  defp dependencies(nil, _packages, root), do: [%{"ref" => root, "dependsOn" => []}]
+  defp dependencies(nil, _packages, root, _refs), do: [%{"ref" => root, "dependsOn" => []}]
 
-  defp dependencies(%Workspace{} = ws, packages, root) do
-    refs = Map.new(packages, &{&1.name, purl(&1)})
+  defp dependencies(%Workspace{} = ws, packages, root, refs) do
     direct = if ws.direct_deps == [], do: sources(packages), else: ws.direct_deps
 
     entries =
@@ -192,18 +243,22 @@ defmodule VulnCheck.Report.CycloneDX do
     packages |> Enum.map(& &1.name) |> Enum.reject(&MapSet.member?(required, &1))
   end
 
-  defp vulnerabilities(findings, ws) do
-    findings
-    |> Enum.reject(&(&1.verdict == :retired))
-    |> Enum.map(&vulnerability(&1, ws))
+  defp vulnerabilities(findings, refs) do
+    entries =
+      for finding <- findings,
+          finding.verdict != :retired,
+          {:ok, ref} <- [Map.fetch(refs, finding.package)],
+          do: vulnerability(finding, ref)
+
+    entries
+    |> Enum.uniq_by(& &1["bom-ref"])
     |> Enum.sort_by(&{&1["id"], &1["bom-ref"]})
   end
 
-  defp vulnerability(%Finding{} = f, ws) do
-    ref = package_ref(f, ws)
-
+  defp vulnerability(%Finding{} = f, ref) do
     %{
-      "bom-ref" => "#{f.advisory_id}/#{f.package}",
+      "bom-ref" =>
+        "urn:vulncheck:advisory:#{encode_segment(f.advisory_id)}:#{encode_segment(f.package)}",
       "id" => f.advisory_id,
       "source" => %{"name" => source_name(f.advisory_id), "url" => Formatter.help_uri(f)},
       "references" => Enum.map(f.aliases, &%{"id" => &1, "source" => %{"name" => source_name(&1)}}),
@@ -221,18 +276,6 @@ defmodule VulnCheck.Report.CycloneDX do
     }
     |> put_recommendation(f)
   end
-
-  defp package_ref(%Finding{package: name, installed_version: version}, %Workspace{
-         packages: packages
-       }) do
-    case Map.get(packages, name) do
-      %Package{} = pkg -> purl(pkg)
-      nil -> "pkg:hex/#{encode_segment(name)}@#{encode_segment(version)}"
-    end
-  end
-
-  defp package_ref(%Finding{package: name, installed_version: version}, _ws),
-    do: "pkg:hex/#{encode_segment(name)}@#{encode_segment(version)}"
 
   defp source_name("CVE-" <> _), do: "NVD"
   defp source_name("GHSA-" <> _), do: "GitHub"
@@ -268,15 +311,6 @@ defmodule VulnCheck.Report.CycloneDX do
 
   @doc "CycloneDX analysis block of a finding."
   @spec analysis(Finding.t()) :: map()
-  def analysis(%Finding{suppressed: true, suppression_expired: false, verdict: verdict} = f)
-      when verdict in [:reachable, :potentially_reachable] do
-    %{
-      "state" => "not_affected",
-      "justification" => "protected_by_mitigating_control",
-      "detail" => f.suppression_reason || "suppressed in .vulncheck.ignore"
-    }
-  end
-
   def analysis(%Finding{verdict: :reachable} = f) do
     %{"state" => "exploitable", "detail" => trace_summary(f)}
     |> then(fn a -> if Formatter.fix_text(f), do: Map.put(a, "response", ["update"]), else: a end)
@@ -284,6 +318,13 @@ defmodule VulnCheck.Report.CycloneDX do
 
   def analysis(%Finding{verdict: :potentially_reachable} = f),
     do: %{"state" => "in_triage", "detail" => detail(f)}
+
+  def analysis(%Finding{verdict: :unreachable, reason: :otp_version_unaffected} = f),
+    do: %{
+      "state" => "not_affected",
+      "justification" => "requires_environment",
+      "detail" => detail(f)
+    }
 
   def analysis(%Finding{verdict: :unreachable, reason: reason, package_scope: scope} = f)
       when reason in @not_in_execute_path or scope == :build_only,

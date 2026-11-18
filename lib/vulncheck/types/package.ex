@@ -64,6 +64,7 @@ defmodule VulnCheck.Types.Workspace do
   defstruct [
     :root_dir,
     :project_name,
+    :project_version,
     :project_type,
     :env,
     :elixir_version,
@@ -83,6 +84,7 @@ defmodule VulnCheck.Types.Workspace do
   @type t :: %__MODULE__{
           root_dir: String.t(),
           project_name: String.t(),
+          project_version: String.t() | nil,
           project_type: project_type(),
           env: :prod | :dev | :test,
           elixir_version: String.t() | nil,

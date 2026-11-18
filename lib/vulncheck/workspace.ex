@@ -149,6 +149,7 @@ defmodule VulnCheck.Workspace do
        %Workspace{
          root_dir: info.root,
          project_name: project_name(type, root_project, info.root),
+         project_version: root_project.version,
          project_type: type,
          env: config.env,
          elixir_version: System.version(),
@@ -169,7 +170,14 @@ defmodule VulnCheck.Workspace do
 
   defp load_project(%{type: :rebar3} = info, config) do
     with {:ok, locked} <- RebarLock.parse_file(info.lockfile) do
-      root_apps = rebar_root_apps(info.root)
+      apps = rebar_root_apps(info.root)
+      root_apps = Enum.map(apps, &elem(&1, 0))
+
+      project_version =
+        case apps do
+          [{_app, version}] -> version
+          _ -> nil
+        end
 
       profiles =
         if config.env == :prod,
@@ -189,6 +197,7 @@ defmodule VulnCheck.Workspace do
        %Workspace{
          root_dir: info.root,
          project_name: List.first(root_apps) || Path.basename(info.root),
+         project_version: project_version,
          project_type: :rebar3,
          direct_deps: direct_deps(dependency_sources(packages), packages),
          env: config.env,
@@ -232,6 +241,7 @@ defmodule VulnCheck.Workspace do
        %Workspace{
          root_dir: info.root,
          project_name: root_app,
+         project_version: project.version,
          project_type: :gleam,
          env: config.env,
          elixir_version: nil,
@@ -448,10 +458,10 @@ defmodule VulnCheck.Workspace do
     |> Enum.sort()
     |> Enum.flat_map(fn path ->
       case AppFile.read(path) do
-        {:ok, app} -> [app.name]
-        _ -> [path |> Path.basename(".app.src")]
+        {:ok, app} -> [{app.name, app.vsn}]
+        _ -> [{Path.basename(path, ".app.src"), nil}]
       end
     end)
-    |> Enum.uniq()
+    |> Enum.uniq_by(&elem(&1, 0))
   end
 end

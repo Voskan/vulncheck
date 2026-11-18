@@ -42,6 +42,7 @@ defmodule VulnCheck.Report.JSON do
   defp target(%Workspace{} = ws) do
     %{
       "project_name" => ws.project_name,
+      "project_version" => ws.project_version,
       "project_type" => Atom.to_string(ws.project_type),
       "env" => Atom.to_string(ws.env),
       "elixir_version" => ws.elixir_version,

@@ -17,6 +17,7 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
     %Workspace{
       root_dir: "/srv/ledger",
       project_name: "ledger_api",
+      project_version: "3.2.1",
       project_type: :mix,
       env: :prod,
       elixir_version: "1.18.2",
@@ -131,7 +132,7 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
         verdict: :reachable,
         reason: :call_chain_proven,
         suppressed: true,
-        suppression_reason: "input is validated by the gateway",
+        suppression_reason: "upgrade planned",
         suppression_expires: "2027-01-01"
       ),
       finding(
@@ -174,7 +175,8 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
       assert metadata["component"] == %{
                "type" => "application",
                "name" => "ledger_api",
-               "bom-ref" => "pkg:generic/ledger_api"
+               "version" => "3.2.1",
+               "bom-ref" => CycloneDX.root_ref(report())
              }
 
       components = Map.new(bom["components"], &{&1["name"], &1})
@@ -201,7 +203,7 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
       deps = Map.new(bom["dependencies"], &{&1["ref"], &1["dependsOn"]})
       assert Enum.map(bom["dependencies"], & &1["ref"]) == Enum.sort(Map.keys(deps))
 
-      assert deps["pkg:generic/ledger_api"] ==
+      assert deps[CycloneDX.root_ref(report())] ==
                Enum.sort([
                  "pkg:hex/ash@3.34.2",
                  "pkg:hex/meck@0.9.2",
@@ -255,16 +257,14 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
 
       assert vulns["GHSA-ash-mod"]["analysis"]["detail"] == "module not loaded"
 
-      for id <- ~w(GHSA-mk-1 GHSA-otp-1) do
-        assert %{"state" => "not_affected", "justification" => "code_not_present"} =
-                 vulns[id]["analysis"]
-      end
+      assert %{"state" => "not_affected", "justification" => "code_not_present"} =
+               vulns["GHSA-mk-1"]["analysis"]
 
-      assert vulns["GHSA-sup-1"]["analysis"] == %{
-               "state" => "not_affected",
-               "justification" => "protected_by_mitigating_control",
-               "detail" => "input is validated by the gateway"
-             }
+      assert %{"state" => "not_affected", "justification" => "requires_environment"} =
+               vulns["GHSA-otp-1"]["analysis"]
+
+      assert vulns["GHSA-sup-1"]["analysis"]["state"] == "exploitable"
+      refute Map.has_key?(vulns["GHSA-sup-1"]["analysis"], "justification")
     end
 
     test "is byte-reproducible and honours explicit identifiers" do
@@ -328,7 +328,7 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
 
       assert reachable["products"] == [
                %{
-                 "@id" => "pkg:generic/ledger_api",
+                 "@id" => CycloneDX.root_ref(report()),
                  "subcomponents" => [%{"@id" => "pkg:hex/ash@3.34.2"}]
                }
              ]
@@ -350,18 +350,18 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
       assert statements["GHSA-ash-fn"]["impact_statement"] == "Ash.Query.unsafe/1 is never called"
       assert statements["GHSA-ash-mod"]["impact_statement"] == "module not loaded"
 
-      for id <- ~w(GHSA-mk-1 GHSA-otp-1) do
-        assert %{"status" => "not_affected", "justification" => "vulnerable_code_not_present"} =
-                 statements[id]
-      end
+      assert %{"status" => "not_affected", "justification" => "component_not_present"} =
+               statements["GHSA-mk-1"]
 
       assert statements["GHSA-mk-1"]["impact_statement"] == "restricted to :test"
 
-      assert %{
-               "status" => "not_affected",
-               "justification" => "inline_mitigations_already_exist",
-               "impact_statement" => "input is validated by the gateway"
-             } = statements["GHSA-sup-1"]
+      assert %{"status" => "not_affected", "impact_statement" => "requires OTP <= 25"} =
+               statements["GHSA-otp-1"]
+
+      refute Map.has_key?(statements["GHSA-otp-1"], "justification")
+
+      assert statements["GHSA-sup-1"]["status"] == "affected"
+      refute Map.has_key?(statements["GHSA-sup-1"], "justification")
     end
 
     test "an expired suppression keeps the original verdict" do
@@ -381,6 +381,93 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
       assert first == OpenVEX.encode(report(), %Config{}, timestamp: "2030-01-01T00:00:00Z")
       refute first == OpenVEX.encode(report(), %Config{}, timestamp: "2030-01-02T00:00:00Z")
       assert JSON.decode!(first)["timestamp"] == "2030-01-01T00:00:00Z"
+    end
+  end
+
+  test "product identity distinguishes versions, environments and compiled snapshots" do
+    report = report()
+    first = CycloneDX.root_ref(report)
+    assert first =~ ~r"^pkg:generic/ledger_api@3\.2\.1\?scan_scope=[0-9a-f]{64}$"
+
+    assert CycloneDX.root_ref(%{report | workspace: %{report.workspace | project_version: "3.2.2"}}) !=
+             first
+
+    assert CycloneDX.root_ref(%{report | workspace: %{report.workspace | otp_release: "28"}}) !=
+             first
+
+    partial = %{report | stats: %{analysis: %{status: :partial, artifact_digest: "evidence"}}}
+    ref = CycloneDX.root_ref(partial)
+    assert ref != first
+    bom = CycloneDX.document(partial, %Config{})
+    assert bom["metadata"]["component"]["bom-ref"] == ref
+
+    assert %{"name" => "vulncheck:build_analysis", "value" => "partial"} in bom["metadata"][
+             "properties"
+           ]
+
+    vex = OpenVEX.document(partial, %Config{})
+    assert Enum.all?(vex["statements"], fn statement -> hd(statement["products"])["@id"] == ref end)
+  end
+
+  test "full attestations keep filtered findings and distinguish lock aliases" do
+    report = report()
+    {"ash_alias", aliased} = pkg("ash_alias", "3.34.2", hex_name: "ash")
+    packages = Map.put(report.workspace.packages, "ash_alias", aliased)
+
+    ws = %{
+      report.workspace
+      | packages: packages,
+        direct_deps: ["ash_alias" | report.workspace.direct_deps]
+    }
+
+    original = hd(report.findings)
+
+    duplicate = %{
+      original
+      | package: "ash_alias",
+        verdict: :potentially_reachable,
+        reason: :missing_beam_debug_info
+    }
+
+    filtered = %{report | findings: [], all_findings: [original, duplicate], workspace: ws}
+
+    bom = CycloneDX.document(filtered, %Config{})
+    aliases = Enum.filter(bom["components"], &(&1["purl"] == "pkg:hex/ash@3.34.2"))
+    refs = MapSet.new(aliases, & &1["bom-ref"])
+    assert MapSet.size(refs) == 2
+
+    assert all_refs =
+             List.flatten([bom["metadata"]["component"], bom["components"], bom["vulnerabilities"]])
+
+    assert Enum.uniq_by(all_refs, & &1["bom-ref"]) == all_refs
+    graph_refs = MapSet.new(all_refs, & &1["bom-ref"])
+
+    assert Enum.all?(bom["dependencies"], fn entry ->
+             Enum.all?([entry["ref"] | entry["dependsOn"]], &MapSet.member?(graph_refs, &1))
+           end)
+
+    assert MapSet.new(bom["vulnerabilities"], &hd(&1["affects"])["ref"]) == refs
+
+    vex = OpenVEX.document(filtered, %Config{})
+
+    assert Enum.sort(Enum.map(vex["statements"], & &1["status"])) == [
+             "affected",
+             "under_investigation"
+           ]
+
+    components = Enum.map(vex["statements"], &hd(hd(&1["products"])["subcomponents"]))
+    assert MapSet.new(components, & &1["@id"]) == refs
+    assert Enum.all?(components, &(&1["identifiers"]["purl"] == "pkg:hex/ash@3.34.2"))
+  end
+
+  test "empty and retired-only scans have no OpenVEX document" do
+    report = report()
+
+    for findings <- [[], [List.last(report.findings)]] do
+      clean = %{report | findings: findings}
+      assert OpenVEX.document(clean, %Config{}) == nil
+      assert OpenVEX.render(clean, %Config{}) == ""
+      assert CycloneDX.document(clean, %Config{})["vulnerabilities"] == []
     end
   end
 end

@@ -169,10 +169,12 @@ Compliance frameworks (SOC 2, PCI DSS v4.0, ISO 27001, EU CRA) increasingly requ
 | `POTENTIALLY_REACHABLE` | `"under_investigation"` | — (`status_notes` explains the reason) |
 | `UNREACHABLE` (`function_not_called`, `module_not_loaded`, `adapter_not_configured`, `otp_app_not_started`) | `"not_affected"` | `"vulnerable_code_not_in_execute_path"` |
 | `UNREACHABLE` (`non_prod_dependency` of a build-time only package, `runtime: false`) | `"not_affected"` | `"vulnerable_code_not_in_execute_path"` |
-| `UNREACHABLE` (`non_prod_dependency` of a `:dev`/`:test` package, `otp_version_unaffected`) | `"not_affected"` | `"vulnerable_code_not_present"` |
-| Suppressed in `.vulncheck.ignore` (reachable or potentially reachable, not expired) | `"not_affected"` | `"inline_mitigations_already_exist"` |
+| `UNREACHABLE` (`non_prod_dependency` of a `:dev`/`:test` package) | `"not_affected"` | `"component_not_present"` |
+| `UNREACHABLE` (`otp_version_unaffected`) | `"not_affected"` | OTP constraint in `impact_statement` |
 
-Retired Hex releases are a package lifecycle status rather than a vulnerability and are not emitted as VEX statements. The document `@id` is derived from the content, so identical reports produce byte-identical documents.
+Policy suppressions preserve the original vulnerability status in OpenVEX and CycloneDX. Both formats include the complete scan snapshot before diff and baseline filtering.
+
+Retired Hex releases produce no VEX statements. When a scan has zero statements, the CLI reports that OpenVEX was omitted on stderr and leaves stdout or a new destination empty. An existing OpenVEX destination produces exit code `2` and preserves the file so automation can distinguish a stale artifact. The API returns `nil` from `OpenVEX.document/3` and an empty string from `OpenVEX.encode/3`. The document `@id` is derived from the content.
 
 ---
 
@@ -182,5 +184,6 @@ Generates a standards-compliant CycloneDX 1.6 Bill of Materials for the BEAM rel
 - Component `purl` identifiers in canonical Hex format (`pkg:hex/phoenix@1.7.18`), plus git commit refs for git dependencies.
 - `scope: "required"` for `:prod` runtime packages and `scope: "excluded"` for `:dev`/`:test`-only dependencies.
 - A `dependencies` graph built from the lockfile's dependency edges, with the project's direct dependencies (from `mix.exs`, `rebar.config` or `gleam.toml`) as the root component's `dependsOn`.
-- `vulnerabilities[].analysis` blocks matching the reachability verdict: `exploitable` (reachable, with the call chain in `detail`, plus `response: ["update"]` when a fixed version exists), `in_triage` (potentially reachable), `not_affected` with `code_not_reachable` or `code_not_present` (unreachable), and `not_affected` with `protected_by_mitigating_control` for active suppressions. Retired releases are not listed as vulnerabilities.
+- `vulnerabilities[].analysis` records `exploitable` for a reachable match, `in_triage` for a potential match, and `not_affected` with `code_not_reachable`, `code_not_present` or `requires_environment` as supported by the evidence. Retired releases are omitted from the vulnerability list.
 - SHA-256 component hashes from the lockfile checksums and a deterministic `serialNumber`, so identical scans produce identical SBOMs.
+- The project component's reference includes the declared project version when available and a `scan_scope` digest. It identifies the dependency inventory, runtime and any analyzed compiled evidence. The VEX product uses the same identifier. CycloneDX metadata gives the build profile, evidence status and snapshot scope. The identifier covers the scanned workspace and is scoped to the supplied OTP environment. Aliases for the same package URL have distinct component references in both outputs.

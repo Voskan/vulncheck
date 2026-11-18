@@ -167,6 +167,73 @@ defmodule VulnCheck.CLITest do
              ]
     end
 
+    test "omits OpenVEX for clean scans and catches stale files at the destination" do
+      root = Project.shop!(deps: [{"jason", "1.4.4"}])
+      cache = Project.cache!()
+      out_dir = Tmp.mkdir!("cli-clean-vex")
+
+      assert {0, "", note} = cli(scan_args(root, cache, ["--format", "openvex"]))
+      assert note =~ "no statements"
+
+      argv = scan_args(root, cache, ["--format", "json", "--vex", "vex.json"])
+      assert {0, output, note} = cli(argv, cwd: out_dir)
+      assert JSON.decode!(output)["findings"] == []
+      assert note =~ "no statements"
+      path = Path.join(out_dir, "vex.json")
+      refute File.exists?(path)
+
+      File.write!(path, "old artifact")
+      assert {2, "", error} = cli(argv, cwd: out_dir)
+      assert error =~ "destination already exists"
+      assert File.read!(path) == "old artifact"
+    end
+
+    test "emits full attestations when the baseline leaves the Git diff clean" do
+      root = Project.shop!()
+      cache = Project.cache!()
+      out_dir = Tmp.mkdir!("cli-attestations")
+      git = fn args -> {_, 0} = System.cmd("git", args, cd: root, stderr_to_stdout: true) end
+      git.(["init", "-q"])
+      git.(["add", "mix.exs", "mix.lock"])
+      git.(["-c", "user.name=ci", "-c", "user.email=ci@example.invalid", "commit", "-qm", "init"])
+
+      baseline = Path.join(out_dir, "baseline.json")
+      assert {1, _, ""} = cli(scan_args(root, cache, ["--write-baseline", baseline]))
+
+      argv =
+        scan_args(root, cache, [
+          "--diff",
+          "HEAD",
+          "--baseline",
+          baseline,
+          "--format",
+          "json",
+          "--sbom",
+          "bom.json",
+          "--vex",
+          "vex.json"
+        ])
+
+      assert {0, output, ""} = cli(argv, cwd: out_dir)
+      assert JSON.decode!(output)["findings"] == []
+
+      assert length(
+               out_dir
+               |> Path.join("bom.json")
+               |> File.read!()
+               |> JSON.decode!()
+               |> Map.fetch!("vulnerabilities")
+             ) == 2
+
+      assert length(
+               out_dir
+               |> Path.join("vex.json")
+               |> File.read!()
+               |> JSON.decode!()
+               |> Map.fetch!("statements")
+             ) == 2
+    end
+
     test "every format renders" do
       root = Project.shop!()
       cache = Project.cache!()
