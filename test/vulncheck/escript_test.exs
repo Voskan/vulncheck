@@ -82,4 +82,20 @@ defmodule VulnCheck.EscriptTest do
     assert {"", 1} = System.cmd(bin, offline(mix, cache) ++ ["-f", "json", "-o", json_out])
     assert %{"schema_version" => "1.0.0"} = json_out |> File.read!() |> JSON.decode!()
   end
+
+  test "Mix and escript emit the same machine output contract with a missing build", %{bin: bin} do
+    root = Project.shop!()
+    cache = Project.cache!()
+    File.rm_rf!(Path.join(root, "_build"))
+    Tmp.write!(root, ".vulncheck.exs", "[env: :test]")
+    args = offline(root, cache) ++ ["--format", "json", "--quiet"]
+
+    assert {mix, 1} = System.cmd("mix", ["vulncheck" | args], cd: @root, env: [{"MIX_ENV", "prod"}])
+    assert {script, 1} = System.cmd(bin, args)
+
+    for output <- [mix, script] do
+      assert %{"target" => %{"env" => "test"}, "analysis" => %{"status" => "unavailable"}} =
+               JSON.decode!(output)
+    end
+  end
 end

@@ -38,7 +38,19 @@ defmodule Mix.Tasks.VulncheckTasksTest do
       output =
         capture_io(fn -> assert Mix.Tasks.Vulncheck.run(offline(root, Project.cache!())) == :ok end)
 
-      assert output =~ "no _build/prod found; run `MIX_ENV=prod mix compile`"
+      assert output =~ "no compiled build found under _build/"
+
+      json_output =
+        capture_io(fn ->
+          assert Mix.Tasks.Vulncheck.run(
+                   offline(root, Project.cache!()) ++ ["--format", "json", "--quiet"]
+                 ) == :ok
+        end)
+
+      assert %{
+               "schema_version" => "1.0.0",
+               "warnings" => ["no compiled build found under _build/" <> _]
+             } = JSON.decode!(json_output)
     end
   end
 

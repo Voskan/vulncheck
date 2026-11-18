@@ -26,7 +26,8 @@ defmodule VulnCheck.CLITest do
       assert {0, help, ""} = cli(["--help"])
       assert help =~ "Exit codes: 0 clean, 1 policy violation, 2 execution error."
 
-      for flag <- ~w(--project-dir --env --format --output --sbom --vex --fail-on --min-severity
+      for flag <-
+            ~w(--project-dir --env --format --output --sarif --sbom --vex --fail-on --min-severity
                      --show-unreachable --diff --baseline --write-baseline --forbid-new-suppressions
                      --otp-version --offline --bundle --no-color --quiet) do
         assert help =~ flag
@@ -126,6 +127,74 @@ defmodule VulnCheck.CLITest do
   end
 
   describe "artifacts" do
+    test "rejects overlapping outputs before modifying any destination" do
+      root = Project.shop!()
+      cache = Project.cache!()
+      cwd = Tmp.mkdir!("cli-overlapping-paths")
+      target = Tmp.write!(cwd, "report.json", "existing record")
+
+      for flags <- [
+            ["--output", "report.json", "--sbom", "reports/../report.json"],
+            ["--write-baseline", "report.json", "--vex", "./report.json"],
+            ["--sarif", "report.json", "--output", target]
+          ] do
+        assert {2, "", error} = cli(scan_args(root, cache, flags), cwd: cwd)
+        assert error =~ "output destinations overlap"
+        assert File.read!(target) == "existing record"
+        assert File.ls!(cwd) == ["report.json"]
+      end
+    end
+
+    test "writes SARIF from the scan that reports policy failures" do
+      root = Project.shop!()
+      cwd = Tmp.mkdir!("cli-policy-report")
+      cache = Project.cache!()
+      args = scan_args(root, cache, ["--format", "json", "--sarif", "report.sarif"])
+      file = Path.join(cwd, "report.sarif")
+
+      Tmp.write!(root, ".vulncheck.ignore", """
+      [%{id: "CVE-2026-54892", reason: "upgrade planned", expires: "2025-01-01"}]
+      """)
+
+      assert {1, expired, ""} = cli(args, cwd: cwd, scan_opts: [today: ~D[2026-01-01]])
+      primary = JSON.decode!(expired)
+      assert Enum.any?(primary["policy_violations"], &String.contains?(&1, "expired"))
+      sarif = JSON.decode!(File.read!(file))
+      assert sarif["version"] == "2.1.0"
+      assert hd(hd(sarif["runs"])["results"])["ruleId"] == hd(primary["findings"])["advisory_id"]
+
+      Tmp.write!(root, ".vulncheck.ignore", "invalid policy\n")
+      assert {1, invalid, ""} = cli(args, cwd: cwd)
+
+      assert Enum.any?(
+               JSON.decode!(invalid)["policy_violations"],
+               &String.contains?(&1, ".vulncheck.ignore")
+             )
+
+      File.rm!(Path.join(root, ".vulncheck.ignore"))
+
+      Tmp.write!(
+        cache,
+        "feeds/hex/packages/plug.json",
+        JSON.encode!(%{
+          "name" => "plug",
+          "releases" => [%{"version" => "1.16.2", "retirement" => %{"reason" => "security"}}]
+        })
+      )
+
+      assert {1, retired, ""} = cli(args ++ ["--retired"], cwd: cwd)
+      assert Enum.any?(JSON.decode!(retired)["findings"], &(&1["verdict"] == "retired"))
+
+      assert Enum.any?(
+               hd(JSON.decode!(File.read!(file))["runs"])["results"],
+               &String.starts_with?(&1["ruleId"], "HEX-RETIRED")
+             )
+
+      empty_cache = Tmp.mkdir!("cli-policy-no-feeds")
+      assert {2, "", _} = cli(scan_args(root, empty_cache, ["--sarif", "missing.sarif"]), cwd: cwd)
+      refute File.exists?(Path.join(cwd, "missing.sarif"))
+    end
+
     test "writes the report, SBOM and VEX in one run" do
       root = Project.shop!()
       out_dir = Tmp.mkdir!("cli-out")

@@ -23,6 +23,7 @@ defmodule Mix.Tasks.Vulncheck do
     * `--format FMT` / `-f` — `terminal`, `json`, `markdown`, `sarif`,
       `github`, `gitlab`, `cyclonedx` or `openvex`
     * `--output FILE` / `-o` — write the report to a file
+    * `--sarif FILE` — also write a SARIF 2.1.0 report
     * `--sbom FILE` — also write a CycloneDX 1.6 SBOM
     * `--vex FILE` — also write an OpenVEX v0.2.0 document
     * `--fail-on TIER` — `reachable`, `potentially_reachable` (default),
@@ -52,26 +53,5 @@ defmodule Mix.Tasks.Vulncheck do
   @requirements ["app.config"]
 
   @impl Mix.Task
-  def run(argv) do
-    warn_missing_build(argv)
-    VulnCheck.Mix.run(argv)
-  end
-
-  defp warn_missing_build(argv) do
-    {opts, _args, _invalid} =
-      OptionParser.parse(argv, switches: [project_dir: :string, env: :string])
-
-    dir = Path.expand(Keyword.get(opts, :project_dir, "."))
-    env = Keyword.get(opts, :env, "prod")
-
-    if File.regular?(Path.join(dir, "mix.exs")) and
-         not File.dir?(Path.join(dir, "_build/#{env}/lib")) do
-      Mix.shell().info([
-        :yellow,
-        "warning: ",
-        :reset,
-        "no _build/#{env} found; run `MIX_ENV=#{env} mix compile` for function-level reachability"
-      ])
-    end
-  end
+  def run(argv), do: VulnCheck.Mix.run(argv)
 end

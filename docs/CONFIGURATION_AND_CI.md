@@ -115,6 +115,7 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 | `--env ENV` | `prod` (default), `dev` or `test`. |
 | `-f`, `--format FMT` | `terminal` (default), `json`, `markdown`, `sarif`, `github`, `gitlab`, `cyclonedx` or `openvex`. |
 | `-o`, `--output FILE` | Write the report to a file instead of standard output. |
+| `--sarif FILE` | Also write a SARIF 2.1.0 report from the same scan. |
 | `--sbom FILE` | Also write a CycloneDX 1.6 SBOM. |
 | `--vex FILE` | Also write an OpenVEX v0.2.0 document. |
 | `--fail-on TIER` | `reachable`, `potentially_reachable` (default), `any` or `none`. |
@@ -149,8 +150,8 @@ An online scan can use a verified previous OSV archive after a failed refresh if
 | Exit Code | Meaning |
 | :---: | :--- |
 | `0` | Clean — zero findings at or above `--fail-on` and `--min-severity` thresholds. |
-| `1` | Policy violation — actionable vulnerabilities, retired packages, or forbidden suppressions found. |
-| `2` | Execution error — invalid flags or configuration, missing or unparseable lockfile, invalid ignore file, unreachable feeds without a cache, or an offline run without cached feeds. |
+| `1` | Policy violation — findings, retired packages, expired or forbidden suppressions, or an invalid ignore policy. Reports are available. |
+| `2` | Execution error — invalid flags or configuration, overlapping destinations, missing or unparseable lockfile, or unavailable feeds. |
 
 ---
 
@@ -181,7 +182,7 @@ jobs:
           upload-sarif: true
 ```
 
-The action builds the escript, compiles the project (`compile: false` skips this when an earlier step already built `_build/<env>`), caches advisory feeds between runs, writes annotations and a step summary, and fails the job with the scan's exit code. Its `exit-code` and `sarif-file` outputs are available to later steps.
+The action builds the escript, compiles the project (`compile: false` skips this for prepared artifacts), and caches advisory feeds. Annotations, the job summary and optional SARIF come from one scan. A policy failure records exit `1` and uploads available SARIF before enforcing the policy. Execution errors record exit `2` and skip the upload. The action provides `exit-code` and `sarif-file` outputs.
 
 ### GitLab CI (Code Quality widget)
 
@@ -218,4 +219,4 @@ repos:
       - id: vulncheck
 ```
 
-The hook runs when `mix.lock`, `rebar.lock`, `manifest.toml` or `.vulncheck.ignore` change; use `vulncheck-offline` on machines without network access.
+Install the `vulncheck` executable and make it available on `PATH`. The hook runs from the repository root for Mix, rebar3 and Gleam workspaces when `mix.lock`, `rebar.lock`, `manifest.toml` or `.vulncheck.ignore` changes. Use `vulncheck-offline` when the machine has no network access.

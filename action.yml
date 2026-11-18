@@ -46,7 +46,7 @@ outputs:
     value: ${{ steps.scan.outputs.exit-code }}
   sarif-file:
     description: Path of the SARIF report when it was generated.
-    value: ${{ steps.sarif.outputs.sarif-file }}
+    value: ${{ steps.scan.outputs.sarif-file }}
 
 runs:
   using: composite
@@ -98,38 +98,38 @@ runs:
         FORBID_NEW: ${{ inputs.forbid-new-suppressions }}
         OFFLINE: ${{ inputs.offline }}
         BUNDLE: ${{ inputs.bundle }}
+        UPLOAD_SARIF: ${{ inputs.upload-sarif }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
       run: |
         args=(--project-dir "$PROJECT_DIR" --env "$SCAN_ENV" --fail-on "$FAIL_ON" --min-severity "$MIN_SEVERITY")
         [ -n "$DIFF_BASE" ] && args+=(--diff "$DIFF_BASE")
         [ "$FORBID_NEW" = "true" ] && args+=(--forbid-new-suppressions)
         [ "$OFFLINE" = "true" ] && args+=(--offline)
         [ -n "$BUNDLE" ] && args+=(--bundle "$BUNDLE")
-        printf '%s\n' "${args[@]}" > "$RUNNER_TEMP/vulncheck-args"
+        [ "$UPLOAD_SARIF" = "true" ] && args+=(--sarif "$SARIF_FILE")
         set +e
         "$VULNCHECK_BIN" "${args[@]}" --format github
         code=$?
         set -e
+        case "$code" in
+          0|1)
+            if [ "$UPLOAD_SARIF" = "true" ] && [ -s "$SARIF_FILE" ]; then
+              echo "sarif-file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
+            fi
+            ;;
+          *) code=2 ;;
+        esac
         echo "exit-code=$code" >> "$GITHUB_OUTPUT"
 
-    - name: Generate SARIF
-      id: sarif
-      if: inputs.upload-sarif == 'true' && steps.scan.outputs.exit-code != '2'
-      shell: bash
-      env:
-        SARIF_FILE: ${{ inputs.sarif-file }}
-      run: |
-        mapfile -t args < "$RUNNER_TEMP/vulncheck-args"
-        "$VULNCHECK_BIN" "${args[@]}" --format sarif --output "$SARIF_FILE" --fail-on none --quiet
-        echo "sarif-file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
-
     - name: Upload SARIF
-      if: inputs.upload-sarif == 'true' && steps.sarif.outcome == 'success'
+      if: inputs.upload-sarif == 'true' && steps.scan.outputs.sarif-file != ''
       uses: github/codeql-action/upload-sarif@v3
       with:
-        sarif_file: ${{ inputs.sarif-file }}
+        sarif_file: ${{ steps.scan.outputs.sarif-file }}
         category: vulncheck
 
     - name: Enforce policy
+      if: always() && steps.scan.outputs.exit-code != ''
       shell: bash
       env:
         CODE: ${{ steps.scan.outputs.exit-code }}

@@ -36,6 +36,7 @@ defmodule VulnCheck.Config do
             env: :prod,
             format: :terminal,
             output: nil,
+            sarif: nil,
             sbom: nil,
             vex: nil,
             fail_on: :potentially_reachable,
@@ -74,6 +75,7 @@ defmodule VulnCheck.Config do
           env: :prod | :dev | :test,
           format: format(),
           output: String.t() | nil,
+          sarif: String.t() | nil,
           sbom: String.t() | nil,
           vex: String.t() | nil,
           fail_on: fail_on(),
@@ -109,6 +111,7 @@ defmodule VulnCheck.Config do
     env: :string,
     format: :string,
     output: :string,
+    sarif: :string,
     sbom: :string,
     vex: :string,
     fail_on: :string,
@@ -134,7 +137,7 @@ defmodule VulnCheck.Config do
 
   @aliases [o: :output, f: :format, q: :quiet]
 
-  @file_keys ~w(env format output sbom vex fail_on min_severity fail_on_retired check_retired
+  @file_keys ~w(env format output sarif sbom vex fail_on min_severity fail_on_retired check_retired
                 show_unreachable otp_version offline bundle configured_adapters extra_entrypoints
                 ignore_file require_ignore_reason require_ignore_expiry cache_dir cache_ttl_seconds max_feed_age_seconds
                 forbid_new_suppressions diff baseline)
@@ -256,6 +259,28 @@ defmodule VulnCheck.Config do
   def ignore_path(%__MODULE__{ignore_file: file} = config),
     do: Path.expand(file, project_root(config))
 
+  @doc false
+  def validate_output_paths(%__MODULE__{} = config) do
+    paths =
+      for key <- [:output, :sarif, :sbom, :vex, :write_baseline],
+          path = Map.fetch!(config, key),
+          is_binary(path),
+          do: {Path.expand(path, project_root(config)), key}
+
+    paths
+    |> Enum.group_by(&elem(&1, 0), &elem(&1, 1))
+    |> Enum.sort()
+    |> Enum.find(fn {_path, keys} -> length(keys) > 1 end)
+    |> case do
+      nil ->
+        :ok
+
+      {path, keys} ->
+        flags = Enum.map_join(keys, ", ", &("--" <> String.replace(Atom.to_string(&1), "_", "-")))
+        {:error, "output destinations overlap (#{flags}): #{path}"}
+    end
+  end
+
   # -- CLI ---------------------------------------------------------------------
 
   defp check_args([], _opts), do: :ok
@@ -294,6 +319,7 @@ defmodule VulnCheck.Config do
       {key, value}
       when key in [
              :output,
+             :sarif,
              :sbom,
              :vex,
              :baseline,
@@ -359,6 +385,7 @@ defmodule VulnCheck.Config do
   defp apply_cli_option(config, key, value)
        when key in [
               :output,
+              :sarif,
               :sbom,
               :vex,
               :diff,
@@ -452,7 +479,7 @@ defmodule VulnCheck.Config do
   end
 
   defp file_option(config, key, value)
-       when key in ~w(output sbom vex bundle ignore_file cache_dir diff baseline) do
+       when key in ~w(output sarif sbom vex bundle ignore_file cache_dir diff baseline) do
     cond do
       is_nil(value) and key not in ["ignore_file"] ->
         {:ok, Map.put(config, String.to_existing_atom(key), nil)}

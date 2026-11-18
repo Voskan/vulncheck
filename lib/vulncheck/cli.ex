@@ -91,6 +91,7 @@ defmodule VulnCheck.CLI do
       0
     else
       with {:ok, config} <- Config.from_cli_and_file(argv, cwd: ctx.cwd),
+           :ok <- Config.validate_output_paths(config),
            config = adjust_color(config),
            {:ok, report} <- VulnCheck.scan(config, ctx.scan_opts),
            :ok <- write_outputs(report, config, ctx) do
@@ -133,6 +134,7 @@ defmodule VulnCheck.CLI do
 
     artifacts =
       [
+        config.sarif && {config.sarif, render(report, config, :sarif)},
         config.sbom && {config.sbom, render(report, config, :cyclonedx)},
         config.vex && vex != "" && {config.vex, vex}
       ]
@@ -154,7 +156,9 @@ defmodule VulnCheck.CLI do
     if path = Enum.find([config.vex, primary_path], &(is_binary(&1) and File.exists?(&1))) do
       {:error, "no OpenVEX statements to write and the destination already exists: #{path}"}
     else
-      IO.puts(ctx.stderr, "OpenVEX omitted because the scan has no statements")
+      if config.quiet,
+        do: :ok,
+        else: IO.puts(ctx.stderr, "OpenVEX omitted because the scan has no statements")
     end
   end
 
@@ -658,6 +662,7 @@ defmodule VulnCheck.CLI do
       --env ENV                   prod (default) | dev | test
       -f, --format FMT            terminal | json | markdown | sarif | github | gitlab | cyclonedx | openvex
       -o, --output FILE           write the report to FILE instead of standard output
+      --sarif FILE                also write a SARIF 2.1.0 report
       --sbom FILE                 also write a CycloneDX 1.6 SBOM
       --vex FILE                  also write an OpenVEX v0.2.0 document
       --fail-on TIER              reachable | potentially_reachable (default) | any | none
