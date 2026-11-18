@@ -91,7 +91,9 @@ defmodule VulnCheck.Feeds.OSV do
   def parse_archive(_zip), do: {:error, {:archive_too_large, :compressed}}
 
   defp valid_record?(%{"id" => id, "withdrawn" => time})
-       when is_binary(id) and id != "" and is_binary(time), do: true
+       when is_binary(id) and id != "" and is_binary(time) do
+    true
+  end
 
   defp valid_record?(%{"id" => id, "affected" => affected})
        when is_binary(id) and id != "" and is_list(affected),
