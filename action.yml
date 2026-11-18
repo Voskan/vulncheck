@@ -1,0 +1,136 @@
+name: VulnCheck
+description: Reachability-aware vulnerability audit for Elixir, Erlang and Gleam dependencies
+author: Voskan Voskanyan
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  project-dir:
+    description: Directory of the project to scan.
+    default: "."
+  env:
+    description: Mix environment whose dependency closure and build is analyzed.
+    default: prod
+  compile:
+    description: Fetch and compile dependencies before scanning so call graphs can be analyzed.
+    default: "true"
+  fail-on:
+    description: "Verdict threshold that fails the job: reachable, potentially_reachable, any or none."
+    default: potentially_reachable
+  min-severity:
+    description: "Minimum severity that fails the job: low, medium, high or critical."
+    default: low
+  diff:
+    description: Git ref; only findings related to dependencies changed since this ref are reported. Requires a checkout with history (fetch-depth 0).
+    default: ""
+  forbid-new-suppressions:
+    description: Fail when .vulncheck.ignore gains or extends suppressions compared to the diff base.
+    default: "false"
+  upload-sarif:
+    description: Upload a SARIF report to GitHub Code Scanning (needs security-events write permission).
+    default: "false"
+  sarif-file:
+    description: Path of the SARIF report.
+    default: vulncheck.sarif
+  offline:
+    description: Use only cached or bundled advisory feeds.
+    default: "false"
+  bundle:
+    description: Advisory feed bundle to import before an offline scan.
+    default: ""
+
+outputs:
+  exit-code:
+    description: Exit code of the scan (0 clean, 1 policy violation, 2 scan error).
+    value: ${{ steps.scan.outputs.exit-code }}
+  sarif-file:
+    description: Path of the SARIF report when it was generated.
+    value: ${{ steps.sarif.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build vulncheck
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        MIX_ENV: prod
+      run: |
+        mix local.hex --force --if-missing
+        mix escript.build
+        echo "VULNCHECK_BIN=$PWD/vulncheck" >> "$GITHUB_ENV"
+
+    - name: Cache advisory feeds
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/vulncheck
+        key: vulncheck-feeds-${{ github.run_id }}
+        restore-keys: vulncheck-feeds-
+
+    - name: Compile project
+      if: inputs.compile == 'true'
+      shell: bash
+      working-directory: ${{ inputs.project-dir }}
+      env:
+        MIX_ENV: ${{ inputs.env }}
+      run: |
+        if [ -f mix.exs ]; then
+          mix local.hex --force --if-missing
+          mix local.rebar --force --if-missing
+          mix deps.get
+          mix compile
+        elif [ -f rebar.config ]; then
+          rebar3 as "$MIX_ENV" compile
+        elif [ -f gleam.toml ]; then
+          gleam build --target erlang
+        fi
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project-dir }}
+        SCAN_ENV: ${{ inputs.env }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        MIN_SEVERITY: ${{ inputs.min-severity }}
+        DIFF_BASE: ${{ inputs.diff }}
+        FORBID_NEW: ${{ inputs.forbid-new-suppressions }}
+        OFFLINE: ${{ inputs.offline }}
+        BUNDLE: ${{ inputs.bundle }}
+      run: |
+        args=(--project-dir "$PROJECT_DIR" --env "$SCAN_ENV" --fail-on "$FAIL_ON" --min-severity "$MIN_SEVERITY")
+        [ -n "$DIFF_BASE" ] && args+=(--diff "$DIFF_BASE")
+        [ "$FORBID_NEW" = "true" ] && args+=(--forbid-new-suppressions)
+        [ "$OFFLINE" = "true" ] && args+=(--offline)
+        [ -n "$BUNDLE" ] && args+=(--bundle "$BUNDLE")
+        printf '%s\n' "${args[@]}" > "$RUNNER_TEMP/vulncheck-args"
+        set +e
+        "$VULNCHECK_BIN" "${args[@]}" --format github
+        code=$?
+        set -e
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+    - name: Generate SARIF
+      id: sarif
+      if: inputs.upload-sarif == 'true' && steps.scan.outputs.exit-code != '2'
+      shell: bash
+      env:
+        SARIF_FILE: ${{ inputs.sarif-file }}
+      run: |
+        mapfile -t args < "$RUNNER_TEMP/vulncheck-args"
+        "$VULNCHECK_BIN" "${args[@]}" --format sarif --output "$SARIF_FILE" --fail-on none --quiet
+        echo "sarif-file=$SARIF_FILE" >> "$GITHUB_OUTPUT"
+
+    - name: Upload SARIF
+      if: inputs.upload-sarif == 'true' && steps.sarif.outcome == 'success'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+        category: vulncheck
+
+    - name: Enforce policy
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.exit-code }}
+      run: exit "$CODE"

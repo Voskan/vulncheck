@@ -1,0 +1,15 @@
+- id: vulncheck
+  name: vulncheck
+  description: Reachability-aware vulnerability audit of locked dependencies.
+  entry: mix vulncheck
+  language: system
+  files: (^|/)(mix\.lock|rebar\.lock|manifest\.toml|\.vulncheck\.ignore)$
+  pass_filenames: false
+
+- id: vulncheck-offline
+  name: vulncheck (offline)
+  description: Audit locked dependencies using only cached advisory feeds.
+  entry: mix vulncheck --offline
+  language: system
+  files: (^|/)(mix\.lock|rebar\.lock|manifest\.toml|\.vulncheck\.ignore)$
+  pass_filenames: false
