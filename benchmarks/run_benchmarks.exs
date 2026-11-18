@@ -18,7 +18,15 @@ defmodule VulnCheck.Bench do
 
   @profiles %{
     "medium" => %{packages: 80, modules: 5, functions: 10, root_modules: 20, advisories: 50},
-    "large" => %{packages: 180, modules: 5, functions: 12, root_modules: 100, advisories: 120}
+    "large" => %{packages: 180, modules: 5, functions: 12, root_modules: 100, advisories: 120},
+    "umbrella" => %{
+      packages: 180,
+      modules: 5,
+      functions: 12,
+      root_modules: 99,
+      advisories: 120,
+      umbrella_apps: 3
+    }
   }
 
   @sha String.duplicate("5f", 32)
@@ -34,13 +42,14 @@ defmodule VulnCheck.Bench do
     profiles =
       case Keyword.get(opts, :profile, "medium") do
         "all" ->
-          ["medium", "large", "libraries"]
+          ["medium", "large", "umbrella", "libraries"]
 
         name when is_map_key(@profiles, name) or name == "libraries" ->
           [name]
 
         other ->
-          raise ArgumentError, "unknown profile #{inspect(other)} (medium, large, libraries, all)"
+          raise ArgumentError,
+                "unknown profile #{inspect(other)} (medium, large, umbrella, libraries, all)"
       end
 
     results =
@@ -227,14 +236,23 @@ defmodule VulnCheck.Bench do
     build = Path.join(root, "_build/prod/lib")
     direct = 1..min(p.root_modules, p.packages)
 
-    File.write!(Path.join(root, "mix.exs"), """
-    defmodule BenchApp.MixProject do
-      use Mix.Project
-      def project, do: [app: :bench_app, version: "1.0.0", deps: deps()]
-      def application, do: [mod: {BenchApp.Application, []}]
-      defp deps, do: [#{Enum.map_join(direct, ", ", &~s({:#{pkg(&1)}, "~> 1.0"}))}]
+    if p[:umbrella_apps] do
+      File.write!(Path.join(root, "mix.exs"), """
+      defmodule BenchUmbrella.MixProject do
+        use Mix.Project
+        def project, do: [apps_path: "apps", version: "1.0.0", deps: []]
+      end
+      """)
+    else
+      File.write!(Path.join(root, "mix.exs"), """
+      defmodule BenchApp.MixProject do
+        use Mix.Project
+        def project, do: [app: :bench_app, version: "1.0.0", deps: deps()]
+        def application, do: [mod: {BenchApp.Application, []}]
+        defp deps, do: [#{Enum.map_join(direct, ", ", &~s({:#{pkg(&1)}, "~> 1.0"}))}]
+      end
+      """)
     end
-    """)
 
     lock =
       Enum.map_join(1..p.packages, "\n", fn i ->
@@ -267,28 +285,98 @@ defmodule VulnCheck.Bench do
         beams
       end
 
-    root_sources =
-      for m <- 1..p.root_modules do
-        target = rem(m - 1, length(Enum.to_list(direct))) + 1
+    root_beams =
+      if apps_count = p[:umbrella_apps] do
+        per_app = div(p.root_modules, apps_count)
 
-        {"lib/bench_app/m#{m}.ex",
-         module_source("BenchApp.M#{m}", p.functions, m, ["#{mod(target)}.M1.f1(x)"], false)}
+        Enum.flat_map(1..apps_count, fn app_idx ->
+          app_name = "umb_#{app_idx}"
+          app_mod = "Umb#{app_idx}"
+          app_dir = Path.join([root, "apps", app_name])
+          File.mkdir_p!(app_dir)
+
+          next_app = if app_idx < apps_count, do: "umb_#{app_idx + 1}", else: nil
+          app_deps = if next_app, do: [{String.to_atom(next_app), in_umbrella: true}], else: []
+          direct_slice = Enum.filter(direct, &(rem(&1 - 1, apps_count) + 1 == app_idx))
+
+          File.write!(Path.join(app_dir, "mix.exs"), """
+          defmodule #{app_mod}.MixProject do
+            use Mix.Project
+            def project, do: [app: :#{app_name}, version: "1.0.0", deps: #{inspect(app_deps ++ Enum.map(direct_slice, &{String.to_atom(pkg(&1)), "~> 1.0"}))}]
+            def application, do: [mod: {#{app_mod}.Application, []}]
+          end
+          """)
+
+          offset = (app_idx - 1) * per_app
+
+          sources =
+            for m <- 1..per_app do
+              global_m = offset + m
+              target = rem(global_m - 1, length(Enum.to_list(direct))) + 1
+
+              cross_call =
+                if next_app,
+                  do: ["Umb#{app_idx + 1}.M1.f1(x)"],
+                  else: []
+
+              {"apps/#{app_name}/lib/m#{m}.ex",
+               module_source(
+                 "#{app_mod}.M#{m}",
+                 p.functions,
+                 global_m,
+                 cross_call ++ ["#{mod(target)}.M1.f1(x)"],
+                 false
+               )}
+            end
+
+          app_source =
+            {"apps/#{app_name}/lib/application.ex",
+             """
+             defmodule #{app_mod}.Application do
+               def start(_type, _args) do
+             #{Enum.map_join(1..per_app, "\n", &"    #{app_mod}.M#{&1}.f1(:start)")}
+                 {:ok, self()}
+               end
+             end
+             """}
+
+          ebin = Path.join([build, app_name, "ebin"])
+          beams = compile!(root, ebin, [app_source | sources])
+
+          write_app!(
+            ebin,
+            app_name,
+            List.wrap(next_app) ++ Enum.map(direct_slice, &pkg/1),
+            "Elixir.#{app_mod}.Application"
+          )
+
+          beams
+        end)
+      else
+        root_sources =
+          for m <- 1..p.root_modules do
+            target = rem(m - 1, length(Enum.to_list(direct))) + 1
+
+            {"lib/bench_app/m#{m}.ex",
+             module_source("BenchApp.M#{m}", p.functions, m, ["#{mod(target)}.M1.f1(x)"], false)}
+          end
+
+        app_source =
+          {"lib/bench_app/application.ex",
+           """
+           defmodule BenchApp.Application do
+             def start(_type, _args) do
+           #{Enum.map_join(1..p.root_modules, "\n", &"    BenchApp.M#{&1}.f1(:start)")}
+               {:ok, self()}
+             end
+           end
+           """}
+
+        ebin = Path.join([build, "bench_app", "ebin"])
+        beams = compile!(root, ebin, [app_source | root_sources])
+        write_app!(ebin, "bench_app", Enum.map(direct, &pkg/1), "Elixir.BenchApp.Application")
+        beams
       end
-
-    app_source =
-      {"lib/bench_app/application.ex",
-       """
-       defmodule BenchApp.Application do
-         def start(_type, _args) do
-       #{Enum.map_join(1..p.root_modules, "\n", &"    BenchApp.M#{&1}.f1(:start)")}
-           {:ok, self()}
-         end
-       end
-       """}
-
-    ebin = Path.join([build, "bench_app", "ebin"])
-    root_beams = compile!(root, ebin, [app_source | root_sources])
-    write_app!(ebin, "bench_app", Enum.map(direct, &pkg/1), "Elixir.BenchApp.Application")
 
     %{
       packages: p.packages,
