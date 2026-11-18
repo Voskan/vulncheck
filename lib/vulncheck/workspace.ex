@@ -113,6 +113,7 @@ defmodule VulnCheck.Workspace do
         end
 
       packages = Map.merge(path_packages, locked)
+      direct_deps = direct_deps(prod_roots ++ non_prod_roots, packages)
 
       prod_roots =
         if parsed?, do: prod_roots ++ app_roots, else: Map.keys(packages)
@@ -146,6 +147,7 @@ defmodule VulnCheck.Workspace do
          build_dir: build_dir,
          build_env: build_env,
          root_apps: root_apps,
+         direct_deps: direct_deps,
          root_ebin_dirs: root_ebins,
          consolidated_dirs: consolidated_dirs(build_dir, root_apps),
          packages: packages,
@@ -178,6 +180,7 @@ defmodule VulnCheck.Workspace do
          root_dir: info.root,
          project_name: List.first(root_apps) || Path.basename(info.root),
          project_type: :rebar3,
+         direct_deps: direct_deps(dependency_sources(packages), packages),
          env: config.env,
          elixir_version: nil,
          otp_release: otp_release(config),
@@ -227,12 +230,23 @@ defmodule VulnCheck.Workspace do
          build_dir: build_dir,
          build_env: build_env,
          root_apps: [root_app],
+         direct_deps: direct_deps(project.dependencies ++ project.dev_dependencies, packages),
          root_ebin_dirs: existing_ebin(build_dir, root_app),
          packages: packages,
          configured_adapters: config.configured_adapters,
          warnings: warnings
        }}
     end
+  end
+
+  defp direct_deps(names, packages) do
+    names |> Enum.filter(&Map.has_key?(packages, &1)) |> Enum.uniq() |> Enum.sort()
+  end
+
+  # Packages no other locked package depends on.
+  defp dependency_sources(packages) do
+    required = packages |> Map.values() |> Enum.flat_map(& &1.deps) |> MapSet.new()
+    packages |> Map.keys() |> Enum.reject(&MapSet.member?(required, &1))
   end
 
   defp wrap_read({:ok, content}, _path), do: {:ok, content}

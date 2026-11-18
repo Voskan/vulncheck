@@ -119,6 +119,9 @@ defmodule VulnCheck.WorkspaceTest do
       assert ws.project_type == :mix
       assert ws.project_name == "shop"
       assert ws.root_apps == ["shop"]
+      assert "plug" in ws.direct_deps and "my_fork" in ws.direct_deps
+      refute "mime" in ws.direct_deps
+      assert ws.direct_deps == Enum.sort(ws.direct_deps)
       assert ws.otp_release == System.otp_release()
       assert ws.elixir_version == System.version()
 
@@ -292,6 +295,7 @@ defmodule VulnCheck.WorkspaceTest do
       assert ws.project_type == :rebar3
       assert ws.project_name == "edge"
       assert ws.root_apps == ["edge"]
+      assert ws.direct_deps == ["cowboy", "my_git"]
       assert ws.build_env == "default"
       assert ws.root_ebin_dirs == [Path.join(dir, "_build/default/lib/edge/ebin")]
 
