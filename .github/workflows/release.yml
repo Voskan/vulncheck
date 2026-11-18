@@ -4,19 +4,26 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and verify release artifacts without publishing
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   release:
-    name: Publish ${{ github.ref_name }}
+    name: Release ${{ github.ref_name }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       MIX_ENV: prod
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || contains(github.ref_name, '-') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,14 +33,17 @@ jobs:
           otp-version: "27.2"
 
       - name: Check that the tag matches the project version
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           version="$(sed -n 's/^  @version "\(.*\)"$/\1/p' mix.exs)"
-          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+          tag="${GITHUB_REF_NAME#v}"
+          base_tag="${tag%%-*}"
+          if [ "${tag}" != "${version}" ] && [ "${base_tag}" != "${version}" ]; then
             echo "::error::tag ${GITHUB_REF_NAME} does not match mix.exs version ${version}"
             exit 1
           fi
 
-      - name: Build the escript
+      - name: Build release artifacts
         run: |
           mix local.hex --force --if-missing
           mix compile --warnings-as-errors
@@ -42,7 +52,25 @@ jobs:
           sha256sum vulncheck > vulncheck.sha256
           cat vulncheck.sha256
 
+      - name: Verify Hex package build
+        env:
+          MIX_ENV: dev
+        run: |
+          mix deps.get
+          mix docs --warnings-as-errors
+          mix hex.build
+
+      - name: Upload candidate artifacts (dry-run)
+        if: env.DRY_RUN == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: vulncheck-release-candidate
+          path: |
+            vulncheck
+            vulncheck.sha256
+
       - name: Create the GitHub release
+        if: env.DRY_RUN != 'true' && startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -52,9 +80,7 @@ jobs:
           fail_on_unmatched_files: true
 
       - name: Publish to Hex.pm
-        if: ${{ env.HEX_API_KEY != '' }}
+        if: env.DRY_RUN != 'true' && startsWith(github.ref, 'refs/tags/') && env.HEX_API_KEY != ''
         env:
           MIX_ENV: dev
-        run: |
-          mix deps.get
-          mix hex.publish --yes
+        run: mix hex.publish --yes

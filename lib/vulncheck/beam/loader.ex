@@ -30,10 +30,11 @@ defmodule VulnCheck.Beam.Loader do
   @summary_modules [ModuleSummary, CallEdge, DynamicCall, MFA, AbstractWalker]
 
   @type result :: %{
-          modules: %{String.t() => ModuleSummary.t()},
-          warnings: [String.t()],
-          artifact_issues: [{String.t() | nil, String.t()}],
-          stats: %{atom() => non_neg_integer()}
+          :modules => %{String.t() => ModuleSummary.t()},
+          :warnings => [String.t()],
+          :artifact_issues => [{String.t() | nil, String.t()}],
+          :stats => %{atom() => non_neg_integer()},
+          optional(:profile_matches) => boolean()
         }
 
   @doc """

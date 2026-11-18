@@ -118,6 +118,9 @@ jobs:
   dogfood-security-audit:
     name: Scan VulnCheck with VulnCheck
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
 
@@ -150,3 +153,4 @@ jobs:
         with:
           fail-on: potentially_reachable
           compile: "false"
+          upload-sarif: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
