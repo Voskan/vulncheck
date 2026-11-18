@@ -2,7 +2,7 @@ defmodule VulnCheck.CacheTest do
   use ExUnit.Case, async: true
 
   alias VulnCheck.{Cache, Config}
-  alias VulnCheck.Test.{HTTPServer, Tmp}
+  alias VulnCheck.Test.{Feeds, HTTPServer, Tmp}
 
   defp config(extra \\ []) do
     dir = Tmp.mkdir!("cache")
@@ -90,7 +90,7 @@ defmodule VulnCheck.CacheTest do
                Cache.fetch(url, "cves/CVE-1.json", config, [immutable: true] ++ @fast)
 
       assert length(HTTPServer.requests(server)) == 1
-      assert Cache.list_feed_files(config) == ["cves/CVE-1.json", "cves/CVE-1.json.meta.json"]
+      assert Cache.list_feed_files(config) == ["cves/CVE-1.json"]
       assert {:ok, "{\"cve\":1}"} = Cache.read_feed(config, "cves/CVE-1.json")
     end
 
@@ -137,6 +137,39 @@ defmodule VulnCheck.CacheTest do
       assert Cache.read_meta(Path.join(Cache.feeds_dir(config), "feed"))["sha256"] ==
                Cache.sha256("complete")
     end
+
+    test "a checksum mismatch stops offline reuse" do
+      config = config()
+      server = HTTPServer.start!(fn _ -> {200, [], "verified body"} end)
+      assert {:ok, _, :network} = Cache.fetch(server.url, "feed", config, @fast)
+      path = Path.join(Cache.feeds_dir(config), "feed.entry")
+      File.write!(path, String.replace(File.read!(path), "verified body", "damaged body!"))
+
+      assert {:error, :cache_checksum_mismatch} =
+               Cache.fetch(server.url, "feed", %{config | offline: true})
+    end
+
+    test "concurrent readers verify the metadata of each complete replacement" do
+      config = config()
+      server = HTTPServer.start!(fn request -> {200, [], request.path} end)
+      root = Cache.feeds_dir(config)
+      assert {:ok, "/first", :network} = Cache.fetch(server.url <> "/first", "feed", config, @fast)
+
+      results =
+        1..16
+        |> Task.async_stream(fn i ->
+          assert {:ok, "/data/" <> _, :network} =
+                   Cache.fetch(server.url <> "/data/#{i}", "feed", config, [force: true] ++ @fast)
+
+          assert {:ok, body, meta} = Cache.read_feed_entry(config, "feed")
+          assert meta["sha256"] == Cache.sha256(body)
+          assert String.ends_with?(meta["url"], body)
+        end)
+        |> Enum.to_list()
+
+      assert Enum.all?(results, &match?({:ok, _}, &1))
+      assert File.ls!(root) == ["feed.entry"]
+    end
   end
 
   describe "beam summaries" do
@@ -169,11 +202,19 @@ defmodule VulnCheck.CacheTest do
       source = config()
       feeds = Cache.feeds_dir(source)
 
-      {:ok, {_, zip}} =
-        :zip.create(~c"all.zip", [{~c"EEF-1.json", "{}"}, {~c"GHSA-2.json", "{}"}], [:memory])
+      zip = Feeds.zip([Feeds.osv_ash(), Feeds.osv_plug()])
+      old_time = System.os_time(:second) - 5 * 86_400
+      cve = Feeds.cve_record("CVE-2026-54892", "plug", []) |> JSON.encode!()
 
       :ok = Cache.atomic_write(Path.join(feeds, "osv_hex_all.zip"), zip)
-      :ok = Cache.atomic_write(Path.join(feeds, "cves/CVE-2026-1.json"), "{\"id\":1}")
+
+      :ok =
+        Cache.atomic_write(
+          Path.join(feeds, "osv_hex_all.zip.meta.json"),
+          JSON.encode!(%{"fetched_at_unix" => old_time})
+        )
+
+      :ok = Cache.atomic_write(Path.join(feeds, "cves/CVE-2026-54892.json"), cve)
 
       bundle = Path.join(Tmp.mkdir!("bundle"), "feeds.tar.gz")
       assert {:ok, manifest} = Cache.export_bundle(source, bundle)
@@ -182,14 +223,51 @@ defmodule VulnCheck.CacheTest do
       assert File.regular?(bundle)
 
       target = config(offline: true)
+      old_cache = Cache.feeds_dir(target)
+      missing_record = "cves/CVE-2026-101028.json"
+      :ok = Cache.atomic_write(Path.join(old_cache, missing_record), "old-cache record")
       assert {:ok, imported} = Cache.import_bundle(bundle, target)
       assert imported["advisory_count"] == 2
 
       assert {:ok, ^zip, :cached} =
                Cache.fetch("https://example.invalid/all.zip", "osv_hex_all.zip", target)
 
-      assert {:ok, "{\"id\":1}", :cached} =
-               Cache.fetch("https://example.invalid/c", "cves/CVE-2026-1.json", target)
+      assert {:ok, ^cve, :cached} =
+               Cache.fetch("https://example.invalid/c", "cves/CVE-2026-54892.json", target)
+
+      assert {:error, :offline_cache_missing} =
+               Cache.fetch("https://example.invalid/c", missing_record, target)
+
+      assert {:ok, ^zip, %{"fetched_at_unix" => ^old_time}} =
+               Cache.read_feed_entry(target, "osv_hex_all.zip")
+
+      assert {:error, {:feed_too_old, ^old_time, 86_400}} =
+               VulnCheck.Feeds.OSV.load(%{target | max_feed_age_seconds: 86_400})
+
+      assert File.read!(Path.join(old_cache, missing_record)) == "old-cache record"
+
+      previous = Cache.feeds_dir(target)
+      invalid = Path.join(Path.dirname(bundle), "invalid.tar.gz")
+      File.write!(invalid, "invalid bundle")
+      assert {:error, {:invalid_bundle, _}} = Cache.import_bundle(invalid, target)
+      assert Cache.feeds_dir(target) == previous
+      assert {:ok, ^zip} = Cache.read_feed(target, "osv_hex_all.zip")
+    end
+
+    test "a bundle publication error does not merge resources into the live cache" do
+      source = config()
+      target = config()
+      zip = Feeds.zip([Feeds.osv_ash()])
+      :ok = Cache.atomic_write(Path.join(Cache.feeds_dir(source), "osv_hex_all.zip"), zip)
+      bundle = Path.join(Tmp.mkdir!("bundle"), "feeds.tar.gz")
+      assert {:ok, _} = Cache.export_bundle(source, bundle)
+
+      :ok = Cache.atomic_write(Path.join(Cache.feeds_dir(target), "old.txt"), "old live feed")
+      File.mkdir_p!(Path.join(target.cache_dir, "feeds-offline.current"))
+      assert {:error, {:bundle_write_failed, _}} = Cache.import_bundle(bundle, target)
+      assert {:ok, "old live feed"} = Cache.read_feed(target, "old.txt")
+      assert {:error, :enoent} = Cache.read_feed(target, "osv_hex_all.zip")
+      assert File.ls!(Path.join(target.cache_dir, "feed-bundles")) == []
     end
 
     test "refuses to export an empty cache" do
@@ -238,7 +316,11 @@ defmodule VulnCheck.CacheTest do
       manifest =
         JSON.encode!(%{
           "format" => "vulncheck-feeds-bundle",
-          "files" => [%{"path" => "osv_hex_all.zip", "sha256" => Cache.sha256("original")}]
+          "format_version" => 1,
+          "created_at" => "2026-01-01T00:00:00Z",
+          "files" => [
+            %{"path" => "osv_hex_all.zip", "sha256" => Cache.sha256("original"), "size" => 8}
+          ]
         })
 
       :ok =
@@ -263,6 +345,30 @@ defmodule VulnCheck.CacheTest do
       assert {:error, {:invalid_bundle, {:unlisted_file, "extra.json"}}} =
                Cache.import_bundle(unlisted, target)
 
+      missing = Path.join(dir, "missing.tar.gz")
+
+      :ok =
+        :erl_tar.create(String.to_charlist(missing), [{~c"manifest.json", manifest}], [:compressed])
+
+      assert {:error, {:invalid_bundle, {:missing_file, "osv_hex_all.zip"}}} =
+               Cache.import_bundle(missing, target)
+
+      duplicate = Path.join(dir, "duplicate.tar.gz")
+
+      :ok =
+        :erl_tar.create(
+          String.to_charlist(duplicate),
+          [
+            {~c"manifest.json", manifest},
+            {~c"osv_hex_all.zip", "original"},
+            {~c"osv_hex_all.zip", "original"}
+          ],
+          [:compressed]
+        )
+
+      assert {:error, {:invalid_bundle, {:duplicate_file, "osv_hex_all.zip"}}} =
+               Cache.import_bundle(duplicate, target)
+
       no_manifest = Path.join(dir, "nomanifest.tar.gz")
       :ok = :erl_tar.create(String.to_charlist(no_manifest), [{~c"a.json", "{}"}], [:compressed])
 
@@ -282,6 +388,7 @@ defmodule VulnCheck.CacheTest do
       refute Cache.safe_name?("C:/win")
       refute Cache.safe_name?("a\\b")
       refute Cache.safe_name?("a//b")
+      refute Cache.safe_name?("a/./b")
       refute Cache.safe_name?("")
     end
   end

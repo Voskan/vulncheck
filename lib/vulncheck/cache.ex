@@ -5,20 +5,19 @@ defmodule VulnCheck.Cache do
 
   Layout (default root: `$XDG_CACHE_HOME/vulncheck` or `~/.cache/vulncheck`):
 
-      feeds/osv_hex_all.zip            OSV Hex archive
-      feeds/osv_hex_all.zip.meta.json  etag, fetched_at_unix, sha256, url
-      feeds/cves/<CVE-ID>.json         EEF CNA / MITRE CVE 5.1 records
-      feeds/hex/packages/<name>.json   Hex.pm package metadata
-      beam-v3/<sha256>.etf             cached module summaries
+      feeds/osv_hex_all.zip.entry            OSV Hex archive and metadata
+      feeds/cves/<CVE-ID>.json.entry         EEF CNA / MITRE records and metadata
+      feeds/hex/packages/<name>.json.entry   Hex.pm package metadata
+      beam-v3/<sha256>.etf                   cached module summaries
 
   Every write goes to a unique temporary file that is then renamed into
   place, so concurrent CI jobs sharing a cache never observe partial files.
   """
 
   alias VulnCheck.Config
+  alias VulnCheck.Cache.Bundle
 
   @beam_cache_version 3
-  @bundle_manifest "manifest.json"
 
   @type fetch_status :: :network | :cached | :revalidated | :stale
 
@@ -32,7 +31,29 @@ defmodule VulnCheck.Cache do
 
   @doc "Directory holding feed data."
   @spec feeds_dir(Config.t()) :: String.t()
-  def feeds_dir(config), do: Path.join(dir(config), "feeds")
+  def feeds_dir(%Config{feed_snapshot: root}) when is_binary(root), do: root
+
+  def feeds_dir(%Config{offline: true} = config) do
+    case read_limited(Bundle.pointer(config), 96) do
+      {:ok, name} ->
+        if name =~ ~r/\Abundle-[0-9a-f]{40}\z/,
+          do: Path.join(Bundle.root(config), name),
+          else: Path.join(Bundle.root(config), "invalid")
+
+      {:error, :enoent} ->
+        live_feeds_dir(config)
+
+      {:error, _} ->
+        Path.join(Bundle.root(config), "invalid")
+    end
+  end
+
+  def feeds_dir(config), do: live_feeds_dir(config)
+
+  @doc false
+  def pin_feeds(%Config{} = config), do: %{config | feed_snapshot: feeds_dir(config)}
+
+  defp live_feeds_dir(config), do: Path.join(dir(config), "feeds")
 
   @doc "Directory holding cached `.beam` summaries."
   @spec beam_dir(Config.t()) :: String.t()
@@ -65,117 +86,272 @@ defmodule VulnCheck.Cache do
     end
   end
 
-  @doc "Reads the metadata stored next to a cached file."
+  @entry_magic "VULNCHECK-FEED-1"
+  @max_metadata_bytes 16_384
+  @max_feed_bytes 50 * 1024 * 1024
+
+  @doc false
+  def max_feed_bytes, do: @max_feed_bytes
+
+  @doc "Reads verified metadata stored with a cached file."
   @spec read_meta(Path.t()) :: map()
   def read_meta(path) do
-    with {:ok, data} <- File.read(meta_path(path)),
-         {:ok, %{} = meta} <- JSON.decode(data) do
-      meta
-    else
-      _ -> %{}
+    case read_entry(path) do
+      {:ok, _body, meta} -> meta
+      {:error, _reason} -> %{}
     end
   end
 
-  defp write_meta(path, meta), do: atomic_write(meta_path(path), JSON.encode!(meta))
-  defp meta_path(path), do: path <> ".meta.json"
-
-  # -- HTTP-backed fetch -------------------------------------------------------
-
   @doc """
-  Returns the content of `url`, cached under `feeds/<rel_path>`.
-
-  Options:
-
-    * `:http_client` — module implementing `VulnCheck.HTTP` (default `VulnCheck.HTTP`)
-    * `:offline` — never touch the network (defaults to `config.offline`)
-    * `:ttl` — freshness in seconds (defaults to `config.cache_ttl_seconds`)
-    * `:immutable` — once cached, never revalidate (CVE records)
-    * `:force` — revalidate even when fresh
-    * `:http_opts` — options forwarded to the HTTP client
-
-  Returns `{:ok, body, status}` where status is `:network`, `:cached`,
-  `:revalidated` (HTTP 304) or `:stale` (network failed, stale copy used).
+  Returns the body of a cached resource. For resources that affect scan
+  results, use `fetch_validated/5` to validate and decode before publication.
   """
   @spec fetch(String.t(), String.t(), Config.t(), keyword()) ::
           {:ok, binary(), fetch_status()} | {:error, term()}
-  def fetch(url, rel_path, %Config{} = config, opts \\ []) do
-    path = Path.join(feeds_dir(config), rel_path)
+  def fetch(url, rel_path, config, opts \\ []) do
+    with {:ok, value, status, _meta} <-
+           fetch_validated(url, rel_path, config, opts, &{:ok, &1}) do
+      {:ok, value, status}
+    end
+  end
+
+  @doc """
+  Fetches and decodes a resource, publishing its body and metadata together
+  only after validation succeeds. Returns the decoded value, refresh
+  status and metadata. Options include `:http_client`, `:http_opts`,
+  `:offline`, `:ttl`, `:immutable`, `:force`, `:allow_stale` and `:max_age`.
+  """
+  @spec fetch_validated(String.t(), String.t(), Config.t(), keyword(), function()) ::
+          {:ok, term(), fetch_status(), map()} | {:error, term()}
+  def fetch_validated(url, rel_path, %Config{} = config, opts, validator) do
+    if safe_name?(rel_path),
+      do: do_fetch(url, rel_path, config, opts, validator),
+      else: {:error, :invalid_cache_key}
+  end
+
+  defp do_fetch(url, rel_path, config, opts, validator) do
     offline = Keyword.get(opts, :offline, config.offline)
-    cached = File.read(path)
+    path = Path.join(feeds_dir(%{config | offline: offline}), rel_path)
+    opts = Keyword.put_new(opts, :ttl, config.cache_ttl_seconds)
+    cached = validated_entry(path, validator)
 
     cond do
-      offline ->
-        case cached do
-          {:ok, body} -> {:ok, body, :cached}
-          _ -> {:error, :offline_cache_missing}
-        end
-
-      match?({:ok, _}, cached) and not Keyword.get(opts, :force, false) and
-          (Keyword.get(opts, :immutable, false) or fresh?(path, opts, config)) ->
-        {:ok, body} = cached
-        {:ok, body, :cached}
-
-      true ->
-        refresh(url, path, cached, config, opts)
+      offline -> cached_result(cached, Keyword.get(opts, :max_age))
+      fresh?(cached, opts) -> cached_result(cached, nil)
+      true -> refresh(url, path, cached, opts, validator)
     end
   end
 
-  defp fresh?(path, opts, config) do
-    ttl = Keyword.get(opts, :ttl, config.cache_ttl_seconds)
-
-    case read_meta(path) do
-      %{"fetched_at_unix" => at} when is_integer(at) -> System.os_time(:second) - at < ttl
-      _ -> false
+  defp validated_entry(path, validator) do
+    with {:ok, body, meta} <- read_entry(path),
+         {:ok, value} <- validator.(body) do
+      {:ok, value, body, meta}
     end
   end
 
-  defp refresh(url, path, cached, _config, opts) do
+  defp fresh?({:ok, _value, _body, meta}, opts) do
+    not Keyword.get(opts, :force, false) and within_age?(meta, Keyword.get(opts, :max_age)) and
+      (Keyword.get(opts, :immutable, false) or within_age?(meta, Keyword.fetch!(opts, :ttl)))
+  end
+
+  defp fresh?(_entry, _opts), do: false
+
+  defp within_age?(_meta, nil), do: true
+
+  defp within_age?(%{"fetched_at_unix" => at}, limit) when is_integer(at) do
+    age = System.os_time(:second) - at
+    age >= 0 and age < limit
+  end
+
+  defp within_age?(_meta, _limit), do: false
+
+  defp cached_result({:ok, value, _body, meta}, limit) do
+    if within_age?(meta, limit),
+      do: {:ok, value, :cached, meta},
+      else: {:error, {:feed_too_old, meta["fetched_at_unix"], limit}}
+  end
+
+  defp cached_result({:error, :enoent}, _limit), do: {:error, :offline_cache_missing}
+  defp cached_result(error, _limit), do: error
+
+  defp refresh(url, path, cached, opts, validator) do
     client = Keyword.get(opts, :http_client, VulnCheck.HTTP)
-    meta = read_meta(path)
 
     headers =
-      case {cached, meta["etag"]} do
-        {{:ok, _}, etag} when is_binary(etag) -> [{"if-none-match", etag}]
-        _ -> []
+      case cached do
+        {:ok, _, _, %{"url" => ^url, "etag" => etag}} when is_binary(etag) ->
+          [{"if-none-match", etag}]
+
+        _ ->
+          []
       end
 
     case client.get(url, headers, Keyword.get(opts, :http_opts, [])) do
       {:ok, %{status: 200, body: body} = response} ->
-        new_meta = %{
+        meta = %{
           "url" => url,
           "etag" => Map.get(response.headers, "etag"),
           "fetched_at_unix" => System.os_time(:second),
           "sha256" => sha256(body)
         }
 
-        with :ok <- atomic_write(path, body),
-             :ok <- write_meta(path, new_meta) do
-          {:ok, body, :network}
+        with {:ok, value} <- validate_download(body, validator),
+             :ok <- publish_entry(path, body, meta) do
+          {:ok, value, :network, meta}
+        else
+          {:error, reason} -> fallback(cached, reason, opts)
         end
 
-      {:ok, %{status: 304}} when elem(cached, 0) == :ok ->
-        {:ok, body} = cached
-        :ok = write_meta(path, Map.put(meta, "fetched_at_unix", System.os_time(:second)))
-        {:ok, body, :revalidated}
+      {:ok, %{status: 304}} when headers != [] ->
+        revalidate(path, cached, opts, validator)
 
       {:ok, %{status: status}} ->
-        fallback(cached, {:http_status, status})
+        fallback(cached, {:http_status, status}, opts)
 
       {:error, reason} ->
-        fallback(cached, reason)
+        fallback(cached, reason, opts)
     end
   end
 
-  defp fallback({:ok, body}, {:http_status, status}) when status >= 500, do: {:ok, body, :stale}
-  defp fallback(_cached, {:http_status, _status} = reason), do: {:error, reason}
-  defp fallback({:ok, body}, _reason), do: {:ok, body, :stale}
-  defp fallback(_cached, reason), do: {:error, reason}
+  defp validate_download(body, validator) when byte_size(body) <= @max_feed_bytes,
+    do: validator.(body)
 
-  @doc "Reads a cached feed file without any network access."
+  defp validate_download(_body, _validator), do: {:error, {:feed_too_large, @max_feed_bytes}}
+
+  defp revalidate(path, {:ok, value, body, meta} = cached, opts, validator) do
+    case read_entry(path) do
+      {:ok, _current, ^meta} ->
+        updated = Map.put(meta, "fetched_at_unix", System.os_time(:second))
+
+        case publish_entry(path, body, updated) do
+          :ok -> {:ok, value, :revalidated, updated}
+          {:error, reason} -> fallback(cached, reason, opts)
+        end
+
+      {:ok, current, current_meta} ->
+        with {:ok, decoded} <- validator.(current) do
+          cached_result({:ok, decoded, current, current_meta}, Keyword.get(opts, :max_age))
+        end
+
+      {:error, reason} ->
+        fallback(cached, reason, opts)
+    end
+  end
+
+  defp fallback(_cached, {:http_status, status} = reason, _opts) when status < 500,
+    do: {:error, reason}
+
+  defp fallback({:ok, value, _body, meta}, reason, opts) do
+    limit = Keyword.get(opts, :max_age)
+
+    cond do
+      not Keyword.get(opts, :allow_stale, true) ->
+        {:error, reason}
+
+      within_age?(meta, limit) ->
+        {:ok, value, :stale, Map.put(meta, "refresh_error", reason)}
+
+      true ->
+        {:error, {:feed_too_old, meta["fetched_at_unix"], limit}}
+    end
+  end
+
+  defp fallback(_cached, reason, _opts), do: {:error, reason}
+
+  defp read_entry(path) do
+    case read_limited(entry_path(path), @max_feed_bytes + @max_metadata_bytes + 32) do
+      {:ok, <<@entry_magic, size::32, rest::binary>>} when size <= @max_metadata_bytes ->
+        with <<header::binary-size(^size), body::binary>> when byte_size(body) <= @max_feed_bytes <-
+               rest,
+             {:ok, %{"sha256" => _} = meta} <- JSON.decode(header) do
+          verify_entry(body, meta)
+        else
+          _ -> {:error, :invalid_cache_entry}
+        end
+
+      {:ok, _} ->
+        {:error, :invalid_cache_entry}
+
+      {:error, :enoent} ->
+        read_legacy_entry(path)
+
+      error ->
+        error
+    end
+  end
+
+  defp read_legacy_entry(path) do
+    with {:ok, body} <- read_limited(path, @max_feed_bytes) do
+      meta =
+        case read_limited(path <> ".meta.json", @max_metadata_bytes) do
+          {:ok, data} ->
+            case JSON.decode(data) do
+              {:ok, %{} = meta} -> meta
+              _ -> :invalid
+            end
+
+          {:error, :enoent} ->
+            case File.stat(path, time: :posix) do
+              {:ok, stat} -> %{"fetched_at_unix" => stat.mtime}
+              _ -> %{}
+            end
+
+          _ ->
+            :invalid
+        end
+
+      verify_entry(body, meta)
+    end
+  end
+
+  defp verify_entry(body, %{} = meta) do
+    checksum = sha256(body)
+
+    if Map.get(meta, "sha256", checksum) == checksum,
+      do: {:ok, body, Map.put(meta, "sha256", checksum)},
+      else: {:error, :cache_checksum_mismatch}
+  end
+
+  defp verify_entry(_body, _meta), do: {:error, :invalid_cache_entry}
+
+  @doc false
+  def publish_entry(path, body, meta) do
+    header = JSON.encode!(meta)
+    atomic_write(entry_path(path), [@entry_magic, <<byte_size(header)::32>>, header, body])
+  end
+
+  defp entry_path(path), do: path <> ".entry"
+
+  @doc false
+  def read_limited(path, max) do
+    with {:ok, file} <- File.open(path, [:read, :raw, :binary]) do
+      try do
+        case :file.read(file, max + 1) do
+          {:ok, body} when byte_size(body) <= max -> {:ok, body}
+          {:ok, _body} -> {:error, {:feed_too_large, max}}
+          :eof -> {:ok, <<>>}
+          {:error, _} = error -> error
+        end
+      after
+        File.close(file)
+      end
+    end
+  end
+
+  @doc "Reads a verified cached feed file without any network access."
   @spec read_feed(Config.t(), String.t()) :: {:ok, binary()} | {:error, term()}
-  def read_feed(config, rel_path), do: File.read(Path.join(feeds_dir(config), rel_path))
+  def read_feed(config, rel_path) do
+    with {:ok, body, _meta} <- read_feed_entry(config, rel_path), do: {:ok, body}
+  end
 
-  @doc "Lists cached feed files (relative paths), excluding metadata."
+  @doc false
+  def read_feed_entry(config, rel_path) do
+    if safe_name?(rel_path),
+      do: read_entry(Path.join(feeds_dir(config), rel_path)),
+      else: {:error, :invalid_cache_key}
+  end
+
+  @doc "Lists cached feed resources (relative paths), excluding metadata and temporary files."
   @spec list_feed_files(Config.t()) :: [String.t()]
   def list_feed_files(config) do
     root = feeds_dir(config)
@@ -184,8 +360,12 @@ defmodule VulnCheck.Cache do
     |> Path.join("**/*")
     |> Path.wildcard(match_dot: false)
     |> Enum.filter(&File.regular?/1)
-    |> Enum.reject(&String.contains?(Path.basename(&1), ".tmp."))
+    |> Enum.reject(fn path ->
+      String.contains?(Path.basename(path), ".tmp.") or String.ends_with?(path, ".meta.json")
+    end)
     |> Enum.map(&Path.relative_to(&1, root))
+    |> Enum.map(&String.trim_trailing(&1, ".entry"))
+    |> Enum.uniq()
     |> Enum.sort()
   end
 
@@ -233,168 +413,24 @@ defmodule VulnCheck.Cache do
 
   # -- air-gapped bundles ------------------------------------------------------
 
-  @doc """
-  Exports the cached feeds into a compressed `.tar.gz` bundle with a
-  `manifest.json` listing the SHA-256 of every file.
-  """
+  @doc "Exports a verified snapshot of cached feeds."
   @spec export_bundle(Config.t(), Path.t()) :: {:ok, map()} | {:error, term()}
-  def export_bundle(%Config{} = config, out_path) do
-    root = feeds_dir(config)
-    files = list_feed_files(config) |> Enum.reject(&(&1 == @bundle_manifest))
+  defdelegate export_bundle(config, path), to: Bundle
 
-    if files == [] do
-      {:error, :empty_cache}
-    else
-      entries =
-        Enum.map(files, fn rel ->
-          data = File.read!(Path.join(root, rel))
-          {rel, data}
-        end)
-
-      manifest = %{
-        "format" => "vulncheck-feeds-bundle",
-        "format_version" => 1,
-        "created_at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
-        "tool_version" => VulnCheck.version(),
-        "advisory_count" => advisory_count(root),
-        "files" =>
-          Enum.map(entries, fn {rel, data} ->
-            %{"path" => rel, "sha256" => sha256(data), "size" => byte_size(data)}
-          end)
-      }
-
-      tar_entries =
-        [{@bundle_manifest, JSON.encode!(manifest)} | entries]
-        |> Enum.map(fn {name, data} -> {String.to_charlist(name), data} end)
-
-      out_path = Path.expand(out_path)
-      tmp = "#{out_path}.tmp.#{System.unique_integer([:positive])}"
-
-      with :ok <- File.mkdir_p(Path.dirname(out_path)),
-           :ok <- :erl_tar.create(String.to_charlist(tmp), tar_entries, [:compressed]),
-           :ok <- File.rename(tmp, out_path) do
-        {:ok, manifest}
-      else
-        {:error, reason} ->
-          File.rm(tmp)
-          {:error, {:bundle_write_failed, reason}}
-      end
-    end
-  end
-
-  @doc """
-  Imports a bundle produced by `export_bundle/2` into the cache.
-
-  Archives containing absolute paths, `..` segments, symlinks or other
-  non-regular entries are rejected (Tar Slip protection), as are files whose
-  SHA-256 does not match the manifest.
-  """
+  @doc "Validates and atomically selects a bundle for offline scans."
   @spec import_bundle(Path.t(), Config.t()) :: {:ok, map()} | {:error, term()}
-  def import_bundle(bundle_path, %Config{} = config) do
-    path = String.to_charlist(Path.expand(bundle_path, Config.project_root(config)))
+  defdelegate import_bundle(path, config), to: Bundle
 
-    with {:ok, table} <- tar_table(path),
-         :ok <- validate_entries(table),
-         {:ok, files} <- tar_extract(path),
-         {:ok, manifest} <- read_manifest(files),
-         :ok <- verify_manifest(manifest, files) do
-      root = feeds_dir(config)
-
-      Enum.each(files, fn {name, data} ->
-        if name != @bundle_manifest do
-          :ok = atomic_write(Path.join(root, name), data)
-
-          :ok =
-            write_meta(Path.join(root, name), %{
-              "url" => "bundle:" <> name,
-              "fetched_at_unix" => System.os_time(:second),
-              "sha256" => sha256(data)
-            })
-        end
-      end)
-
-      {:ok, manifest}
-    end
-  end
-
-  defp tar_table(path) do
-    case :erl_tar.table(path, [:compressed, :verbose]) do
-      {:ok, table} -> {:ok, table}
-      {:error, reason} -> {:error, {:invalid_bundle, reason}}
-    end
-  end
-
-  defp validate_entries(table) do
-    Enum.reduce_while(table, :ok, fn entry, :ok ->
-      {name, type} = entry_name_type(entry)
-
-      cond do
-        type != :regular -> {:halt, {:error, {:unsafe_bundle_entry, name, type}}}
-        not safe_name?(name) -> {:halt, {:error, {:unsafe_bundle_entry, name, :path}}}
-        true -> {:cont, :ok}
-      end
-    end)
-  end
-
-  defp entry_name_type({name, type, _size, _mtime, _mode, _uid, _gid}), do: {to_string(name), type}
-  defp entry_name_type({name, type, _size}), do: {to_string(name), type}
-  defp entry_name_type(name), do: {to_string(name), :regular}
+  @doc false
+  defdelegate import_bundle_snapshot(path, config), to: Bundle
 
   @doc false
   @spec safe_name?(String.t()) :: boolean()
   def safe_name?(name) do
     segments = String.split(name, "/")
 
-    name != "" and not String.starts_with?(name, "/") and not String.contains?(name, "\\") and
-      not String.contains?(name, <<0>>) and not String.match?(name, ~r/\A[A-Za-z]:/) and
-      ".." not in segments and "" not in segments
-  end
-
-  defp tar_extract(path) do
-    case :erl_tar.extract(path, [:compressed, :memory]) do
-      {:ok, files} -> {:ok, Enum.map(files, fn {name, data} -> {to_string(name), data} end)}
-      {:error, reason} -> {:error, {:invalid_bundle, reason}}
-    end
-  end
-
-  defp read_manifest(files) do
-    with {_, data} <- List.keyfind(files, @bundle_manifest, 0),
-         {:ok, %{"format" => "vulncheck-feeds-bundle", "files" => listed} = manifest}
-         when is_list(listed) <- JSON.decode(data) do
-      {:ok, manifest}
-    else
-      _ -> {:error, {:invalid_bundle, :missing_manifest}}
-    end
-  end
-
-  defp verify_manifest(manifest, files) do
-    expected = Map.new(manifest["files"], fn entry -> {entry["path"], entry["sha256"]} end)
-
-    Enum.reduce_while(files, :ok, fn
-      {@bundle_manifest, _data}, :ok ->
-        {:cont, :ok}
-
-      {name, data}, :ok ->
-        case Map.fetch(expected, name) do
-          {:ok, sha} ->
-            if sha == sha256(data),
-              do: {:cont, :ok},
-              else: {:halt, {:error, {:invalid_bundle, {:checksum_mismatch, name}}}}
-
-          :error ->
-            {:halt, {:error, {:invalid_bundle, {:unlisted_file, name}}}}
-        end
-    end)
-  end
-
-  defp advisory_count(root) do
-    zip = Path.join(root, "osv_hex_all.zip")
-
-    with {:ok, data} <- File.read(zip),
-         {:ok, entries} <- :zip.list_dir(data) do
-      Enum.count(entries, &match?({:zip_file, _, _, _, _, _}, &1))
-    else
-      _ -> 0
-    end
+    name != "" and String.valid?(name) and not String.starts_with?(name, "/") and
+      not String.contains?(name, "\\") and not String.contains?(name, <<0>>) and
+      not String.match?(name, ~r/\A[A-Za-z]:/) and not Enum.any?(segments, &(&1 in ["", ".", ".."]))
   end
 end

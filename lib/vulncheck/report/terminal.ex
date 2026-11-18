@@ -79,7 +79,13 @@ defmodule VulnCheck.Report.Terminal do
   end
 
   defp scan_time(report) do
-    cached = if Map.get(report.stats, :feed_status) == :cached, do: " (cached)", else: ""
+    cached =
+      case Map.get(report.stats, :feed_status) do
+        :cached -> " (cached)"
+        :stale -> " (stale cache)"
+        _ -> ""
+      end
+
     "#{report.duration_ms} ms#{cached}"
   end
 

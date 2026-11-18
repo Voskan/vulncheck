@@ -432,16 +432,19 @@ defmodule VulnCheck.CLI do
           "OSV Hex archive: #{count_ids(advisories)} advisories for #{packages} packages (#{status})"
         )
 
-        {records, routines, failed} = sync_records(advisories, config, ctx.scan_opts)
+        {records, routines, stale, failed} = sync_records(advisories, config, opts)
 
         out(
           ctx,
-          "CVE 5.1 records: #{records} available, #{routines} with function-level routines" <>
-            if(failed > 0, do: ", #{failed} unavailable", else: "")
+          "CVE 5.1 records: #{records} available, #{routines} with function-level routines, " <>
+            "#{records - stale} refreshed or revalidated, #{stale} stale, #{failed} unavailable"
         )
 
         out(ctx, "Cache: #{Cache.feeds_dir(config)}")
-        0
+
+        if status == :stale or stale > 0 or failed > 0,
+          do: fail(ctx, "feed sync incomplete; see the refresh results"),
+          else: 0
 
       {:error, reason} ->
         fail(ctx, describe_error({:feeds, {:osv_feed, reason}}))
@@ -449,33 +452,32 @@ defmodule VulnCheck.CLI do
   end
 
   defp feeds_command("status", config, ctx) do
+    config = Cache.pin_feeds(config)
     dir = Cache.feeds_dir(config)
-    files = Cache.list_feed_files(config) |> Enum.reject(&String.ends_with?(&1, ".meta.json"))
+    files = Cache.list_feed_files(config)
     out(ctx, "Cache: #{dir}")
 
-    archive = Path.join(dir, OSV.cache_file())
+    archive =
+      with {:ok, zip, meta} <- Cache.read_feed_entry(config, OSV.cache_file()),
+           {:ok, list} <- OSV.parse_archive(zip),
+           do: {:ok, list, byte_size(zip), meta}
 
-    case File.read(archive) do
-      {:ok, zip} ->
-        meta = Cache.read_meta(archive)
-
-        advisories =
-          case OSV.parse_archive(zip) do
-            {:ok, list} -> count_ids(list)
-            {:error, _} -> 0
-          end
-
-        out(ctx, "OSV Hex archive: #{advisories} advisories, #{format_bytes(byte_size(zip))}")
+    case archive do
+      {:ok, list, size, meta} ->
+        out(ctx, "OSV Hex archive: #{count_ids(list)} advisories, #{format_bytes(size)}")
         out(ctx, "  fetched: #{format_age(meta["fetched_at_unix"])}")
         out(ctx, "  etag:    #{meta["etag"] || "none"}")
-        out(ctx, "  source:  #{meta["url"] || OSV.default_url()}")
+        out(ctx, "  source:  #{OSV.source(meta)}")
 
-      {:error, _} ->
+      {:error, :enoent} ->
         out(ctx, "OSV Hex archive: not cached (run `vulncheck feeds sync`)")
+
+      {:error, reason} ->
+        out(ctx, "OSV Hex archive: invalid (#{reason_text(reason)})")
     end
 
     cves = Enum.filter(files, &String.starts_with?(&1, "cves/"))
-    with_routines = Enum.count(cves, &routines?(Path.join(dir, &1)))
+    with_routines = Enum.count(cves, &routines?(config, &1))
 
     out(
       ctx,
@@ -484,7 +486,11 @@ defmodule VulnCheck.CLI do
 
     retired = Enum.count(files, &String.starts_with?(&1, "hex/packages/"))
     out(ctx, "Hex package records: #{retired} cached")
-    0
+
+    case archive do
+      {:error, reason} when reason != :enoent -> fail(ctx, "cached OSV archive failed validation")
+      _ -> 0
+    end
   end
 
   defp feeds_command("bundle", %Config{output: nil}, ctx),
@@ -520,25 +526,26 @@ defmodule VulnCheck.CLI do
     |> Enum.uniq_by(&elem(&1, 0))
     |> Task.async_stream(
       fn {cve, modified_at} ->
-        EefCna.fetch_record(cve, config, Keyword.put(opts, :modified_at, modified_at))
+        EefCna.load_record(cve, config, Keyword.put(opts, :modified_at, modified_at))
       end,
       max_concurrency: 8,
       timeout: 60_000,
       on_timeout: :kill_task
     )
-    |> Enum.reduce({0, 0, 0}, fn
-      {:ok, {:ok, record}}, {ok, routines, failed} ->
-        {ok + 1, routines + if(record_routines?(record), do: 1, else: 0), failed}
+    |> Enum.reduce({0, 0, 0, 0}, fn
+      {:ok, {:ok, record, status, _meta}}, {ok, routines, stale, failed} ->
+        {ok + 1, routines + if(record_routines?(record), do: 1, else: 0),
+         stale + if(status == :stale, do: 1, else: 0), failed}
 
-      _other, {ok, routines, failed} ->
-        {ok, routines, failed + 1}
+      _other, {ok, routines, stale, failed} ->
+        {ok, routines, stale, failed + 1}
     end)
   end
 
   defp count_ids(advisories), do: advisories |> Enum.map(& &1.id) |> Enum.uniq() |> length()
 
-  defp routines?(path) do
-    with {:ok, data} <- File.read(path),
+  defp routines?(config, path) do
+    with {:ok, data} <- Cache.read_feed(config, path),
          {:ok, %{} = record} <- JSON.decode(data) do
       record_routines?(record)
     else
@@ -551,7 +558,7 @@ defmodule VulnCheck.CLI do
     is_list(affected) and Enum.any?(affected, &match?(%{"programRoutines" => [_ | _]}, &1))
   end
 
-  defp format_age(at) when is_integer(at) do
+  defp format_age(at) when is_integer(at) and at in 0..253_402_300_799 do
     seconds = max(System.os_time(:second) - at, 0)
     stamp = at |> DateTime.from_unix!() |> DateTime.to_iso8601()
 
@@ -668,6 +675,7 @@ defmodule VulnCheck.CLI do
       --bundle FILE               import an advisory bundle before scanning
       --cache-dir DIR             feed and .beam summary cache directory
       --cache-ttl SECONDS         feed freshness (default: 3600)
+      --max-feed-age SECONDS     maximum age of the cached advisory archive
       --no-color                  disable ANSI colors (also NO_COLOR=1)
       -q, --quiet                 hide warnings
 

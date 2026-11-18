@@ -27,6 +27,11 @@ defmodule VulnCheck.Feeds.EefCna do
   """
   @spec fetch_record(String.t(), Config.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def fetch_record(cve_id, %Config{} = config, opts \\ []) do
+    with {:ok, record, _status, _meta} <- load_record(cve_id, config, opts), do: {:ok, record}
+  end
+
+  @doc false
+  def load_record(cve_id, %Config{} = config, opts) do
     rel = "cves/#{cve_id}.json"
     cna = Keyword.get(opts, :cna_base_url, @cna_base) <> "/#{cve_id}.json"
     mitre = Keyword.get(opts, :mitre_base_url, @mitre_base) <> "/#{cve_id}"
@@ -36,32 +41,47 @@ defmodule VulnCheck.Feeds.EefCna do
     fetch_opts =
       opts
       |> Keyword.take([:http_client, :offline])
-      |> Keyword.merge(immutable: true, http_opts: http_opts, force: stale?(rel, config, opts))
+      |> Keyword.merge(
+        immutable: true,
+        http_opts: http_opts,
+        force: Keyword.get(opts, :force, false) or stale?(rel, config, opts)
+      )
 
-    result =
-      case Cache.fetch(cna, rel, config, fetch_opts) do
-        {:ok, body, _status} -> {:ok, body}
-        {:error, :offline_cache_missing} = error -> error
-        {:error, _reason} -> fetch_fallback(mitre, rel, config, fetch_opts)
-      end
+    validator = &validate_record(&1, cve_id)
 
-    with {:ok, body} <- result,
-         {:ok, %{} = record} <- decode(body) do
-      {:ok, record}
+    case Cache.fetch_validated(
+           cna,
+           rel,
+           config,
+           Keyword.put(fetch_opts, :allow_stale, false),
+           validator
+         ) do
+      {:error, _reason} = error ->
+        if Keyword.get(fetch_opts, :offline, config.offline),
+          do: error,
+          else:
+            Cache.fetch_validated(
+              mitre,
+              rel,
+              config,
+              Keyword.put(fetch_opts, :force, true),
+              validator
+            )
+
+      result ->
+        result
     end
   end
 
-  defp fetch_fallback(url, rel, config, opts) do
-    case Cache.fetch(url, rel, config, opts) do
-      {:ok, body, _status} -> {:ok, body}
-      error -> error
-    end
-  end
-
-  defp decode(body) do
+  @doc false
+  def validate_record(body, cve_id) do
     case JSON.decode(body) do
-      {:ok, %{} = record} -> {:ok, record}
-      _ -> {:error, :invalid_cve_record}
+      {:ok, %{"cveMetadata" => %{"cveId" => ^cve_id}, "containers" => %{"cna" => cna}} = record}
+      when is_map(cna) ->
+        {:ok, record}
+
+      _ ->
+        {:error, :invalid_cve_record}
     end
   end
 
@@ -82,17 +102,25 @@ defmodule VulnCheck.Feeds.EefCna do
   """
   @spec enrich(Advisory.t(), Config.t(), keyword()) :: {:ok, Advisory.t()} | {:error, term()}
   def enrich(%Advisory{} = advisory, %Config{} = config, opts \\ []) do
+    with {:ok, enriched, _warnings} <- enrich_with_status(advisory, config, opts),
+         do: {:ok, enriched}
+  end
+
+  @doc false
+  def enrich_with_status(%Advisory{} = advisory, %Config{} = config, opts) do
     case Advisory.cve_id(advisory) do
       nil ->
-        {:ok, advisory}
+        {:ok, advisory, []}
 
       cve ->
-        with {:ok, record} <-
-               fetch_record(cve, config, Keyword.put(opts, :modified_at, advisory.modified_at)) do
-          case apply_record(advisory, record) do
-            %Advisory{enriched: true} = enriched -> {:ok, enriched}
-            _ -> {:error, :no_matching_affected_product}
-          end
+        with {:ok, record, status, _meta} <-
+               load_record(cve, config, Keyword.put(opts, :modified_at, advisory.modified_at)),
+             %Advisory{enriched: true} = enriched <- apply_record(advisory, record) do
+          warnings = if status == :stale, do: ["using a stale CVE 5.1 record for #{cve}"], else: []
+          {:ok, enriched, warnings}
+        else
+          %Advisory{} -> {:error, :no_matching_affected_product}
+          error -> error
         end
     end
   end

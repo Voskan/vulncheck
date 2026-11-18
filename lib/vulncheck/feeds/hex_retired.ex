@@ -228,12 +228,29 @@ defmodule VulnCheck.Feeds.HexRetired do
         Keyword.merge([timeout: 8_000, retries: 1], Keyword.get(opts, :http_opts, []))
       )
 
-    with {:ok, body, _status} <-
-           Cache.fetch("#{base}/#{name}", "hex/packages/#{name}.json", config, cache_opts) do
-      case JSON.decode(body) do
-        {:ok, %{} = record} -> {:ok, Map.put_new(record, "name", name)}
-        _ -> {:error, :invalid_package_metadata}
-      end
+    with {:ok, record, _status, _meta} <-
+           Cache.fetch_validated(
+             "#{base}/#{name}",
+             "hex/packages/#{name}.json",
+             config,
+             cache_opts,
+             &validate_record(&1, name)
+           ) do
+      {:ok, record}
+    end
+  end
+
+  @doc false
+  def validate_record(body, name) do
+    case JSON.decode(body) do
+      {:ok, %{} = record} ->
+        if (is_list(record["releases"]) or is_map(record["retirements"])) and
+             Map.get(record, "name", name) == name,
+           do: {:ok, Map.put_new(record, "name", name)},
+           else: {:error, :invalid_package_metadata}
+
+      _ ->
+        {:error, :invalid_package_metadata}
     end
   end
 

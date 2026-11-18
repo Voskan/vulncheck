@@ -54,6 +54,7 @@
 | `otp_version` | string \| integer \| `nil` | running OTP | OTP release the project is deployed on, for OTP-gated advisories. |
 | `offline` | boolean | `false` | Never use the network; use the cache or a bundle. |
 | `bundle` | string \| `nil` | `nil` | Advisory bundle imported before the scan. |
+| `max_feed_age_seconds` | integer \| `nil` | `nil` | OSV freshness limit. The default is 24 hours online and unlimited in explicit offline mode. |
 | `configured_adapters` | keyword list | `[]` | Adapter modules per family: `tesla`, `swoosh`, `ecto`, `phoenix_pubsub`, `finch`, `req`. A family may list several modules. |
 | `extra_entrypoints` | list of `{Module, :function, arity}` | `[]` | Functions treated as roots in addition to the detected ones. |
 | `ignore_file` | string | `".vulncheck.ignore"` | Suppression file, relative to the project. |
@@ -101,7 +102,7 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 | `mix vulncheck` | Run full dependency & `.beam` reachability audit. |
 | `mix vulncheck.init` | Generate `.vulncheck.exs` tailored to the detected project structure. |
 | `mix vulncheck.explain <ID>` | Show full CVE details, affected `programRoutines`, fixed versions, and local reachability status. |
-| `mix vulncheck.feeds sync` | Force-refresh cached OSV and EEF CNA feeds. |
+| `mix vulncheck.feeds sync` | Revalidate the OSV archive and refresh every referenced CVE record through EEF CNA or MITRE. Exit `2` signals incomplete refresh. |
 | `mix vulncheck.feeds status` | Print local cache location, ETag timestamps, and advisory counts. |
 | `mix vulncheck.feeds bundle -o <path>` | Export self-contained `.tar.gz` advisory bundle for air-gapped CI runners. |
 
@@ -131,10 +132,15 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 | `--bundle FILE` | Import an advisory bundle before scanning. |
 | `--cache-dir DIR` | Feed and `.beam` summary cache directory. |
 | `--cache-ttl SECONDS` | Feed freshness (default: `3600`). |
+| `--max-feed-age SECONDS` | Maximum accepted age of the cached OSV archive. Use `0` for live validation on every scan. |
 | `--no-color` | Disable ANSI colors (also `NO_COLOR=1`). |
 | `-q`, `--quiet` | Hide warnings. |
 
 `mix vulncheck.init` accepts `--project-dir` and `--force` (overwrite an existing file). `mix vulncheck.explain` accepts `--project-dir`, `--offline` and `--bundle`.
+
+`--bundle` selects an isolated offline snapshot for the scan. Absent records remain absent in that snapshot. The live cache remains available to online runs, and subsequent offline scans use the most recently imported snapshot. Bundle import validates the complete manifest, file digests and feed contents before selecting it. The manifest preserves source fetch times, including unknown age in older bundles.
+
+An online scan can use a verified previous OSV archive after a failed refresh if it is within its configured age limit. A cold scan or one past the limit returns exit `2`. The native JSON `feed` object contains the source, status, age, refresh error and discarded record count. `feeds status` reports a missing archive, a validated archive or an invalid archive with exit `2`.
 
 `explain` shows whether the installed version matches the advisory, the local reachability verdict when available, and the effect of suppressions or display filters. A missing or incomplete local scan is reported separately from an unaffected installed version.
 

@@ -10,13 +10,16 @@ defmodule VulnCheck.Feeds.OSV do
   """
 
   alias VulnCheck.{Cache, Config, Semver}
-  alias VulnCheck.Feeds.{CVSS, Merge, TextHints}
+  alias VulnCheck.Feeds.{Archive, CVSS, Merge, TextHints}
   alias VulnCheck.Types.{Advisory, MFA, VersionRange}
 
   @default_url "https://osv-vulnerabilities.storage.googleapis.com/Hex/all.zip"
   @cache_file "osv_hex_all.zip"
+  @max_compressed 50 * 1024 * 1024
   @max_entries 50_000
   @max_uncompressed 256 * 1024 * 1024
+  @max_record_bytes 4 * 1024 * 1024
+  @online_max_age 24 * 60 * 60
 
   @doc "Default URL of the OSV Hex archive."
   @spec default_url() :: String.t()
@@ -34,36 +37,75 @@ defmodule VulnCheck.Feeds.OSV do
   @spec load(Config.t(), keyword()) ::
           {:ok, [Advisory.t()], Cache.fetch_status()} | {:error, term()}
   def load(%Config{} = config, opts \\ []) do
+    with {:ok, advisories, status, _meta} <- load_with_metadata(config, opts),
+         do: {:ok, advisories, status}
+  end
+
+  @doc false
+  def load_with_metadata(%Config{} = config, opts) do
     url = Keyword.get(opts, :osv_url, @default_url)
 
-    with {:ok, zip, status} <- Cache.fetch(url, @cache_file, config, opts),
-         {:ok, advisories} <- parse_archive(zip) do
-      {:ok, advisories, status}
-    end
+    max_age =
+      config.max_feed_age_seconds ||
+        if(!Keyword.get(opts, :offline, config.offline), do: @online_max_age)
+
+    opts = Keyword.put_new(opts, :max_age, max_age)
+
+    Cache.fetch_validated(url, @cache_file, config, opts, &parse_archive/1)
   end
+
+  @doc false
+  def source(%{"url" => "bundle:" <> _ = url}), do: url
+
+  def source(%{"url" => url}) when is_binary(url) do
+    uri = URI.parse(url)
+    %{uri | userinfo: nil, query: nil, fragment: nil} |> URI.to_string()
+  end
+
+  def source(_meta), do: "local cache"
 
   @doc """
   Parses an in-memory ZIP archive of OSV JSON records.
   """
   @spec parse_archive(binary()) :: {:ok, [Advisory.t()]} | {:error, term()}
-  def parse_archive(zip) when is_binary(zip) do
-    with :ok <- check_limits(zip),
-         {:ok, files} <- unzip(zip) do
-      advisories =
-        files
-        |> Enum.filter(fn {name, _} -> String.ends_with?(to_string(name), ".json") end)
-        |> Enum.sort_by(fn {name, _} -> to_string(name) end)
-        |> Enum.flat_map(fn {_name, data} ->
-          case JSON.decode(data) do
-            {:ok, %{} = record} -> parse_record(record)
-            _ -> []
+  def parse_archive(zip) when is_binary(zip) and byte_size(zip) <= @max_compressed do
+    with {:ok, files} <- archive_directory(zip) do
+      {advisories, rejected} =
+        Enum.reduce(files, {[], 0}, fn entry, {advisories, rejected} ->
+          with {:ok, data} <- Archive.zip_entry(zip, entry),
+               {:ok, record} <- JSON.decode(data),
+               true <- valid_record?(record) do
+            {Enum.reverse(parse_record(record), advisories), rejected}
+          else
+            _ -> {advisories, rejected + 1}
           end
         end)
-        |> Merge.merge()
 
-      {:ok, advisories}
+      if rejected == 0,
+        do: {:ok, advisories |> Enum.reverse() |> Merge.merge()},
+        else: {:error, {:invalid_osv_records, rejected}}
     end
   end
+
+  def parse_archive(_zip), do: {:error, {:archive_too_large, :compressed}}
+
+  defp valid_record?(%{"id" => id, "withdrawn" => time})
+       when is_binary(id) and id != "" and is_binary(time), do: true
+
+  defp valid_record?(%{"id" => id, "affected" => affected})
+       when is_binary(id) and id != "" and is_list(affected),
+       do: Enum.all?(affected, &known_affected?/1)
+
+  defp valid_record?(_record), do: false
+
+  defp known_affected?(%{"package" => %{"ecosystem" => ecosystem, "name" => name}})
+       when is_binary(ecosystem) and ecosystem != "" and is_binary(name) and name != "",
+       do: true
+
+  defp known_affected?(%{"ranges" => [_ | _] = ranges}),
+    do: Enum.all?(ranges, &match?(%{"type" => "GIT", "repo" => repo} when is_binary(repo), &1))
+
+  defp known_affected?(_affected), do: false
 
   @doc """
   Groups advisories by package name.
@@ -229,26 +271,39 @@ defmodule VulnCheck.Feeds.OSV do
     end
   end
 
-  defp check_limits(zip) do
+  defp archive_directory(zip) do
     case :zip.list_dir(zip) do
       {:ok, entries} ->
-        files = for {:zip_file, _name, info, _comment, _offset, _size} <- entries, do: elem(info, 1)
+        files = for {:zip_file, _, _, _, _, _} = file <- entries, do: file
+        sizes = Enum.map(files, &elem(elem(&1, 2), 1))
+        names = Enum.map(files, &elem(&1, 1))
 
         cond do
-          length(files) > @max_entries -> {:error, {:archive_too_large, :entries}}
-          Enum.sum(files) > @max_uncompressed -> {:error, {:archive_too_large, :size}}
-          true -> :ok
+          length(files) > @max_entries ->
+            {:error, {:archive_too_large, :entries}}
+
+          Enum.sum(sizes) > @max_uncompressed ->
+            {:error, {:archive_too_large, :size}}
+
+          Enum.any?(sizes, &(&1 < 0 or &1 > @max_record_bytes)) ->
+            {:error, {:archive_too_large, :record}}
+
+          length(Enum.uniq(names)) != length(names) ->
+            {:error, {:invalid_archive, :duplicate_entries}}
+
+          true ->
+            records =
+              files
+              |> Enum.filter(&(Enum.take(elem(&1, 1), -5) == ~c".json"))
+              |> Enum.sort_by(&elem(&1, 1))
+
+            if files != [] and records == [],
+              do: {:error, {:invalid_archive, :no_advisory_records}},
+              else: {:ok, records}
         end
 
       {:error, reason} ->
         {:error, {:invalid_archive, reason}}
-    end
-  end
-
-  defp unzip(zip) do
-    case :zip.unzip(zip, [:memory]) do
-      {:ok, files} -> {:ok, files}
-      {:error, reason} -> {:error, {:invalid_archive, reason}}
     end
   end
 

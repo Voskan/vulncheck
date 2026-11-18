@@ -45,8 +45,11 @@ defmodule VulnCheck.Feeds.Store do
   """
   @spec load(Workspace.t(), Config.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def load(%Workspace{} = workspace, %Config{} = config, opts \\ []) do
-    with :ok <- import_bundle(config),
-         {:ok, all, feed_status} <- load_osv(config, opts) do
+    offline = not is_nil(config.bundle) or Keyword.get(opts, :offline, config.offline)
+    opts = Keyword.put(opts, :offline, offline)
+
+    with {:ok, config} <- select_feeds(%{config | offline: offline}),
+         {:ok, all, feed_status, meta} <- load_osv(config, opts) do
       matched = match(OSV.index(all), workspace)
       {enriched, enrich_warnings} = enrich(matched, config, opts)
       advisories = Enum.map(enriched, &text_fallback/1)
@@ -59,9 +62,12 @@ defmodule VulnCheck.Feeds.Store do
       {:ok,
        %{
          advisories: advisories ++ retired,
-         warnings: enrich_warnings ++ retired_warnings ++ HexRetired.hygiene(workspace),
+         warnings:
+           stale_warning(feed_status, meta) ++
+             enrich_warnings ++ retired_warnings ++ HexRetired.hygiene(workspace),
          stats: %{
            feed_status: feed_status,
+           feed: feed_info(feed_status, meta, config),
            feed_advisories: length(all),
            matched_advisories: length(matched),
            enriched_advisories: Enum.count(advisories, & &1.enriched),
@@ -71,6 +77,34 @@ defmodule VulnCheck.Feeds.Store do
        }}
     end
   end
+
+  defp feed_info(status, meta, config) do
+    at = meta["fetched_at_unix"]
+    reason = meta["refresh_error"]
+
+    rejected =
+      case reason do
+        {:invalid_osv_records, count} -> count
+        _ -> 0
+      end
+
+    %{
+      status: status,
+      source: OSV.source(meta),
+      age_seconds: if(is_integer(at), do: max(System.os_time(:second) - at, 0)),
+      fetched_at_unix: at,
+      rejected_records: rejected,
+      offline: config.offline,
+      refresh_error: if(reason, do: inspect(reason, limit: 10, printable_limit: 200))
+    }
+  end
+
+  defp stale_warning(:stale, meta) do
+    reason = inspect(meta["refresh_error"], limit: 10, printable_limit: 200)
+    ["OSV refresh failed (#{reason}); using the previous verified copy"]
+  end
+
+  defp stale_warning(_status, _meta), do: []
 
   @doc """
   Filters an advisory index down to the advisories affecting locked
@@ -103,18 +137,18 @@ defmodule VulnCheck.Feeds.Store do
   defp matchable?(%Package{source: :git, version: version}), do: Semver.valid?(version)
   defp matchable?(_package), do: false
 
-  defp import_bundle(%Config{bundle: nil}), do: :ok
+  defp select_feeds(%Config{bundle: nil} = config), do: {:ok, Cache.pin_feeds(config)}
 
-  defp import_bundle(%Config{bundle: bundle} = config) do
-    case Cache.import_bundle(bundle, config) do
-      {:ok, _manifest} -> :ok
+  defp select_feeds(%Config{bundle: bundle} = config) do
+    case Cache.import_bundle_snapshot(bundle, config) do
+      {:ok, _manifest, scoped} -> {:ok, scoped}
       {:error, reason} -> {:error, {:bundle, reason}}
     end
   end
 
   defp load_osv(config, opts) do
-    case OSV.load(config, opts) do
-      {:ok, advisories, status} -> {:ok, advisories, status}
+    case OSV.load_with_metadata(config, opts) do
+      {:ok, _, _, _} = result -> result
       {:error, :offline_cache_missing} -> {:error, :offline_cache_missing}
       {:error, reason} -> {:error, {:osv_feed, reason}}
     end
@@ -123,7 +157,7 @@ defmodule VulnCheck.Feeds.Store do
   defp enrich(advisories, config, opts) do
     if Keyword.get(opts, :enrich, true) and advisories != [] do
       advisories
-      |> Task.async_stream(&{&1, EefCna.enrich(&1, config, opts)},
+      |> Task.async_stream(&{&1, EefCna.enrich_with_status(&1, config, opts)},
         max_concurrency: 4,
         timeout: 30_000,
         on_timeout: :kill_task,
@@ -131,8 +165,8 @@ defmodule VulnCheck.Feeds.Store do
       )
       |> Enum.zip(advisories)
       |> Enum.map_reduce([], fn
-        {{:ok, {_advisory, {:ok, enriched}}}, _original}, warnings ->
-          {enriched, warnings}
+        {{:ok, {_advisory, {:ok, enriched, new_warnings}}}, _original}, warnings ->
+          {enriched, new_warnings ++ warnings}
 
         {{:ok, {advisory, {:error, reason}}}, _original}, warnings ->
           {advisory, [enrich_warning(advisory, reason) | warnings]}

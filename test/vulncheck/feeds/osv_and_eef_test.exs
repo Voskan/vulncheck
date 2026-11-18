@@ -188,6 +188,7 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
         HTTPServer.start!(fn
           %{path: "/osv/all.zip"} -> {200, [{"etag", "\"osv-1\""}], zip}
           %{path: "/cna/CVE-2026-101028.json"} -> {200, [], JSON.encode!(ash_cve)}
+          %{path: "/cna/CVE-2026-54892.json"} -> {200, [], "{invalid json"}
           %{path: "/cna/" <> _} -> {404, [], "not found"}
           %{path: "/mitre/CVE-2026-54892"} -> {200, [], JSON.encode!(plug_cve)}
           %{path: _} -> {404, [], ""}
@@ -260,6 +261,47 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
       assert {:ok, %{advisories: []}} = Store.load(ws, config(), opts)
       paths = server |> HTTPServer.requests() |> Enum.map(& &1.path)
       assert paths == ["/osv/all.zip"]
+    end
+
+    test "OSV validation preserves the last usable feed and reports a rejected refresh", %{
+      server: server,
+      opts: opts
+    } do
+      ws = workspace([{"ash", "3.34.2"}])
+      config = config()
+      assert {:ok, first} = Store.load(ws, config, opts)
+      assert first.stats.feed.status == :network
+
+      {:ok, {_, invalid_zip}} =
+        :zip.create(~c"all.zip", [{~c"invalid.json", "{bad record"}], [:memory])
+
+      HTTPServer.set_handler(server, fn _ -> {200, [], invalid_zip} end)
+      opts = Keyword.put(opts, :force, true) |> Keyword.put(:enrich, false)
+
+      assert {:ok, stale} = Store.load(ws, config, opts)
+      assert stale.stats.feed.status == :stale
+      assert stale.stats.feed.rejected_records == 1
+      assert stale.stats.feed.age_seconds >= 0
+      assert [warning] = stale.warnings
+      assert warning =~ "using the previous verified copy"
+      assert length(stale.advisories) == length(first.advisories)
+
+      assert {:error, {:osv_feed, {:invalid_osv_records, 1}}} = Store.load(ws, config(), opts)
+
+      assert {:ok, offline} =
+               Store.load(ws, %{config | offline: true}, Keyword.drop(opts, [:force]))
+
+      assert offline.stats.feed.status == :cached
+      assert offline.stats.feed.rejected_records == 0
+    end
+
+    test "valid empty and invalid OSV archives are distinct" do
+      assert {:ok, []} = OSV.parse_archive(Feeds.zip([]))
+      {:ok, {_, archive}} = :zip.create(~c"all.zip", [{~c"record.json", "{}"}], [:memory])
+      assert {:error, {:invalid_osv_records, 1}} = OSV.parse_archive(archive)
+
+      assert {:error, {:archive_too_large, :uncompressed}} =
+               VulnCheck.Feeds.Archive.inflate(:zlib.gzip("valid data"), 31, 1)
     end
 
     test "offline mode uses the cache and reports missing CVE records", %{opts: opts} do

@@ -520,9 +520,27 @@ defmodule VulnCheck.CLITest do
 
       cache = Tmp.mkdir!("cli-sync")
 
-      assert {0, out, ""} = cli(["feeds", "sync", "--cache-dir", cache], scan_opts: scan_opts)
+      assert {2, out, error} = cli(["feeds", "sync", "--cache-dir", cache], scan_opts: scan_opts)
       assert out =~ "OSV Hex archive: 2 advisories for 2 packages (network)"
-      assert out =~ "CVE 5.1 records: 1 available, 1 with function-level routines, 1 unavailable"
+      assert out =~ "CVE 5.1 records: 1 available, 1 with function-level routines"
+      assert out =~ "1 refreshed or revalidated, 0 stale, 1 unavailable"
+      assert error =~ "feed sync incomplete"
+
+      plug = Feeds.cve_record("CVE-2026-54892", "plug", ["'Elixir.Plug.Conn.Query':decode/4"])
+
+      HTTPServer.set_handler(server, fn
+        %{path: "/osv/all.zip", headers: %{"if-none-match" => ~s("v1")}} -> {304, [], ""}
+        %{path: "/cna/CVE-2026-101028.json"} -> {200, [], JSON.encode!(ash)}
+        %{path: "/cna/CVE-2026-54892.json"} -> {200, [], JSON.encode!(plug)}
+      end)
+
+      assert {0, refreshed, ""} = cli(["feeds", "sync", "--cache-dir", cache], scan_opts: scan_opts)
+      assert refreshed =~ "(revalidated)"
+      assert refreshed =~ "2 refreshed or revalidated, 0 stale, 0 unavailable"
+
+      assert server
+             |> HTTPServer.requests()
+             |> Enum.count(&(&1.path == "/cna/CVE-2026-101028.json")) == 2
 
       assert {0, status, ""} = cli(["feeds", "status", "--cache-dir", cache])
       assert status =~ ~s(etag:    "v1")
@@ -531,6 +549,24 @@ defmodule VulnCheck.CLITest do
       assert {2, "", err} = cli(["feeds", "sync", "--cache-dir", cache, "--offline"])
       assert err =~ "needs network access"
       assert {2, "", _} = cli(["feeds", "prune"])
+    end
+
+    test "status distinguishes a missing, empty and invalid advisory archive" do
+      cache = Tmp.mkdir!("cli-feed-status")
+      dir = Path.join(cache, "feeds")
+      archive = Path.join(dir, "osv_hex_all.zip")
+      assert {0, missing, ""} = cli(["feeds", "status", "--cache-dir", cache])
+      assert missing =~ "not cached"
+
+      File.mkdir_p!(dir)
+      File.write!(archive, Feeds.zip([]))
+      assert {0, empty, ""} = cli(["feeds", "status", "--cache-dir", cache])
+      assert empty =~ "0 advisories"
+
+      File.write!(archive, "invalid archive")
+      assert {2, invalid, _} = cli(["feeds", "status", "--cache-dir", cache])
+      assert invalid =~ "invalid"
+      refute invalid =~ "0 advisories"
     end
   end
 end

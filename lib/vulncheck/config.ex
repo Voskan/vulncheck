@@ -56,7 +56,9 @@ defmodule VulnCheck.Config do
             require_ignore_reason: true,
             require_ignore_expiry: false,
             cache_dir: nil,
+            feed_snapshot: nil,
             cache_ttl_seconds: 3600,
+            max_feed_age_seconds: nil,
             color: true,
             quiet: false,
             force: false,
@@ -92,7 +94,9 @@ defmodule VulnCheck.Config do
           require_ignore_reason: boolean(),
           require_ignore_expiry: boolean(),
           cache_dir: String.t() | nil,
+          feed_snapshot: String.t() | nil,
           cache_ttl_seconds: non_neg_integer(),
+          max_feed_age_seconds: non_neg_integer() | nil,
           color: boolean(),
           quiet: boolean(),
           force: boolean(),
@@ -122,6 +126,7 @@ defmodule VulnCheck.Config do
     ignore_file: :string,
     cache_dir: :string,
     cache_ttl: :integer,
+    max_feed_age: :integer,
     color: :boolean,
     quiet: :boolean,
     force: :boolean
@@ -131,7 +136,7 @@ defmodule VulnCheck.Config do
 
   @file_keys ~w(env format output sbom vex fail_on min_severity fail_on_retired check_retired
                 show_unreachable otp_version offline bundle configured_adapters extra_entrypoints
-                ignore_file require_ignore_reason require_ignore_expiry cache_dir cache_ttl_seconds
+                ignore_file require_ignore_reason require_ignore_expiry cache_dir cache_ttl_seconds max_feed_age_seconds
                 forbid_new_suppressions diff baseline)
 
   @doc "Supported output formats."
@@ -337,6 +342,12 @@ defmodule VulnCheck.Config do
   defp apply_cli_option(_config, :cache_ttl, _value),
     do: {:error, "--cache-ttl must be a non-negative integer"}
 
+  defp apply_cli_option(config, :max_feed_age, value) when value >= 0,
+    do: {:ok, %{config | max_feed_age_seconds: value}}
+
+  defp apply_cli_option(_config, :max_feed_age, _value),
+    do: {:error, "--max-feed-age must be a non-negative integer"}
+
   defp apply_cli_option(config, :otp_version, value) do
     if Regex.match?(~r/\A\d+(\.\d+)*\z/, value) do
       {:ok, %{config | otp_version: value}}
@@ -475,6 +486,14 @@ defmodule VulnCheck.Config do
       {:ok, %{config | cache_ttl_seconds: value}}
     else
       {:error, "cache_ttl_seconds must be a non-negative integer"}
+    end
+  end
+
+  defp file_option(config, "max_feed_age_seconds", value) do
+    if is_integer(value) and value >= 0 do
+      {:ok, %{config | max_feed_age_seconds: value}}
+    else
+      {:error, "max_feed_age_seconds must be a non-negative integer"}
     end
   end
 
