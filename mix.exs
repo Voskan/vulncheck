@@ -39,6 +39,12 @@ defmodule VulnCheck.MixProject do
   defp elixirc_paths(_env), do: ["lib"]
 
   defp deps do
+    deps(Mix.env())
+  end
+
+  defp deps(:prod), do: []
+
+  defp deps(_env) do
     [
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
@@ -61,7 +67,7 @@ defmodule VulnCheck.MixProject do
   defp package do
     [
       name: "vulncheck",
-      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md docs),
+      files: ~w(lib .formatter.exs mix.exs README.md LICENSE CHANGELOG.md SECURITY.md docs),
       licenses: ["MIT"],
       links: %{
         "GitHub" => @source_url,
@@ -79,6 +85,7 @@ defmodule VulnCheck.MixProject do
       extras: [
         "README.md",
         "CHANGELOG.md",
+        "SECURITY.md",
         "docs/ARCHITECTURE.md",
         "docs/REACHABILITY_MODEL.md",
         "docs/CONFIGURATION_AND_CI.md",
