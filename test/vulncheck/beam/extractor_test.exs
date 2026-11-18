@@ -462,5 +462,43 @@ defmodule VulnCheck.Beam.ExtractorTest do
     assert too_large.modules == %{}
     assert too_large.stats.failed == too_large.stats.beams
     assert Enum.any?(too_large.artifact_issues, fn {_pkg, msg} -> msg =~ "beam_too_large" end)
+
+    timed_out =
+      Loader.load_dirs([{"pkg", ctx.ebin}],
+        cache: false,
+        beam_timeout: 10,
+        loader: fn _ -> Process.sleep(200) end
+      )
+
+    assert timed_out.modules == %{}
+    assert timed_out.stats.failed == timed_out.stats.beams
+
+    assert Enum.any?(timed_out.artifact_issues, fn {_pkg, msg} ->
+             msg =~ ":worker_exit, :timeout"
+           end)
+
+    crashed =
+      Loader.load_dirs([{"pkg", ctx.ebin}],
+        cache: false,
+        loader: fn _ -> exit(:boom) end
+      )
+
+    assert crashed.modules == %{}
+    assert crashed.stats.failed == crashed.stats.beams
+    assert Enum.any?(crashed.artifact_issues, fn {_pkg, msg} -> msg =~ ":worker_exit, :boom" end)
+
+    oom =
+      Loader.load_dirs([{"pkg", ctx.ebin}],
+        cache: false,
+        max_beam_heap_bytes: 32 * 1024,
+        loader: fn _ ->
+          _ = Enum.map(1..50_000, &Integer.to_string/1)
+          {:error, :unexpected}
+        end
+      )
+
+    assert oom.modules == %{}
+    assert oom.stats.failed == oom.stats.beams
+    assert Enum.any?(oom.artifact_issues, fn {_pkg, msg} -> msg =~ ":worker_exit, :killed" end)
   end
 end

@@ -21,6 +21,7 @@ defmodule VulnCheck.Beam.Loader do
   @max_beam_bytes 64 * 1024 * 1024
   @default_beam_timeout 15_000
   @default_max_beam_files 20_000
+  @default_max_heap_bytes 128 * 1024 * 1024
 
   # Cached summaries are decoded with `binary_to_term(bin, [:safe])`, which
   # only accepts atoms that already exist. Every atom a summary holds is
@@ -58,6 +59,19 @@ defmodule VulnCheck.Beam.Loader do
       opts
       |> Keyword.put_new(:cache, config || false)
       |> Keyword.put_new(:root_dir, workspace.root_dir)
+      |> then(fn o ->
+        case config do
+          %Config{} = cfg ->
+            o
+            |> Keyword.put_new(:beam_timeout, cfg.beam_timeout)
+            |> Keyword.put_new(:max_beam_files, cfg.max_beam_files)
+            |> Keyword.put_new(:max_beam_bytes, cfg.max_beam_bytes)
+            |> Keyword.put_new(:max_beam_heap_bytes, cfg.max_beam_heap_bytes)
+
+          _ ->
+            o
+        end
+      end)
 
     result = load_dirs(dirs, opts)
     consolidated = load_dirs(Enum.map(workspace.consolidated_dirs, &{nil, &1}), opts)
@@ -154,6 +168,8 @@ defmodule VulnCheck.Beam.Loader do
     concurrency = Keyword.get(opts, :max_concurrency, System.schedulers_online())
     timeout = Keyword.get(opts, :beam_timeout, @default_beam_timeout)
     max_files = Keyword.get(opts, :max_beam_files, @default_max_beam_files)
+    max_heap_bytes = Keyword.get(opts, :max_beam_heap_bytes, @default_max_heap_bytes)
+    loader = Keyword.get(opts, :loader, &load_file_packed(&1, opts))
     {accepted, overflow} = Enum.split(files, max_files)
 
     initial = %{
@@ -163,52 +179,66 @@ defmodule VulnCheck.Beam.Loader do
       stats: %{beams: 0, cached: 0, analyzed: 0, without_debug_info: 0, failed: 0}
     }
 
-    analyzed_stream =
-      accepted
-      |> Task.async_stream(
-        fn {_package, path} -> load_file_packed(path, opts) end,
-        max_concurrency: concurrency,
-        ordered: true,
-        timeout: timeout,
-        on_timeout: :kill_task
-      )
-      |> Stream.zip(accepted)
-      |> Stream.map(fn
-        {{:ok, value}, {package, path}} -> {package, path, value}
-        {{:exit, reason}, {package, path}} -> {package, path, {:error, {:worker_exit, reason}}}
-      end)
+    {:ok, sup} = Task.Supervisor.start_link()
 
-    overflow_results =
-      Stream.map(overflow, fn {package, path} ->
-        {package, path, {:error, {:beam_file_limit_exceeded, max_files}}}
-      end)
+    try do
+      analyzed_stream =
+        sup
+        |> Task.Supervisor.async_stream_nolink(
+          accepted,
+          fn {_package, path} ->
+            if is_integer(max_heap_bytes) and max_heap_bytes > 0 do
+              words = max(div(max_heap_bytes, :erlang.system_info(:wordsize)), 1)
+              :erlang.process_flag(:max_heap_size, %{size: words, kill: true, error_logger: false})
+            end
 
-    {result, _pool} =
-      Stream.concat(analyzed_stream, overflow_results)
-      |> Enum.reduce({initial, %{}}, fn
-        {package, path, {:ok, {:packed, {strings, packed}}, origin}}, {acc, pool} ->
-          {summary, pool} = BeamCodec.unpack(strings, packed, pool)
-          {record_summary(acc, package, path, summary, origin), pool}
+            loader.(path)
+          end,
+          max_concurrency: concurrency,
+          ordered: true,
+          timeout: timeout,
+          on_timeout: :kill_task
+        )
+        |> Stream.zip(accepted)
+        |> Stream.map(fn
+          {{:ok, value}, {package, path}} -> {package, path, value}
+          {{:exit, reason}, {package, path}} -> {package, path, {:error, {:worker_exit, reason}}}
+        end)
 
-        {package, path, {:ok, %ModuleSummary{} = summary, origin}}, {acc, pool} ->
-          {record_summary(acc, package, path, summary, origin), pool}
+      overflow_results =
+        Stream.map(overflow, fn {package, path} ->
+          {package, path, {:error, {:beam_file_limit_exceeded, max_files}}}
+        end)
 
-        {package, path, {:error, reason}}, {acc, pool} ->
-          warning = "could not read #{path}: #{inspect(reason)}"
+      {result, _pool} =
+        Stream.concat(analyzed_stream, overflow_results)
+        |> Enum.reduce({initial, %{}}, fn
+          {package, path, {:ok, {:packed, {strings, packed}}, origin}}, {acc, pool} ->
+            {summary, pool} = BeamCodec.unpack(strings, packed, pool)
+            {record_summary(acc, package, path, summary, origin), pool}
 
-          acc = %{
-            acc
-            | stats: acc.stats |> bump(:beams) |> bump(:failed),
-              warnings: [warning | acc.warnings],
-              artifact_issues: [{package, warning} | acc.artifact_issues]
-          }
+          {package, path, {:ok, %ModuleSummary{} = summary, origin}}, {acc, pool} ->
+            {record_summary(acc, package, path, summary, origin), pool}
 
-          {acc, pool}
-      end)
+          {package, path, {:error, reason}}, {acc, pool} ->
+            warning = "could not read #{path}: #{inspect(reason)}"
 
-    result
-    |> Map.update!(:warnings, &Enum.reverse/1)
-    |> Map.update!(:artifact_issues, &Enum.reverse/1)
+            acc = %{
+              acc
+              | stats: acc.stats |> bump(:beams) |> bump(:failed),
+                warnings: [warning | acc.warnings],
+                artifact_issues: [{package, warning} | acc.artifact_issues]
+            }
+
+            {acc, pool}
+        end)
+
+      result
+      |> Map.update!(:warnings, &Enum.reverse/1)
+      |> Map.update!(:artifact_issues, &Enum.reverse/1)
+    after
+      if Process.alive?(sup), do: Supervisor.stop(sup, :normal)
+    end
   end
 
   defp record_summary(acc, package, path, summary, origin) do

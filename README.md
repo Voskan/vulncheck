@@ -139,9 +139,13 @@ mix vulncheck --offline --bundle vulncheck-feeds.tar.gz
 
 ### GitHub Actions Integration
 
+For **trusted branches** (where compiling the checkout is safe):
+
 ```yaml
 name: Security
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
 
 jobs:
   vulncheck:
@@ -160,6 +164,8 @@ jobs:
           fail-on: potentially_reachable
           upload-sarif: true
 ```
+
+For **untrusted pull requests** (including forks), do not grant `security-events: write` or secrets to a job that compiles project code (`compile: true`, the default). Either run with `compile: false` against prebuilt artifacts, or run the scan unprivileged (`upload-sarif: false`) and publish SARIF from a separate `workflow_run` workflow. See [`SECURITY.md`](SECURITY.md) and [`docs/CONFIGURATION_AND_CI.md`](docs/CONFIGURATION_AND_CI.md).
 
 ---
 
