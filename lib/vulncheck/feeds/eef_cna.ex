@@ -200,7 +200,7 @@ defmodule VulnCheck.Feeds.EefCna do
   defp metrics(cna) do
     metrics = list(cna, "metrics")
 
-    Enum.find_value(["cvssV3_1", "cvssV4_0", "cvssV3_0"], {nil, nil, nil}, fn key ->
+    Enum.find_value(["cvssV4_0", "cvssV3_1", "cvssV3_0"], {nil, nil, nil}, fn key ->
       Enum.find_value(metrics, fn
         %{^key => %{"baseScore" => score} = m} when is_number(score) ->
           {score * 1.0, m["vectorString"], m["baseSeverity"]}

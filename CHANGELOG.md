@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- CVSS v4.0 scores are computed from vector strings (macrovector lookup and severity distances as in the FIRST specification, including Threat and Environmental metrics), so advisories of the OSV Hex feed that carry only a `CVSS:4.0` vector get a score and severity offline, in `mix vulncheck.explain` and in `mix vulncheck.feeds`, instead of `unknown`. Within a record, a v4.0 vector takes precedence over a v3.x one, and a CNA record prefers its published v4.0 score. Across the sources of one vulnerability, the highest score still wins.
+- Severity `none` for a CVSS score of 0.0; it counts as `low` for `--min-severity`.
 - New reason code `daemon_call_chain` for reachable findings whose call chain starts at a protocol handler of an active network daemon rather than at code the project runs itself. Chains from the project's own entrypoints take precedence.
 - Call chains from roots the project does not call itself start with a step 0 activation hop (`daemon_activation` or `config_activation` in JSON `trace[].kind` and SARIF `threadFlowLocation.kinds`). The hop names the project function and line that starts the daemon (for example `MyApp.Application.start/2 starts Bandit`), the `.app` file whose boot tree starts it, or the configuration line that names a dependency module. JSON hops of this kind carry a `note`.
 

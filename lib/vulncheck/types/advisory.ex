@@ -48,7 +48,7 @@ defmodule VulnCheck.Types.Advisory do
 
   alias VulnCheck.Types.{MFA, Retirement, VersionRange}
 
-  @type severity :: :critical | :high | :medium | :low | :unknown
+  @type severity :: :critical | :high | :medium | :low | :none | :unknown
 
   @enforce_keys [:id, :package]
   defstruct [
@@ -99,17 +99,21 @@ defmodule VulnCheck.Types.Advisory do
           enriched: boolean()
         }
 
-  @severities [:critical, :high, :medium, :low, :unknown]
+  @severities [:critical, :high, :medium, :low, :none, :unknown]
 
   @doc "All severities from most to least severe."
   @spec severities() :: [severity()]
   def severities, do: @severities
 
   @doc """
-  Maps a CVSS base score to a qualitative severity.
+  Maps a CVSS score to a qualitative severity (CVSS v3.x and v4.0 share the
+  scale: 0.0 none, 0.1-3.9 low, 4.0-6.9 medium, 7.0-8.9 high, 9.0-10.0
+  critical).
 
       iex> VulnCheck.Types.Advisory.severity_from_score(9.8)
       :critical
+      iex> VulnCheck.Types.Advisory.severity_from_score(0.0)
+      :none
       iex> VulnCheck.Types.Advisory.severity_from_score(nil)
       :unknown
   """
@@ -119,7 +123,7 @@ defmodule VulnCheck.Types.Advisory do
   def severity_from_score(score) when score >= 7.0, do: :high
   def severity_from_score(score) when score >= 4.0, do: :medium
   def severity_from_score(score) when score > 0.0, do: :low
-  def severity_from_score(_score), do: :unknown
+  def severity_from_score(_score), do: :none
 
   @doc """
   The more severe of two severities; `:unknown` loses to any known severity.
@@ -149,6 +153,7 @@ defmodule VulnCheck.Types.Advisory do
       "medium" -> :medium
       "moderate" -> :medium
       "low" -> :low
+      "none" -> :none
       _ -> :unknown
     end
   end

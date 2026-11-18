@@ -104,7 +104,7 @@ defmodule VulnCheck.Report.SARIF do
   def level(%Finding{severity: severity}) do
     case severity do
       :medium -> "warning"
-      :low -> "note"
+      low when low in [:low, :none] -> "note"
       _ -> "error"
     end
   end

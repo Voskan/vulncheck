@@ -186,6 +186,7 @@ defmodule VulnCheck.Report.GitLab do
       :high -> "critical"
       :medium -> "major"
       :low -> "minor"
+      :none -> "info"
       _ -> "blocker"
     end
   end

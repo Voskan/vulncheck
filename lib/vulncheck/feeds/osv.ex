@@ -196,7 +196,10 @@ defmodule VulnCheck.Feeds.OSV do
         end
       end)
 
+    v4_score = CVSS.base_score(v4)
+
     cond do
+      v4_score -> {v4_score, v4}
       v3 -> {CVSS.base_score(v3), v3}
       numeric -> {numeric, v4}
       v4 -> {nil, v4}

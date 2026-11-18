@@ -1,17 +1,22 @@
 defmodule VulnCheck.Feeds.CVSS do
   @moduledoc """
-  CVSS helpers: computes CVSS v3.0/v3.1 base scores from vector strings and
-  recognizes CVSS v4.0 vectors (whose score is taken from the advisory
-  source when available).
+  CVSS helpers: computes CVSS v3.0/v3.1 base scores and CVSS v4.0 scores
+  (`VulnCheck.Feeds.CVSS.V4`) from vector strings.
   """
 
+  alias VulnCheck.Feeds.CVSS.V4
+
   @doc """
-  Computes the base score of a CVSS v3.x vector.
+  Computes the score of a CVSS v3.x or v4.0 vector, or `nil` when the
+  vector is not valid. A v4.0 vector with Threat or Environmental metrics is
+  scored with them.
 
       iex> VulnCheck.Feeds.CVSS.base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
       9.8
       iex> VulnCheck.Feeds.CVSS.base_score("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H")
       7.5
+      iex> VulnCheck.Feeds.CVSS.base_score("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N")
+      9.3
       iex> VulnCheck.Feeds.CVSS.base_score("not a vector")
       nil
   """
@@ -46,6 +51,8 @@ defmodule VulnCheck.Feeds.CVSS do
       _ -> nil
     end
   end
+
+  def base_score("CVSS:4." <> _ = vector), do: V4.score(vector)
 
   def base_score(_), do: nil
 

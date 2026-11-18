@@ -191,6 +191,7 @@ defmodule VulnCheck.Report.Formatter do
       :high -> "8.0"
       :medium -> "5.5"
       :low -> "3.0"
+      :none -> "0.0"
       _ -> "9.5"
     end
   end

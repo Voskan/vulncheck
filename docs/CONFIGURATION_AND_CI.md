@@ -47,7 +47,7 @@
 | `sbom` | string \| `nil` | `nil` | Also write a CycloneDX 1.6 SBOM to this file. |
 | `vex` | string \| `nil` | `nil` | Also write an OpenVEX v0.2.0 document to this file. |
 | `fail_on` | atom | `:potentially_reachable` | `:reachable`, `:potentially_reachable`, `:any` (also unreachable) or `:none`. |
-| `min_severity` | atom | `:low` | `:low`, `:medium`, `:high` or `:critical`; findings below it never fail the run. |
+| `min_severity` | atom | `:low` | `:low`, `:medium`, `:high` or `:critical`; findings below it never fail the run. Severity `none` (CVSS 0.0) counts as `low`, and `unknown` (no CVSS data) as `critical`. |
 | `fail_on_retired` | boolean | `true` | Retired Hex releases fail the run. |
 | `check_retired` | boolean | `true` | Query Hex.pm for retired releases at all. |
 | `show_unreachable` | boolean | `false` | Detail unreachable advisories in terminal and Markdown output. |

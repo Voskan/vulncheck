@@ -62,6 +62,10 @@ Assigned **only** when `vulncheck` establishes a concrete, auditable proof of no
 | `module_not_loaded` | Advisory specifies affected modules (`modules` / `programRoutines`), no dynamic `apply/3` escapes toward the package, and zero functions in the affected module are reachable. | `Plug.Parsers.MULTIPART` CVE when `Plug.Parsers` is compiled with `parsers: [:json]` only. |
 | `function_not_called` | Advisory specifies exact `programRoutines` MFAs, `.beam` debug chunks are intact across the call boundary, no unresolved `apply/3` targets the module, and none of the vulnerable MFAs appear in the reachable closure. | `Ash.count/2` (`Ash.Actions.Aggregate.run/4`) CVE when app only uses `Ash.read/2` and `Ash.create/2`. |
 
+### Severity Is Independent of Reachability
+
+The verdict says whether vulnerable code can run. The severity is the advisory's CVSS score: the score of the CNA record when there is one, else one computed from the CVSS v4.0 or v3.x vector of the OSV record (see `docs/OUTPUT_FORMATS.md`). Offline scans and `mix vulncheck.explain` therefore report a severity for every advisory that carries a vector.
+
 ### Routines Outside the Vulnerable Package
 
 CVE records sometimes list functions on the vulnerable path that are not part of the vulnerable package: standard library calls such as `List.delete/2` or `Enum.map_join/3`, or functions of another dependency. Those are reachable in almost any project, so a path to them proves nothing about the package. `vulncheck` keeps only the routines and modules of the vulnerable package as targets (a module counts as part of the package when its compiled `.beam` belongs to the package, or when no compiled module of that name exists and it does not ship with Erlang/OTP or Elixir). The rest are reported as `context_routines`. When an advisory names only routines outside the package, it is evaluated at package level and `function_not_called` is never concluded from it.

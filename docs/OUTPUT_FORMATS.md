@@ -129,6 +129,13 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
 }
 ```
 
+`cvss_score` and `severity` come from each source of the advisory:
+
+- an Erlang Ecosystem Foundation CNA record gives its published score (`metrics[].cvssV4_0`, else `cvssV3_1`, else `cvssV3_0`);
+- an OSV record gives the score computed from its CVSS v4.0 vector, else from its CVSS v3.1 or v3.0 vector.
+
+When several sources describe one vulnerability (the CNA record, the EEF and GitHub OSV records), the highest score wins, so no source lowers the severity reported by another. A computed v4.0 score is scored with the vector's Threat and Environmental metrics when the vector carries them (CVSS-BT, CVSS-BE, CVSS-BTE). Scores map to severities on the CVSS scale: `none` for 0.0, `low` for 0.1–3.9, `medium` for 4.0–6.9, `high` for 7.0–8.9 and `critical` for 9.0–10.0. `none` counts as `low` for `--min-severity`. `unknown` is left only for advisories without any CVSS data or qualitative label, and it counts as `critical`.
+
 `trace[].kind` is how each hop was reached: `entrypoint` for the root, then `static_call`, `macro_expanded`, `behaviour_callback`, `supervisor_child`, `dynamic_apply` or `imports`. A chain whose root the project does not call itself (`reason: "daemon_call_chain"`, or a module named in the configuration) starts with a step 0 hop of kind `daemon_activation` or `config_activation`. That hop points to the project code, configuration line or `.app` file that makes the root live, and has a `note` such as `"starts Bandit"`. Its `mfa` is `null` when it points to a file rather than a function. Only activation hops carry `note`.
 
 `context_routines` lists functions that the advisory names on the vulnerable path but that belong to Erlang/OTP, Elixir or another dependency (for example `List.delete/2` in an HTTP/2 advisory). They explain the advisory and are never used as reachability targets.

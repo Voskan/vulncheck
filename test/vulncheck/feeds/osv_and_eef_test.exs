@@ -94,7 +94,7 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
       assert multi.package == "a"
       assert multi.affected_versions == ["1.0.0"]
       assert multi.cvss_vector =~ "CVSS:4.0"
-      assert multi.cvss_score == nil
+      assert {multi.cvss_score, multi.severity} == {9.3, :critical}
       assert multi.affected_routines == [MFA.new("Elixir.A.B", "run", 2)]
       assert multi.affected_modules == ["Elixir.A.B"]
       assert multi.symbol_source == :osv

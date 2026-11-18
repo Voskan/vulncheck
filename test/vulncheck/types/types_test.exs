@@ -18,7 +18,8 @@ defmodule VulnCheck.Types.TypesTest do
     assert Advisory.severity_from_score(7.5) == :high
     assert Advisory.severity_from_score(5.0) == :medium
     assert Advisory.severity_from_score(0.1) == :low
-    assert Advisory.severity_from_score(0.0) == :unknown
+    assert Advisory.severity_from_score(0.0) == :none
+    assert Advisory.parse_severity("NONE") == :none
     assert hd(Advisory.severities()) == :critical
   end
 

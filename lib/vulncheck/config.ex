@@ -236,6 +236,7 @@ defmodule VulnCheck.Config do
   """
   @spec severity_rank(atom()) :: non_neg_integer()
   def severity_rank(:low), do: 1
+  def severity_rank(:none), do: 1
   def severity_rank(:medium), do: 2
   def severity_rank(:high), do: 3
   def severity_rank(:critical), do: 4
