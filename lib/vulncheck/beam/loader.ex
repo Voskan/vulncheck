@@ -14,6 +14,7 @@ defmodule VulnCheck.Beam.Loader do
 
   alias VulnCheck.{Cache, Config, Semver}
   alias VulnCheck.Beam.AbstractWalker
+  alias VulnCheck.Cache.BeamCodec
   alias VulnCheck.Types.{CallEdge, DynamicCall, MFA, ModuleSummary, Workspace}
   alias VulnCheck.Workspace.AppFile
 
@@ -161,65 +162,78 @@ defmodule VulnCheck.Beam.Loader do
       stats: %{beams: 0, cached: 0, analyzed: 0, without_debug_info: 0, failed: 0}
     }
 
-    analyzed =
+    analyzed_stream =
       accepted
       |> Task.async_stream(
-        fn {_package, path} -> load_file(path, opts) end,
+        fn {_package, path} -> load_file_packed(path, opts) end,
         max_concurrency: concurrency,
         ordered: true,
         timeout: timeout,
         on_timeout: :kill_task
       )
-      |> Enum.zip(accepted)
-      |> Enum.map(fn
+      |> Stream.zip(accepted)
+      |> Stream.map(fn
         {{:ok, value}, {package, path}} -> {package, path, value}
         {{:exit, reason}, {package, path}} -> {package, path, {:error, {:worker_exit, reason}}}
       end)
 
     overflow_results =
-      Enum.map(overflow, fn {package, path} ->
+      Stream.map(overflow, fn {package, path} ->
         {package, path, {:error, {:beam_file_limit_exceeded, max_files}}}
       end)
 
-    (analyzed ++ overflow_results)
-    |> Enum.reduce(initial, fn
-      {package, path, {:ok, summary, origin}}, acc ->
-        summary = %{summary | package: package, beam_path: path}
-        stats = acc.stats |> bump(:beams) |> bump(origin)
-        stats = if summary.has_debug_info, do: stats, else: bump(stats, :without_debug_info)
+    {result, _pool} =
+      Stream.concat(analyzed_stream, overflow_results)
+      |> Enum.reduce({initial, %{}}, fn
+        {package, path, {:ok, {:packed, {strings, packed}}, origin}}, {acc, pool} ->
+          {summary, pool} = BeamCodec.unpack(strings, packed, pool)
+          {record_summary(acc, package, path, summary, origin), pool}
 
-        case Map.fetch(acc.modules, summary.module) do
-          {:ok, existing} ->
-            warning =
-              "module #{summary.module} is defined in both #{existing.beam_path} and #{path}; " <>
-                "using the first"
+        {package, path, {:ok, %ModuleSummary{} = summary, origin}}, {acc, pool} ->
+          {record_summary(acc, package, path, summary, origin), pool}
 
-            %{
-              acc
-              | stats: stats,
-                warnings: [warning | acc.warnings],
-                artifact_issues: [
-                  {package, warning},
-                  {existing.package, warning} | acc.artifact_issues
-                ]
-            }
+        {package, path, {:error, reason}}, {acc, pool} ->
+          warning = "could not read #{path}: #{inspect(reason)}"
 
-          :error ->
-            %{acc | stats: stats, modules: Map.put(acc.modules, summary.module, summary)}
-        end
+          acc = %{
+            acc
+            | stats: acc.stats |> bump(:beams) |> bump(:failed),
+              warnings: [warning | acc.warnings],
+              artifact_issues: [{package, warning} | acc.artifact_issues]
+          }
 
-      {package, path, {:error, reason}}, acc ->
-        warning = "could not read #{path}: #{inspect(reason)}"
+          {acc, pool}
+      end)
+
+    result
+    |> Map.update!(:warnings, &Enum.reverse/1)
+    |> Map.update!(:artifact_issues, &Enum.reverse/1)
+  end
+
+  defp record_summary(acc, package, path, summary, origin) do
+    summary = %{summary | package: package, beam_path: path}
+    stats = acc.stats |> bump(:beams) |> bump(origin)
+    stats = if summary.has_debug_info, do: stats, else: bump(stats, :without_debug_info)
+
+    case Map.fetch(acc.modules, summary.module) do
+      {:ok, existing} ->
+        warning =
+          "module #{summary.module} is defined in both #{existing.beam_path} and #{path}; " <>
+            "using the first"
 
         %{
           acc
-          | stats: acc.stats |> bump(:beams) |> bump(:failed),
+          | stats: stats,
             warnings: [warning | acc.warnings],
-            artifact_issues: [{package, warning} | acc.artifact_issues]
+            artifact_issues: [
+              {package, warning},
+              {existing.package, warning} | acc.artifact_issues
+            ]
         }
-    end)
-    |> Map.update!(:warnings, &Enum.reverse/1)
-    |> Map.update!(:artifact_issues, &Enum.reverse/1)
+
+      :error ->
+        %{acc | stats: stats, modules: Map.put(acc.modules, summary.module, summary)}
+    end
   end
 
   @doc """
@@ -228,12 +242,23 @@ defmodule VulnCheck.Beam.Loader do
   @spec load_file(String.t(), keyword()) ::
           {:ok, ModuleSummary.t(), :cached | :analyzed} | {:error, term()}
   def load_file(path, opts \\ []) do
+    case load_file_packed(path, opts) do
+      {:ok, {:packed, {strings, packed}}, origin} ->
+        {summary, _pool} = BeamCodec.unpack(strings, packed)
+        {:ok, %{summary | beam_path: path}, origin}
+
+      other ->
+        other
+    end
+  end
+
+  defp load_file_packed(path, opts) do
     max_bytes = Keyword.get(opts, :max_beam_bytes, @max_beam_bytes)
 
     with {:ok, %File.Stat{size: size}} <- File.stat(path),
          :ok <- if(size <= max_bytes, do: :ok, else: {:error, :beam_too_large}),
          {:ok, bytes} <- File.read(path) do
-      analyze_binary(bytes, Keyword.put(opts, :beam_path, path))
+      analyze_binary_packed(bytes, Keyword.put(opts, :beam_path, path))
     end
   end
 
@@ -243,14 +268,25 @@ defmodule VulnCheck.Beam.Loader do
   @spec analyze_binary(binary(), keyword()) ::
           {:ok, ModuleSummary.t(), :cached | :analyzed} | {:error, term()}
   def analyze_binary(bytes, opts \\ []) when is_binary(bytes) do
+    case analyze_binary_packed(bytes, opts) do
+      {:ok, {:packed, {strings, packed}}, origin} ->
+        {summary, _pool} = BeamCodec.unpack(strings, packed)
+        {:ok, %{summary | beam_path: Keyword.get(opts, :beam_path)}, origin}
+
+      other ->
+        other
+    end
+  end
+
+  defp analyze_binary_packed(bytes, opts) do
     sha = Cache.sha256(bytes)
     root = Keyword.get(opts, :root_dir)
     cache = Keyword.get(opts, :cache, false)
     key = Cache.sha256([sha, 0, to_string(root)])
 
-    case cache && Cache.get_beam(cache, key) do
-      {:ok, %ModuleSummary{} = summary} ->
-        {:ok, %{summary | beam_path: Keyword.get(opts, :beam_path)}, :cached}
+    case cache && Cache.get_beam_packed(cache, key) do
+      {:ok, pair} ->
+        {:ok, {:packed, pair}, :cached}
 
       _ ->
         with {:ok, summary} <- summarize(bytes, root) do

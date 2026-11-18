@@ -80,19 +80,19 @@ Reported values are the median, p95, minimum and maximum. Peak memory is
 
 | Stage | Median (ms) | p95 (ms) | Min (ms) | Max (ms) |
 | :--- | ---: | ---: | ---: | ---: |
-| Lockfile and configuration | 7.7 | 8.9 | 7.5 | 8.9 |
-| Advisory feeds (offline cache) | 2.7 | 3.0 | 2.6 | 3.0 |
-| Cold .beam extraction | 53.4 | 56.5 | 51.9 | 56.5 |
-| Warm .beam summaries (SHA-256 cache) | 57.2 | 62.0 | 51.7 | 62.0 |
-| Entrypoints, call graph and solver | 53.7 | 56.9 | 53.3 | 56.9 |
-| Reports (terminal, sarif, cyclonedx, openvex) | 36.2 | 36.9 | 35.9 | 36.9 |
-| Full scan, cold .beam cache | 121.5 | 128.9 | 119.5 | 128.9 |
-| Full scan, warm cache | 130.8 | 135.0 | 126.2 | 135.0 |
+| Lockfile and configuration | 8.0 | 9.1 | 7.8 | 9.1 |
+| Advisory feeds (offline cache) | 6.6 | 7.3 | 6.4 | 7.3 |
+| Cold .beam extraction | 59.1 | 61.3 | 57.4 | 61.3 |
+| Warm .beam summaries (SHA-256 cache) | 37.4 | 38.8 | 35.4 | 38.8 |
+| Entrypoints, call graph and solver | 88.0 | 90.8 | 87.2 | 90.8 |
+| Reports (terminal, sarif, cyclonedx, openvex) | 78.6 | 80.8 | 78.1 | 80.8 |
+| Full scan, cold .beam cache | 146.2 | 150.5 | 143.7 | 150.5 |
+| Full scan, warm cache | 117.6 | 119.4 | 115.7 | 119.4 |
 
 | Metric | Value |
 | :--- | ---: |
-| Peak BEAM memory, cold scan | 196.0 MiB |
-| Peak BEAM memory, warm scan | 284.5 MiB |
+| Peak BEAM memory, cold scan | 171.6 MiB |
+| Peak BEAM memory, warm scan | 203.0 MiB |
 | Atom delta over 10 measured runs of every stage | 0 |
 
 ### Profile `large`
@@ -102,19 +102,19 @@ Reported values are the median, p95, minimum and maximum. Peak memory is
 
 | Stage | Median (ms) | p95 (ms) | Min (ms) | Max (ms) |
 | :--- | ---: | ---: | ---: | ---: |
-| Lockfile and configuration | 18.1 | 21.4 | 16.4 | 21.4 |
-| Advisory feeds (offline cache) | 6.0 | 6.6 | 5.8 | 6.6 |
-| Cold .beam extraction | 145.8 | 155.2 | 139.1 | 155.2 |
-| Warm .beam summaries (SHA-256 cache) | 169.3 | 185.1 | 149.6 | 185.1 |
-| Entrypoints, call graph and solver | 267.9 | 276.6 | 265.1 | 276.6 |
-| Reports (terminal, sarif, cyclonedx, openvex) | 55.6 | 61.7 | 55.3 | 61.7 |
-| Full scan, cold .beam cache | 387.2 | 392.8 | 350.4 | 392.8 |
-| Full scan, warm cache | 421.3 | 448.6 | 412.9 | 448.6 |
+| Lockfile and configuration | 16.5 | 19.2 | 16.1 | 19.2 |
+| Advisory feeds (offline cache) | 15.2 | 16.0 | 14.9 | 16.0 |
+| Cold .beam extraction | 152.3 | 158.2 | 149.7 | 158.2 |
+| Warm .beam summaries (SHA-256 cache) | 95.5 | 100.0 | 90.3 | 100.0 |
+| Entrypoints, call graph and solver | 298.4 | 314.7 | 292.7 | 314.7 |
+| Reports (terminal, sarif, cyclonedx, openvex) | 120.5 | 158.2 | 119.4 | 158.2 |
+| Full scan, cold .beam cache | 497.4 | 600.0 | 472.6 | 600.0 |
+| Full scan, warm cache | 438.9 | 480.9 | 403.3 | 480.9 |
 
 | Metric | Value |
 | :--- | ---: |
-| Peak BEAM memory, cold scan | 513.4 MiB |
-| Peak BEAM memory, warm scan | 823.7 MiB |
+| Peak BEAM memory, cold scan | 334.7 MiB |
+| Peak BEAM memory, warm scan | 441.4 MiB |
 | Atom delta over 10 measured runs of every stage | 0 |
 
 ### Profile `libraries`
@@ -124,10 +124,10 @@ Reported values are the median, p95, minimum and maximum. Peak memory is
 
 | Stage | Median (ms) | p95 (ms) | Min (ms) | Max (ms) |
 | :--- | ---: | ---: | ---: | ---: |
-| Cold extraction, 1 worker | 902.8 | 907.6 | 901.2 | 907.6 |
-| Warm cache, 1 worker | 221.1 | 222.2 | 220.5 | 222.2 |
-| Cold extraction, 18 workers | 179.6 | 187.8 | 173.6 | 187.8 |
-| Warm cache, 18 workers | 136.5 | 154.9 | 130.1 | 154.9 |
+| Cold extraction, 1 worker | 922.3 | 942.9 | 910.9 | 942.9 |
+| Warm cache, 1 worker | 197.1 | 219.5 | 181.6 | 219.5 |
+| Cold extraction, 18 workers | 181.3 | 184.9 | 172.5 | 184.9 |
+| Warm cache, 18 workers | 83.5 | 89.6 | 79.4 | 89.6 |
 
 | Metric | Value |
 | :--- | ---: |
@@ -138,21 +138,18 @@ Reported values are the median, p95, minimum and maximum. Peak memory is
 
 ## 3. Reading the numbers
 
-* **Warm scans of a medium project take about 130 ms**, well under the
-  200 ms budget, and the large profile stays under half a second. CI time is
-  dominated by compiling the project, not by the scan.
-* **The summary cache pays off where analysis is expensive.** On the installed
-  libraries, whose modules are large and varied, the warm cache is about 4×
-  faster than cold extraction on one worker and still faster with one worker
-  per scheduler. On the synthetic profiles every function body is small and
-  call-dense, so analysis costs about as much as decoding a cached summary,
-  and cold and warm scans land within roughly 10% of each other.
-* **Warm scans hold more memory at peak.** A summary decoded from the cache does
-  not share sub-terms the way one built by the analyzer does (the same
-  function reference used by many call edges is one term in memory before
-  caching and many copies after decoding), so the large profile peaks around
-  800 MiB warm against about 500 MiB cold. Projects of ordinary size stay
-  within a few hundred MiB.
+* **Warm scans of a medium project take about 118 ms**, well under the
+  200 ms budget, and the large profile stays under half a second (439 ms). CI
+  time is dominated by compiling the project, not by the scan.
+* **The summary cache pays off across both small and large modules.** On the
+  installed libraries, the warm cache is about 4.7× faster than cold extraction
+  on one worker and over 2× faster with 18 workers. On the synthetic profiles,
+  warm `.beam` loading is roughly 1.6× faster than cold extraction.
+* **Compact v4 summary encoding keeps warm peak memory bounded.** Cached
+  summaries store a per-module string table and integer-indexed `MFA` references,
+  and the loader unpacks them through a scan-local string pool so repeated
+  module and function names share binaries across the scan. On the large profile,
+  warm peak memory dropped from 823.7 MiB to 441.4 MiB (a 46% reduction).
 * **Reports are cheap.** Rendering four formats costs a fraction of the
   analysis; writing SBOM and VEX files next to the primary report does not
   change scan times measurably.

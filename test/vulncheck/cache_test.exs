@@ -159,7 +159,10 @@ defmodule VulnCheck.CacheTest do
         1..16
         |> Task.async_stream(fn i ->
           assert {:ok, "/data/" <> _, :network} =
-                   Cache.fetch(server.url <> "/data/#{i}", "feed", config, [force: true] ++ @fast)
+                   Cache.fetch(server.url <> "/data/#{i}", "feed", config,
+                     force: true,
+                     http_opts: [retry_delay_ms: 1, retries: 2]
+                   )
 
           assert {:ok, body, meta} = Cache.read_feed_entry(config, "feed")
           assert meta["sha256"] == Cache.sha256(body)
@@ -199,8 +202,8 @@ defmodule VulnCheck.CacheTest do
       File.write!(path, :erlang.term_to_binary({:vulncheck_beam, 3, sha, bad_schema}))
       assert :miss = Cache.get_beam(config, sha)
 
-      bad_edges = %VulnCheck.Types.ModuleSummary{module: "Elixir.Demo", edges: [:not_an_edge]}
-      File.write!(path, :erlang.term_to_binary({:vulncheck_beam, 3, sha, bad_edges}))
+      old_v3 = %VulnCheck.Types.ModuleSummary{module: "Elixir.Demo"}
+      File.write!(path, :erlang.term_to_binary({:vulncheck_beam, 3, sha, old_v3}))
       assert :miss = Cache.get_beam(config, sha)
 
       assert :miss = Cache.get_beam(config, "../escape")

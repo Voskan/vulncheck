@@ -323,8 +323,8 @@ defmodule VulnCheck.Beam.ExtractorTest do
     assert second == first
 
     [current] = Path.wildcard(Path.join(VulnCheck.Cache.beam_dir(config), "*.etf"))
-    {:vulncheck_beam, 3, key, summary} = :erlang.binary_to_term(File.read!(current), [:safe])
-    File.write!(current, :erlang.term_to_binary({:vulncheck_beam, 2, key, summary}))
+    {:vulncheck_beam, 4, key, packed} = :erlang.binary_to_term(File.read!(current), [:safe])
+    File.write!(current, :erlang.term_to_binary({:vulncheck_beam, 3, key, packed}))
     assert {:ok, ^first, :analyzed} = Loader.load_file(path, cache: config, root_dir: ctx.root)
 
     # a different root yields a different cache entry (relative paths depend on it)
@@ -332,8 +332,10 @@ defmodule VulnCheck.Beam.ExtractorTest do
 
     [entry | _] = Path.wildcard(Path.join(VulnCheck.Cache.beam_dir(config), "*.etf"))
 
-    assert {:vulncheck_beam, 3, _, %ModuleSummary{}} =
+    assert {:vulncheck_beam, 4, _, {strings, payload}} =
              :erlang.binary_to_term(File.read!(entry), [:safe])
+
+    assert is_tuple(strings) and is_tuple(payload)
   end
 
   test "workspace loading merges consolidated protocols and reports bad files", ctx do

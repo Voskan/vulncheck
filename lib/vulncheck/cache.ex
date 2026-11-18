@@ -15,10 +15,10 @@ defmodule VulnCheck.Cache do
   """
 
   alias VulnCheck.Config
-  alias VulnCheck.Cache.Bundle
-  alias VulnCheck.Types.{CallEdge, DynamicCall, MFA, ModuleSummary}
+  alias VulnCheck.Cache.{BeamCodec, Bundle}
+  alias VulnCheck.Types.ModuleSummary
 
-  @beam_cache_version 3
+  @beam_cache_version 4
   @max_beam_cache_bytes 16 * 1024 * 1024
   @max_beam_unpacked_bytes 32 * 1024 * 1024
 
@@ -385,15 +385,23 @@ defmodule VulnCheck.Cache do
   """
   @spec get_beam(Config.t() | keyword(), String.t()) :: {:ok, term()} | :miss
   def get_beam(config, sha) do
+    with {:ok, {strings, packed}} <- get_beam_packed(config, sha) do
+      {summary, _pool} = BeamCodec.unpack(strings, packed)
+      {:ok, summary}
+    end
+  end
+
+  @doc false
+  @spec get_beam_packed(Config.t() | keyword(), String.t()) :: {:ok, {tuple(), tuple()}} | :miss
+  def get_beam_packed(config, sha) do
     if safe_name?(sha) do
       path = Path.join(beam_root(config), sha <> ".etf")
 
       with {:ok, data} <- read_limited(path, @max_beam_cache_bytes),
-           {:vulncheck_beam, @beam_cache_version, ^sha, %ModuleSummary{} = summary} <-
-             safe_decode(data),
-           true <- :erlang.external_size(summary) <= @max_beam_unpacked_bytes,
-           true <- valid_module_summary?(summary) do
-        {:ok, summary}
+           {:vulncheck_beam, @beam_cache_version, ^sha, {strings, packed}} <- safe_decode(data),
+           true <- :erlang.external_size({strings, packed}) <= @max_beam_unpacked_bytes,
+           true <- BeamCodec.valid?(strings, packed) do
+        {:ok, {strings, packed}}
       else
         _ -> :miss
       end
@@ -404,11 +412,12 @@ defmodule VulnCheck.Cache do
 
   @doc "Stores a module summary under its `.beam` SHA-256."
   @spec put_beam(Config.t() | keyword(), String.t(), term()) :: :ok | {:error, term()}
-  def put_beam(config, sha, summary) do
+  def put_beam(config, sha, %ModuleSummary{} = summary) do
     path = Path.join(beam_root(config), sha <> ".etf")
+    packed = BeamCodec.pack(summary)
 
     data =
-      :erlang.term_to_binary({:vulncheck_beam, @beam_cache_version, sha, summary}, [:compressed])
+      :erlang.term_to_binary({:vulncheck_beam, @beam_cache_version, sha, packed}, [:compressed])
 
     atomic_write(path, data)
   end
@@ -421,136 +430,6 @@ defmodule VulnCheck.Cache do
   rescue
     ArgumentError -> :invalid
   end
-
-  defp valid_module_summary?(%ModuleSummary{} = s) do
-    is_binary(s.module) and s.module != "" and
-      (is_nil(s.beam_path) or is_binary(s.beam_path)) and
-      (is_nil(s.source_file) or is_binary(s.source_file)) and
-      (is_nil(s.sha256) or is_binary(s.sha256)) and
-      (is_nil(s.package) or is_binary(s.package)) and
-      is_boolean(s.has_debug_info) and
-      valid_fa_list?(s.functions) and
-      valid_function_lines?(s.function_lines) and
-      valid_fa_list?(s.exports) and
-      valid_binary_list?(s.behaviours) and
-      is_map(s.attributes) and Enum.all?(s.attributes, fn {k, _v} -> is_binary(k) end) and
-      valid_edges?(s.edges) and
-      valid_dynamic_dispatches?(s.dynamic_dispatches) and
-      valid_module_refs?(s.module_refs) and
-      valid_edges?(s.mfa_refs) and
-      valid_init_literals?(s.init_literals) and
-      valid_imports?(s.imports)
-  end
-
-  defp valid_fa_list?(list) when is_list(list),
-    do: Enum.all?(list, fn {f, a} -> is_binary(f) and is_integer(a) and a >= 0 end)
-
-  defp valid_fa_list?(_), do: false
-
-  defp valid_function_lines?(map) when is_map(map) do
-    Enum.all?(map, fn
-      {{f, a}, line} -> is_binary(f) and is_integer(a) and a >= 0 and is_integer(line) and line > 0
-      _ -> false
-    end)
-  end
-
-  defp valid_function_lines?(_), do: false
-
-  defp valid_binary_list?(list) when is_list(list), do: Enum.all?(list, &is_binary/1)
-  defp valid_binary_list?(_), do: false
-
-  defp valid_mfa?(%MFA{module: m, function: f, arity: a}),
-    do: is_binary(m) and m != "" and is_binary(f) and is_integer(a) and a >= 0
-
-  defp valid_mfa?(_), do: false
-
-  defp valid_edges?(list) when is_list(list) do
-    Enum.all?(list, fn
-      %CallEdge{from: from, to: to, file: file, line: line, kind: kind} ->
-        valid_mfa?(from) and valid_mfa?(to) and
-          (is_nil(file) or is_binary(file)) and
-          (is_nil(line) or (is_integer(line) and line >= 0)) and
-          kind in [
-            :static_call,
-            :macro_expanded,
-            :behaviour_callback,
-            :supervisor_child,
-            :dynamic_apply,
-            :dynamic_candidate,
-            :imports
-          ]
-
-      _ ->
-        false
-    end)
-  end
-
-  defp valid_edges?(_), do: false
-
-  defp valid_dynamic_dispatches?(list) when is_list(list) do
-    Enum.all?(list, fn
-      %DynamicCall{
-        caller: caller,
-        known_module: km,
-        known_function: kf,
-        arity: a,
-        min_arity: min_a,
-        file: file,
-        line: line,
-        kind: kind
-      } ->
-        valid_mfa?(caller) and
-          (is_nil(km) or is_binary(km)) and
-          (is_nil(kf) or is_binary(kf)) and
-          (is_nil(a) or (is_integer(a) and a >= 0)) and
-          is_integer(min_a) and min_a >= 0 and
-          (is_nil(file) or is_binary(file)) and
-          (is_nil(line) or (is_integer(line) and line >= 0)) and
-          kind in [:module_function, :function_value]
-
-      _ ->
-        false
-    end)
-  end
-
-  defp valid_dynamic_dispatches?(_), do: false
-
-  defp valid_module_refs?(list) when is_list(list) do
-    Enum.all?(list, fn
-      {caller, mod, file, line} ->
-        valid_mfa?(caller) and is_binary(mod) and
-          (is_nil(file) or is_binary(file)) and
-          (is_nil(line) or (is_integer(line) and line >= 0))
-
-      _ ->
-        false
-    end)
-  end
-
-  defp valid_module_refs?(_), do: false
-
-  defp valid_init_literals?(list) when is_list(list) do
-    Enum.all?(list, fn
-      {caller, target, args, file, line} ->
-        valid_mfa?(caller) and valid_mfa?(target) and is_list(args) and
-          (is_nil(file) or is_binary(file)) and
-          (is_nil(line) or (is_integer(line) and line >= 0))
-
-      _ ->
-        false
-    end)
-  end
-
-  defp valid_init_literals?(_), do: false
-
-  defp valid_imports?(list) when is_list(list) do
-    Enum.all?(list, fn
-      {m, f, a} -> is_binary(m) and is_binary(f) and is_integer(a) and a >= 0
-      _ -> false
-    end)
-  end
-
-  defp valid_imports?(_), do: false
 
   # -- air-gapped bundles ------------------------------------------------------
 
