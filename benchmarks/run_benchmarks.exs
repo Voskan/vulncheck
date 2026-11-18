@@ -124,8 +124,9 @@ defmodule VulnCheck.Bench do
       end
 
     atoms_after = :erlang.system_info(:atom_count)
-    {peak_cold, _} = peak_memory(fn -> Scanner.run(config, beam_cache: false) end)
-    {peak_warm, _} = peak_memory(fn -> Scanner.run(config) end)
+    memory_runs = Keyword.get(opts, :memory_runs, 5)
+    peak_cold = peak_memory(fn -> Scanner.run(config, beam_cache: false) end, memory_runs)
+    peak_warm = peak_memory(fn -> Scanner.run(config) end, memory_runs)
 
     unless Keyword.get(opts, :keep, false), do: File.rm_rf!(root)
 
@@ -547,16 +548,25 @@ defmodule VulnCheck.Bench do
     |> Task.await(:infinity)
   end
 
-  defp peak_memory(fun) do
-    :erlang.garbage_collect()
-    parent = self()
-    sampler = spawn(fn -> sample(parent, :erlang.memory(:total)) end)
-    result = fun.()
-    send(sampler, :stop)
+  defp peak_memory(fun, runs) do
+    samples =
+      for _ <- 1..runs do
+        fn ->
+          :erlang.garbage_collect()
+          parent = self()
+          sampler = spawn(fn -> sample(parent, :erlang.memory(:total)) end)
+          _ = fun.()
+          send(sampler, :stop)
 
-    receive do
-      {:peak, peak} -> {peak, result}
-    end
+          receive do
+            {:peak, peak} -> peak
+          end
+        end
+        |> Task.async()
+        |> Task.await(:infinity)
+      end
+
+    stats(samples)
   end
 
   defp sample(parent, peak) do
@@ -637,7 +647,7 @@ defmodule VulnCheck.Bench do
         "#{s.edges} call edges, #{s.advisories} advisories (#{s.reachable} reachable, #{s.unreachable} unreachable)"
 
     footer = [
-      "Peak BEAM memory: cold scan #{mib(result.peak_cold)} MiB, warm scan #{mib(result.peak_warm)} MiB",
+      "Peak BEAM memory: cold scan #{mib(result.peak_cold.median)} MiB (#{mib(result.peak_cold.min)}–#{mib(result.peak_cold.max)}), warm scan #{mib(result.peak_warm.median)} MiB (#{mib(result.peak_warm.min)}–#{mib(result.peak_warm.max)})",
       atom_line(result)
     ]
 
@@ -701,8 +711,8 @@ defmodule VulnCheck.Bench do
 
           | Metric | Value |
           | :--- | ---: |
-          | Peak BEAM memory, cold scan | #{mib(result.peak_cold)} MiB |
-          | Peak BEAM memory, warm scan | #{mib(result.peak_warm)} MiB |
+          | Peak BEAM memory, cold scan (median / min–max) | #{mib(result.peak_cold.median)} MiB (#{mib(result.peak_cold.min)}–#{mib(result.peak_cold.max)}) |
+          | Peak BEAM memory, warm scan (median / min–max) | #{mib(result.peak_warm.median)} MiB (#{mib(result.peak_warm.min)}–#{mib(result.peak_warm.max)}) |
           | Atom delta over #{iterations} measured runs of every stage | #{result.atom_delta} |
           """
       end)
