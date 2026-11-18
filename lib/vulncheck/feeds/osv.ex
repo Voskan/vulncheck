@@ -12,6 +12,7 @@ defmodule VulnCheck.Feeds.OSV do
   alias VulnCheck.{Cache, Config, Semver}
   alias VulnCheck.Feeds.{Archive, CVSS, Merge, TextHints}
   alias VulnCheck.Types.{Advisory, MFA, VersionRange}
+  alias VulnCheck.Workspace.GitUrl
 
   @default_url "https://osv-vulnerabilities.storage.googleapis.com/Hex/all.zip"
   @cache_file "osv_hex_all.zip"
@@ -108,10 +109,19 @@ defmodule VulnCheck.Feeds.OSV do
   defp known_affected?(_affected), do: false
 
   @doc """
-  Groups advisories by package name.
+  Groups advisories by package name and normalized git repository slug.
   """
   @spec index([Advisory.t()]) :: %{String.t() => [Advisory.t()]}
-  def index(advisories), do: Enum.group_by(advisories, & &1.package)
+  def index(advisories) do
+    Enum.reduce(advisories, %{}, fn advisory, acc ->
+      keys = Enum.uniq([advisory.package | advisory.git_repos])
+
+      Enum.reduce(keys, acc, fn key, inner ->
+        Map.update(inner, key, [advisory], &[advisory | &1])
+      end)
+    end)
+    |> Map.new(fn {k, list} -> {k, Enum.reverse(list)} end)
+  end
 
   @doc """
   Converts one decoded OSV record into advisories (one per affected Hex package).
@@ -128,15 +138,15 @@ defmodule VulnCheck.Feeds.OSV do
 
     record
     |> list("affected")
-    |> Enum.filter(&hex_package?/1)
-    |> Enum.group_by(fn affected ->
-      affected |> map() |> Map.get("package") |> map() |> Map.get("name")
-    end)
+    |> Enum.filter(&(hex_package?(&1) or git_affected?(&1)))
+    |> Enum.group_by(&affected_package_key/1)
+    |> Enum.reject(fn {package, _entries} -> is_nil(package) end)
     |> Enum.map(fn {package, entries} ->
       blocks = Enum.map(entries, &affected_block/1)
       ranges = Enum.flat_map(blocks, & &1.ranges)
       versions = Enum.flat_map(blocks, & &1.versions)
       ranges = include_unbounded_blocks(blocks, ranges, versions)
+      git_repos = blocks |> Enum.flat_map(& &1.git_repos) |> Enum.uniq()
 
       scoped_ratings =
         for {entry, block} <- Enum.zip(entries, blocks),
@@ -176,6 +186,7 @@ defmodule VulnCheck.Feeds.OSV do
         affected_modules: modules,
         affected_routines: routines,
         affected_blocks: blocks,
+        git_repos: git_repos,
         symbol_source: if(routines != [], do: :osv),
         otp_constraints:
           string_or_nil(database["otp_constraints"]) ||
@@ -212,12 +223,15 @@ defmodule VulnCheck.Feeds.OSV do
 
   defp affected_block(entry) do
     {modules, routines} = ecosystem_symbols([entry])
+    git_ranges = Semver.from_osv_git_ranges(entry["ranges"])
+    git_repos = git_ranges |> Enum.map(& &1.repo) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
     %{
-      ranges: Semver.from_osv_ranges(entry["ranges"]),
+      ranges: Semver.from_osv_ranges(entry["ranges"]) ++ git_ranges,
       versions: entry |> list("versions") |> Enum.filter(&is_binary/1),
       modules: modules,
-      routines: routines
+      routines: routines,
+      git_repos: git_repos
     }
   end
 
@@ -234,6 +248,27 @@ defmodule VulnCheck.Feeds.OSV do
        do: ecosystem in ["Hex", "hex"]
 
   defp hex_package?(_), do: false
+
+  defp git_affected?(%{"ranges" => ranges}) when is_list(ranges) do
+    Enum.any?(ranges, &match?(%{"type" => "GIT", "repo" => repo} when is_binary(repo), &1))
+  end
+
+  defp git_affected?(_), do: false
+
+  defp affected_package_key(affected) do
+    case affected |> map() |> Map.get("package") |> map() |> Map.get("name") do
+      name when is_binary(name) and name != "" ->
+        name
+
+      _ ->
+        affected
+        |> list("ranges")
+        |> Enum.find_value(fn
+          %{"type" => "GIT", "repo" => repo} when is_binary(repo) -> GitUrl.repo_slug(repo)
+          _ -> nil
+        end)
+    end
+  end
 
   defp ecosystem_symbols(entries) do
     specifics =

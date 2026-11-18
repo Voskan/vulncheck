@@ -11,13 +11,15 @@ defmodule VulnCheck.Types.VersionRange do
   When all upper bounds are `nil`, the interval is open-ended.
   """
 
-  defstruct introduced: nil, fixed: nil, last_affected: nil, limit: nil
+  defstruct introduced: nil, fixed: nil, last_affected: nil, limit: nil, type: :semver, repo: nil
 
   @type t :: %__MODULE__{
           introduced: String.t() | nil,
           fixed: String.t() | nil,
           last_affected: String.t() | nil,
-          limit: String.t() | nil
+          limit: String.t() | nil,
+          type: :semver | :git,
+          repo: String.t() | nil
         }
 end
 
@@ -83,7 +85,9 @@ defmodule VulnCheck.Types.Advisory do
     otp_constraints_conflict: false,
     retirement: nil,
     symbol_source: nil,
-    enriched: false
+    enriched: false,
+    git_repos: [],
+    git_match_status: nil
   ]
 
   @type t :: %__MODULE__{
@@ -130,7 +134,9 @@ defmodule VulnCheck.Types.Advisory do
           otp_constraints_conflict: boolean(),
           retirement: Retirement.t() | nil,
           symbol_source: :cve | :osv | :osv_and_cve | :text | nil,
-          enriched: boolean()
+          enriched: boolean(),
+          git_repos: [String.t()],
+          git_match_status: :confirmed | :uncertain | nil
         }
 
   @severities [:critical, :high, :medium, :low, :none, :unknown]

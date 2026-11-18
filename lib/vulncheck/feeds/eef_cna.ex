@@ -13,6 +13,7 @@ defmodule VulnCheck.Feeds.EefCna do
   alias VulnCheck.{Cache, Config, Semver}
   alias VulnCheck.Feeds.{CVSS, TextHints}
   alias VulnCheck.Types.{Advisory, MFA}
+  alias VulnCheck.Workspace.GitUrl
 
   @cna_base "https://cna.erlef.org/cves"
   @mitre_base "https://cveawg.mitre.org/api/cve"
@@ -134,7 +135,8 @@ defmodule VulnCheck.Feeds.EefCna do
   def apply_record(%Advisory{} = advisory, record) do
     cna = get_in_map(record, ["containers", "cna"])
     package = advisory.source_package || advisory.package
-    products = cna |> list("affected") |> Enum.filter(&matches_package?(&1, package))
+    targets = Enum.uniq([package | advisory.git_repos])
+    products = cna |> list("affected") |> Enum.filter(&matches_targets?(&1, targets))
     entries = Enum.filter(products, &applies_to_version?(&1, advisory.checked_version))
 
     case entries do
@@ -193,6 +195,14 @@ defmodule VulnCheck.Feeds.EefCna do
     rating = CVSS.strongest([CVSS.current(advisory), cna_rating])
     label = Advisory.max_severity(advisory.severity, cna_label)
 
+    extra_repos =
+      products
+      |> Enum.flat_map(fn entry ->
+        [entry["repo"], entry["packageName"], entry["collectionURL"]]
+        |> Enum.map(&GitUrl.repo_slug/1)
+        |> Enum.reject(&is_nil/1)
+      end)
+
     %{
       advisory
       | affected_routines: all_routines,
@@ -202,6 +212,7 @@ defmodule VulnCheck.Feeds.EefCna do
         cwes: Enum.uniq(advisory.cwes ++ cwes),
         version_ranges: ranges,
         fixed_versions: Enum.uniq(advisory.fixed_versions ++ Semver.fixed_versions(ranges)),
+        git_repos: Enum.uniq(advisory.git_repos ++ extra_repos),
         otp_constraints: otp_constraints(advisory, descriptions),
         enriched: true
     }
@@ -211,7 +222,13 @@ defmodule VulnCheck.Feeds.EefCna do
   defp applies_to_version?(_entry, nil), do: true
 
   defp applies_to_version?(entry, version) do
-    Enum.any?(Semver.from_cve_affected(entry), &Semver.in_range?(version, &1)) or
+    has_git_versions? =
+      entry
+      |> list("versions")
+      |> Enum.any?(&(&1["versionType"] == "git"))
+
+    has_git_versions? or
+      Enum.any?(Semver.from_cve_affected(entry), &Semver.in_range?(version, &1)) or
       not Semver.valid?(version)
   end
 
@@ -239,25 +256,32 @@ defmodule VulnCheck.Feeds.EefCna do
   defp otp_constraints(advisory, descriptions),
     do: advisory.otp_constraints || TextHints.otp_constraint(descriptions)
 
-  defp matches_package?(entry, package) when is_map(entry) do
-    package = String.downcase(package)
+  defp matches_targets?(entry, targets) when is_map(entry) do
+    normalized = Enum.map(targets, &String.downcase/1)
 
     case entry["packageURL"] do
       "pkg:hex/" <> path ->
         [name | _] = String.split(path, ~r/[@?#]/, parts: 2)
-        name |> URI.decode() |> String.downcase() == package
+        (name |> URI.decode() |> String.downcase()) in normalized
+
+      "pkg:github/" <> path ->
+        [owner_repo | _] = String.split(path, ~r/[@?#]/, parts: 2)
+        (owner_repo |> URI.decode() |> String.downcase()) in normalized
 
       "pkg:" <> _other ->
         false
 
       _ ->
-        Enum.any?([entry["packageName"], entry["product"]], fn name ->
-          is_binary(name) and String.downcase(name) == package
-        end)
+        candidates =
+          [entry["packageName"], entry["product"], GitUrl.repo_slug(entry["repo"])]
+          |> Enum.filter(&is_binary/1)
+          |> Enum.map(&String.downcase/1)
+
+        Enum.any?(candidates, &(&1 in normalized))
     end
   end
 
-  defp matches_package?(_entry, _package), do: false
+  defp matches_targets?(_entry, _targets), do: false
 
   defp metrics(cna, source) do
     entries =

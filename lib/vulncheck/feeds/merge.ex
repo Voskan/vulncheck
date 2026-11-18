@@ -112,6 +112,7 @@ defmodule VulnCheck.Feeds.Merge do
         affected_modules: union_of(ordered, & &1.affected_modules),
         affected_routines: union_of(ordered, & &1.affected_routines),
         affected_blocks: union_of(ordered, & &1.affected_blocks),
+        git_repos: union_of(ordered, & &1.git_repos),
         symbol_source: Enum.find_value(ordered, &(&1.affected_routines != [] && &1.symbol_source)),
         otp_constraints: otp_constraints,
         otp_constraints_conflict: otp_conflict?,

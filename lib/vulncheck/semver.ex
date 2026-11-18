@@ -12,7 +12,8 @@ defmodule VulnCheck.Semver do
   runtime constraints such as `"<= 25"` or `">= 24 and <= 25"`.
   """
 
-  alias VulnCheck.Types.{Advisory, VersionRange}
+  alias VulnCheck.Types.{Advisory, Package, VersionRange}
+  alias VulnCheck.Workspace.GitUrl
 
   @type parsed :: {[non_neg_integer()], [String.t() | non_neg_integer()]}
 
@@ -81,7 +82,7 @@ defmodule VulnCheck.Semver do
   Returns `true` when `version` lies inside the range.
   """
   @spec in_range?(String.t(), VersionRange.t()) :: boolean()
-  def in_range?(version, %VersionRange{} = range) do
+  def in_range?(version, %VersionRange{type: :semver} = range) do
     lower_ok =
       range.introduced == "0" or not valid?(range.introduced) or
         compare(version, range.introduced) != :lt
@@ -95,6 +96,8 @@ defmodule VulnCheck.Semver do
 
     lower_ok and upper_ok and (not valid?(range.limit) or compare(version, range.limit) == :lt)
   end
+
+  def in_range?(_version, %VersionRange{type: :git}), do: false
 
   @doc """
   Returns `true` when the installed version is affected by the advisory.
@@ -148,9 +151,55 @@ defmodule VulnCheck.Semver do
 
   def from_osv_ranges(_), do: []
 
+  @spec from_osv_git_ranges([map()] | nil) :: [VersionRange.t()]
+  def from_osv_git_ranges(ranges) when is_list(ranges) do
+    Enum.flat_map(ranges, fn
+      %{"type" => "GIT", "events" => events} = range when is_list(events) ->
+        repo = GitUrl.repo_slug(range["repo"])
+
+        events
+        |> events_to_ranges()
+        |> Enum.map(&%{&1 | type: :git, repo: repo})
+
+      _ ->
+        []
+    end)
+  end
+
+  def from_osv_git_ranges(_), do: []
+
+  @doc """
+  Evaluates whether a git dependency is confirmed or uncertainly affected by an
+  advisory. Without git commit history, a git dependency is never marked
+  unaffected solely by commit or version comparison.
+  """
+  @spec git_affected?(Package.t(), Advisory.t()) :: :confirmed | :uncertain
+  def git_affected?(%Package{source: :git} = package, %Advisory{} = advisory) do
+    pkg_repo = GitUrl.repo_slug(package.git_url)
+    git_ranges = Enum.filter(advisory.version_ranges, &(&1.type == :git))
+    semver_ranges = Enum.filter(advisory.version_ranges, &(&1.type == :semver))
+
+    identity_ok? =
+      is_binary(pkg_repo) and (advisory.git_repos == [] or pkg_repo in advisory.git_repos)
+
+    commit_hit? =
+      is_binary(package.git_ref) and
+        Enum.any?(git_ranges, fn r ->
+          (is_binary(r.introduced) and String.starts_with?(package.git_ref, r.introduced)) or
+            (is_binary(r.last_affected) and String.starts_with?(package.git_ref, r.last_affected))
+        end)
+
+    semver_hit? =
+      identity_ok? and valid?(package.version) and
+        (semver_ranges != [] or advisory.affected_versions != []) and
+        affected?(package.version, semver_ranges, advisory.affected_versions)
+
+    if commit_hit? or semver_hit?, do: :confirmed, else: :uncertain
+  end
+
   @doc """
   Converts numbered CVE 5.1 `versions` entries into ranges. Affected and
-  unknown segments are retained. Commit ranges require a different matcher.
+  unknown segments are retained.
   """
   @spec from_cve_versions([map()] | nil) :: [VersionRange.t()]
   def from_cve_versions(versions) when is_list(versions) do
@@ -303,6 +352,10 @@ defmodule VulnCheck.Semver do
   defp normalize_bound(nil), do: nil
   defp normalize_bound(value) when is_binary(value), do: String.trim(value)
   defp normalize_bound(_), do: nil
+
+  defp cve_entry_ranges(%{"versionType" => "git", "status" => status} = entry)
+       when status in ["affected", "unknown"],
+       do: [%{cve_interval(entry) | type: :git}]
 
   defp cve_entry_ranges(%{"versionType" => "git"}), do: []
 

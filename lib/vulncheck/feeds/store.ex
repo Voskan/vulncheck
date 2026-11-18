@@ -17,6 +17,7 @@ defmodule VulnCheck.Feeds.Store do
   alias VulnCheck.{Cache, Config, Semver}
   alias VulnCheck.Feeds.{CVSS, EefCna, HexRetired, OSV, TextHints}
   alias VulnCheck.Types.{Advisory, Package, Workspace}
+  alias VulnCheck.Workspace.GitUrl
 
   @type result :: %{
           advisories: [Advisory.t()],
@@ -64,7 +65,9 @@ defmodule VulnCheck.Feeds.Store do
          advisories: advisories ++ retired,
          warnings:
            stale_warning(feed_status, meta) ++
-             enrich_warnings ++ retired_warnings ++ HexRetired.hygiene(workspace),
+             enrich_warnings ++
+             git_warnings(advisories, workspace) ++
+             retired_warnings ++ HexRetired.hygiene(workspace),
          stats: %{
            feed_status: feed_status,
            feed: feed_info(feed_status, meta, config),
@@ -72,7 +75,8 @@ defmodule VulnCheck.Feeds.Store do
            matched_advisories: length(matched),
            enriched_advisories: Enum.count(advisories, & &1.enriched),
            advisories_with_routines: Enum.count(advisories, &(&1.affected_routines != [])),
-           retired_releases: length(retired)
+           retired_releases: length(retired),
+           sources: source_counts(workspace)
          }
        }}
     end
@@ -116,26 +120,61 @@ defmodule VulnCheck.Feeds.Store do
     |> Map.values()
     |> Enum.filter(&matchable?/1)
     |> Enum.sort_by(& &1.name)
-    |> Enum.flat_map(fn %Package{} = package ->
-      index
-      |> Map.get(package.hex_name || package.name, [])
-      |> Enum.filter(&Semver.affected?(package.version, &1))
-      |> Enum.map(fn advisory ->
-        scoped = advisory |> OSV.scope_symbols(package.version) |> CVSS.for_version(package.version)
+    |> Enum.flat_map(fn
+      %Package{source: :hex} = package ->
+        index
+        |> Map.get(package.hex_name || package.name, [])
+        |> Enum.filter(&Semver.affected?(package.version, &1))
+        |> Enum.map(&bind_package(&1, package, nil))
 
-        %{
-          scoped
-          | package: package.name,
-            source_package: advisory.source_package || advisory.package,
-            checked_version: package.version
-        }
-      end)
+      %Package{source: :git} = package ->
+        keys =
+          [package.hex_name || package.name, GitUrl.repo_slug(package.git_url)]
+          |> Enum.reject(&is_nil/1)
+          |> Enum.uniq()
+
+        keys
+        |> Enum.flat_map(&Map.get(index, &1, []))
+        |> Enum.uniq_by(& &1.id)
+        |> Enum.map(fn advisory ->
+          bind_package(advisory, package, Semver.git_affected?(package, advisory))
+        end)
     end)
   end
 
-  defp matchable?(%Package{source: :hex}), do: true
-  defp matchable?(%Package{source: :git, version: version}), do: Semver.valid?(version)
+  defp bind_package(advisory, package, git_status) do
+    scoped = advisory |> OSV.scope_symbols(package.version) |> CVSS.for_version(package.version)
+
+    %{
+      scoped
+      | package: package.name,
+        source_package: advisory.source_package || advisory.package,
+        checked_version: package.version,
+        git_match_status: git_status
+    }
+  end
+
+  defp matchable?(%Package{source: source}) when source in [:hex, :git], do: true
   defp matchable?(_package), do: false
+
+  defp git_warnings(advisories, workspace) do
+    advisories
+    |> Enum.filter(&(&1.git_match_status == :uncertain))
+    |> Enum.map(fn adv ->
+      pkg = Map.get(workspace.packages, adv.package)
+      ref = if pkg, do: pkg.git_url || pkg.git_ref || pkg.version, else: adv.checked_version
+
+      "git dependency #{adv.package} (#{ref}) could not be verified against #{adv.id} " <>
+        "without commit history or matching upstream repository; keeping advisory open"
+    end)
+    |> Enum.uniq()
+  end
+
+  defp source_counts(%Workspace{packages: packages}) do
+    packages
+    |> Map.values()
+    |> Enum.frequencies_by(& &1.source)
+  end
 
   defp select_feeds(%Config{bundle: nil} = config), do: {:ok, Cache.pin_feeds(config)}
 

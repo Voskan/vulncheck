@@ -528,4 +528,130 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
     assert CVSS.base_score("CVSS:3.1/" <> base <> "/RL:invalid") == nil
     assert CVSS.base_score("CVSS:3.1/" <> base <> "/RL:X") == 9.8
   end
+
+  describe "git dependency matching" do
+    alias VulnCheck.Workspace.GitUrl
+
+    test "normalizes git URLs without creating atoms" do
+      before = :erlang.system_info(:atom_count)
+
+      assert GitUrl.repo_slug("https://github.com/benoitc/hackney.git") == "benoitc/hackney"
+      assert GitUrl.repo_slug("git@github.com:BenoitC/Hackney.git") == "benoitc/hackney"
+      assert GitUrl.repo_slug("ssh://git@github.com/benoitc/hackney") == "benoitc/hackney"
+      assert GitUrl.repo_slug("benoitc/hackney") == "benoitc/hackney"
+      assert GitUrl.repo_slug("file:///tmp/obscure_local_repo_xyz") == nil
+      assert GitUrl.repo_slug("") == nil
+
+      assert :erlang.system_info(:atom_count) == before
+    end
+
+    test "matches git dependencies by tag, git-only OSV record, pinned SHA and fork without dropping uncertainty" do
+      git_only_osv = %{
+        "id" => "EEF-CVE-2026-99001",
+        "aliases" => ["CVE-2026-99001"],
+        "summary" => "Git-only advisory for hackney",
+        "affected" => [
+          %{
+            "ranges" => [
+              %{
+                "type" => "GIT",
+                "repo" => "https://github.com/benoitc/hackney.git",
+                "events" => [
+                  %{"introduced" => "0"},
+                  %{"fixed" => "deadbeef1234"}
+                ]
+              }
+            ]
+          }
+        ]
+      }
+
+      hex_osv = %{
+        "id" => "EEF-CVE-2026-99002",
+        "aliases" => ["CVE-2026-99002"],
+        "summary" => "SemVer advisory for hackney",
+        "affected" => [
+          %{
+            "package" => %{"ecosystem" => "Hex", "name" => "hackney"},
+            "ranges" => [
+              %{
+                "type" => "SEMVER",
+                "events" => [%{"introduced" => "1.18.0"}, %{"fixed" => "1.18.2"}]
+              }
+            ]
+          }
+        ]
+      }
+
+      zip = Feeds.zip([git_only_osv, hex_osv])
+      config = config()
+
+      :ok =
+        VulnCheck.Cache.atomic_write(
+          Path.join(VulnCheck.Cache.feeds_dir(config), "osv_hex_all.zip"),
+          zip
+        )
+
+      # 1) Upstream benoitc/hackney at tag 1.18.1
+      ws_tag = %Workspace{
+        root_dir: "/tmp/git-tag",
+        project_name: "demo",
+        project_type: :mix,
+        env: :prod,
+        otp_release: "27",
+        packages: %{
+          "hackney" => %Package{
+            name: "hackney",
+            version: "1.18.1",
+            source: :git,
+            scope: :prod,
+            git_url: "https://github.com/benoitc/hackney.git",
+            git_ref: "abc123"
+          }
+        }
+      }
+
+      assert {:ok, res_tag} =
+               Store.load(ws_tag, %{config | offline: true}, enrich: false, retired: false)
+
+      assert res_tag.stats.sources == %{git: 1}
+      by_id = Map.new(res_tag.advisories, &{&1.id, &1})
+      assert by_id["EEF-CVE-2026-99002"].git_match_status == :confirmed
+      assert by_id["EEF-CVE-2026-99001"].git_match_status == :uncertain
+      assert Enum.any?(res_tag.warnings, &(&1 =~ "EEF-CVE-2026-99001"))
+
+      # 2) Pinned SHA without tag
+      ws_sha = put_in(ws_tag.packages["hackney"].version, "abcdef123456")
+
+      assert {:ok, res_sha} =
+               Store.load(ws_sha, %{config | offline: true}, enrich: false, retired: false)
+
+      assert Enum.all?(res_sha.advisories, &(&1.git_match_status == :uncertain))
+
+      # 3) Fork with an apparently fixed tag still stays uncertain
+      ws_fork =
+        ws_tag
+        |> put_in(
+          [Access.key(:packages), "hackney", Access.key(:git_url)],
+          "https://github.com/fork/hackney.git"
+        )
+        |> put_in([Access.key(:packages), "hackney", Access.key(:version)], "1.18.5")
+
+      assert {:ok, res_fork} =
+               Store.load(ws_fork, %{config | offline: true}, enrich: false, retired: false)
+
+      assert Enum.any?(
+               res_fork.advisories,
+               &(&1.id == "EEF-CVE-2026-99002" and &1.git_match_status == :uncertain)
+             )
+
+      # 4) Obscure URL preserves hygiene warning without crashing
+      ws_obscure = put_in(ws_tag.packages["hackney"].git_url, "file:///tmp/custom_obscure_url")
+
+      assert {:ok, res_obs} =
+               Store.load(ws_obscure, %{config | offline: true}, enrich: false, retired: false)
+
+      assert Enum.any?(res_obs.warnings, &(&1 =~ "git dependency"))
+    end
+  end
 end
