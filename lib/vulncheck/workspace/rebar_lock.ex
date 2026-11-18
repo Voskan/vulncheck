@@ -64,7 +64,9 @@ defmodule VulnCheck.Workspace.RebarLock do
     end
   end
 
-  defp entry({:tuple, [name, source, _level]}) when is_binary(name) do
+  defp entry({:tuple, [name, source, level]}) when is_binary(name) do
+    lock_level = if is_integer(level) and level >= 0, do: level, else: nil
+
     case source do
       {:tuple, [{:atom, "pkg"}, hex_name, version | _]} when is_binary(version) ->
         [
@@ -74,7 +76,8 @@ defmodule VulnCheck.Workspace.RebarLock do
             version: version,
             source: :hex,
             scope: :prod,
-            otp_app: name
+            otp_app: name,
+            lock_level: lock_level
           }
         ]
 
@@ -89,7 +92,8 @@ defmodule VulnCheck.Workspace.RebarLock do
             scope: :prod,
             git_url: url,
             git_ref: sha,
-            otp_app: name
+            otp_app: name,
+            lock_level: lock_level
           }
         ]
 

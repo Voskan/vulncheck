@@ -311,12 +311,6 @@ defmodule VulnCheck.Solver do
       package.scope == :non_prod ->
         unreachable(:non_prod_dependency, "#{pkg} is not part of the production dependency closure")
 
-      package.scope == :build_only ->
-        unreachable(
-          :non_prod_dependency,
-          "#{pkg} is build-time only (runtime: false); it is not part of the production release"
-        )
-
       not Semver.otp_affected?(otp, advisory.otp_constraints) ->
         unreachable(
           :otp_version_unaffected,
@@ -343,6 +337,12 @@ defmodule VulnCheck.Solver do
             trace(index, hit)
           )
         end
+
+      package.scope == :build_only ->
+        unreachable(
+          :non_prod_dependency,
+          "#{pkg} is build-time only (runtime: false); it is not started in the production release"
+        )
 
       issue = Map.get(index.artifact_issues, nil) || Map.get(index.artifact_issues, pkg) ->
         potentially(:missing_beam_debug_info, "compiled evidence is incomplete: #{issue}", nil, [])

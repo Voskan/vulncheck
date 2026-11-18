@@ -28,7 +28,8 @@ defmodule VulnCheck.Types.Package do
     deps: [],
     optional_deps: [],
     runtime: true,
-    lock_line: nil
+    lock_line: nil,
+    lock_level: nil
   ]
 
   @type t :: %__MODULE__{
@@ -46,7 +47,8 @@ defmodule VulnCheck.Types.Package do
           deps: [String.t()],
           optional_deps: [String.t()],
           runtime: boolean(),
-          lock_line: pos_integer() | nil
+          lock_line: pos_integer() | nil,
+          lock_level: non_neg_integer() | nil
         }
 end
 

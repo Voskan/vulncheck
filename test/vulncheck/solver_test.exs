@@ -707,4 +707,48 @@ defmodule VulnCheck.SolverTest do
       assert Solver.dynamic_dispatch_warnings([%{finding | suppressed: true}]) == []
     end
   end
+
+  describe "runtime: false (:build_only) scoping" do
+    test "reports reachable when a build_only package function is directly called, otherwise unreachable",
+         ctx do
+      # Positive: sol_ash is marked :build_only, but project code directly calls SolFix.Ash.Actions.Read.run/2
+      build_only_packages =
+        Map.update!(ctx.ws.packages, "sol_ash", &%{&1 | scope: :build_only, runtime: false})
+
+      ws = %{ctx.ws | packages: build_only_packages}
+
+      called =
+        Solver.solve(
+          ws,
+          ctx.graph,
+          ctx.model,
+          [
+            advisory("B-1", "sol_ash",
+              affected_routines: [mfa("Elixir.SolFix.Ash.Actions.Read", "run", 2)]
+            )
+          ],
+          %Config{}
+        )
+        |> hd()
+
+      assert %Finding{verdict: :reachable, reason: :call_chain_proven} = called
+
+      # Negative: uncalled routine in a :build_only package stays unreachable
+      uncalled =
+        Solver.solve(
+          ws,
+          ctx.graph,
+          ctx.model,
+          [
+            advisory("B-2", "sol_ash",
+              affected_routines: [mfa("Elixir.SolFix.Ash.Actions.Read", "unused", 1)]
+            )
+          ],
+          %Config{}
+        )
+        |> hd()
+
+      assert %Finding{verdict: :unreachable, reason: :non_prod_dependency} = uncalled
+    end
+  end
 end

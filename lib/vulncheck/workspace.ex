@@ -111,13 +111,18 @@ defmodule VulnCheck.Workspace do
       {prod_roots, non_prod_roots, build_roots, path_packages, parsed?} =
         collect_mix_roots(projects ++ root_extra(type, root_project), env, MapSet.new(root_apps))
 
-      root_ebins = Enum.flat_map(root_apps, &existing_ebin(build_dir, &1))
+      app_ebins =
+        for app <- root_apps,
+            ebin <- existing_ebin(build_dir, app),
+            do: {ebin, app}
+
+      root_ebins = Enum.map(app_ebins, &elem(&1, 0))
 
       app_roots =
         if build_env == env do
-          root_ebins
-          |> Enum.zip(root_apps)
-          |> Enum.flat_map(fn {ebin, app} -> app_dependencies(AppFile.read_ebin(ebin, app)) end)
+          Enum.flat_map(app_ebins, fn {ebin, app} ->
+            app_dependencies(AppFile.read_ebin(ebin, app))
+          end)
         else
           []
         end
@@ -182,7 +187,7 @@ defmodule VulnCheck.Workspace do
       profiles =
         if config.env == :prod,
           do: ["prod", "default"],
-          else: ["default", Atom.to_string(config.env)]
+          else: [Atom.to_string(config.env), "default"]
 
       {build_env, build_dir, warnings} = choose_build_profiles(info.root, "_build", "lib", profiles)
 
@@ -193,13 +198,31 @@ defmodule VulnCheck.Workspace do
         end)
         |> enrich_deps_from_app_files()
 
+      root_ebins = Enum.flat_map(root_apps, &existing_ebin(build_dir, &1))
+
+      level_roots =
+        for {name, pkg} <- packages, pkg.lock_level == 0, do: name
+
+      app_roots =
+        for app <- root_apps,
+            ebin <- existing_ebin(build_dir, app),
+            dep <- app_dependencies(AppFile.read_ebin(ebin, app)),
+            do: dep
+
+      rebar_direct =
+        if level_roots != [] or app_roots != [] do
+          direct_deps(level_roots ++ app_roots, packages)
+        else
+          direct_deps(dependency_sources(packages), packages)
+        end
+
       {:ok,
        %Workspace{
          root_dir: info.root,
          project_name: List.first(root_apps) || Path.basename(info.root),
          project_version: project_version,
          project_type: :rebar3,
-         direct_deps: direct_deps(dependency_sources(packages), packages),
+         direct_deps: rebar_direct,
          env: config.env,
          elixir_version: nil,
          otp_release: otp_release(config),
@@ -207,7 +230,7 @@ defmodule VulnCheck.Workspace do
          build_dir: build_dir,
          build_env: build_env,
          root_apps: root_apps,
-         root_ebin_dirs: Enum.flat_map(root_apps, &existing_ebin(build_dir, &1)),
+         root_ebin_dirs: root_ebins,
          packages: packages,
          configured_adapters: config.configured_adapters,
          warnings: warnings
@@ -230,12 +253,17 @@ defmodule VulnCheck.Workspace do
 
       root_app = project.name || Path.basename(info.root)
 
+      {prod_roots, non_prod_roots} =
+        if config.env == :prod,
+          do: {project.dependencies, project.dev_dependencies},
+          else: {project.dependencies ++ project.dev_dependencies, []}
+
       packages =
         locked
         |> Map.new(fn {name, package} ->
           {name, %{package | ebin_dir: first_existing_ebin(build_dir, package.otp_app || name)}}
         end)
-        |> assign_scopes(project.dependencies, project.dev_dependencies)
+        |> assign_scopes(prod_roots, non_prod_roots)
 
       {:ok,
        %Workspace{
@@ -340,13 +368,18 @@ defmodule VulnCheck.Workspace do
           File.regular?(mix_file) ->
             case MixProject.parse_file(mix_file) do
               {:ok, sub} ->
+                runtime_deps =
+                  sub.deps
+                  |> Enum.filter(&(env_matches?(&1.only, env) and &1.runtime != false))
+                  |> Enum.map(& &1.name)
+
                 package = %Package{
                   name: dep.name,
                   version: sub.version || "0.0.0",
                   source: :path,
                   scope: scope,
                   otp_app: sub.app || dep.name,
-                  deps: Enum.map(sub.deps, & &1.name),
+                  deps: runtime_deps,
                   runtime: dep.runtime
                 }
 

@@ -448,6 +448,123 @@ defmodule VulnCheck.WorkspaceTest do
     assert {:error, {:lockfile_not_found, _}} = Workspace.load(config(dir))
   end
 
+  test "path dependency filters only: :test children out of prod scope" do
+    dir = Tmp.mkdir!("path-only-test")
+    sub = Path.join(dir, "local_lib")
+
+    Tmp.write!(dir, "mix.exs", """
+    defmodule Root.MixProject do
+      use Mix.Project
+      def project, do: [app: :root, version: "0.1.0", deps: [{:local_lib, path: "local_lib"}]]
+    end
+    """)
+
+    Tmp.write!(
+      dir,
+      "mix.lock",
+      ~s(%{"test_helper": {:hex, :test_helper, "1.0.0", "aaa", [:mix], [], "hexpm", "bbb"}}\n)
+    )
+
+    Tmp.write!(sub, "mix.exs", """
+    defmodule LocalLib.MixProject do
+      use Mix.Project
+      def project, do: [app: :local_lib, version: "0.1.0", deps: [{:test_helper, "~> 1.0", only: :test}]]
+    end
+    """)
+
+    assert {:ok, ws} = Workspace.load(config(dir))
+    assert ws.packages["local_lib"].scope == :prod
+    assert ws.packages["test_helper"].scope == :non_prod
+  end
+
+  test "Gleam includes dev-dependencies when env is dev" do
+    dir = Tmp.mkdir!("gleam-dev")
+
+    Tmp.write!(dir, "gleam.toml", """
+    name = "storefront"
+    version = "1.0.0"
+
+    [dependencies]
+    gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+
+    [dev-dependencies]
+    gleeunit = ">= 1.0.0 and < 2.0.0"
+    """)
+
+    Tmp.write!(dir, "manifest.toml", """
+    packages = [
+      { name = "gleam_stdlib", version = "0.40.0", build_tools = ["gleam"], requirements = [], otp_app = "gleam_stdlib", source = "hex", outer_checksum = "AAAA" },
+      { name = "gleeunit", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "gleeunit", source = "hex", outer_checksum = "BBBB" }
+    ]
+    """)
+
+    assert {:ok, prod_ws} = Workspace.load(config(dir, ["--env", "prod"]))
+    assert prod_ws.packages["gleeunit"].scope == :non_prod
+
+    assert {:ok, dev_ws} = Workspace.load(config(dir, ["--env", "dev"]))
+    assert dev_ws.packages["gleeunit"].scope == :prod
+  end
+
+  test "rebar3 prefers requested non-prod profile and keeps level 0 direct_deps" do
+    dir = Tmp.mkdir!("rebar-profile")
+    Tmp.write!(dir, "rebar.config", "{deps, [cowboy]}.\n")
+
+    Tmp.write!(dir, "rebar.lock", """
+    {"1.2.0",
+     [{<<"cowboy">>,{pkg,<<"cowboy">>,<<"2.12.0">>},0},
+      {<<"cowlib">>,{pkg,<<"cowlib">>,<<"2.13.0">>},1}]}.
+    """)
+
+    Tmp.write!(dir, "_build/default/lib/cowboy/ebin/cowboy.app", "{application,cowboy,[]}.\n")
+    Tmp.write!(dir, "_build/test/lib/cowboy/ebin/cowboy.app", "{application,cowboy,[]}.\n")
+
+    assert {:ok, ws} = Workspace.load(config(dir, ["--env", "test"]))
+    assert ws.build_env == "test"
+    assert ws.direct_deps == ["cowboy"]
+  end
+
+  test "umbrella does not misalign root_ebins when an earlier app is uncompiled" do
+    dir = Tmp.mkdir!("umbrella-missing-ebin")
+
+    Tmp.write!(dir, "mix.exs", """
+    defmodule Umb.MixProject do
+      use Mix.Project
+      def project, do: [apps_path: "apps"]
+    end
+    """)
+
+    Tmp.write!(
+      dir,
+      "mix.lock",
+      ~s(%{"plug": {:hex, :plug, "1.16.0", "aaa", [:mix], [], "hexpm", "bbb"}}\n)
+    )
+
+    Tmp.write!(dir, "apps/alpha/mix.exs", """
+    defmodule Alpha.MixProject do
+      use Mix.Project
+      def project, do: [app: :alpha, version: "0.1.0", deps: []]
+    end
+    """)
+
+    Tmp.write!(dir, "apps/beta/mix.exs", """
+    defmodule Beta.MixProject do
+      use Mix.Project
+      def project, do: [app: :beta, version: "0.1.0", deps: [{:plug, "~> 1.16"}]]
+    end
+    """)
+
+    Tmp.write!(
+      dir,
+      "_build/prod/lib/beta/ebin/beta.app",
+      "{application,beta,[{applications,[plug]}]}.\n"
+    )
+
+    assert {:ok, ws} = Workspace.load(config(dir))
+    assert ws.root_apps == ["alpha", "beta"]
+    assert ws.root_ebin_dirs == [Path.join(dir, "_build/prod/lib/beta/ebin")]
+    assert ws.packages["plug"].scope == :prod
+  end
+
   test "--otp-version overrides the runtime release" do
     dir = Tmp.mkdir!("otp")
     Tmp.write!(dir, "mix.exs", @mix_exs)
