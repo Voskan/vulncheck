@@ -216,9 +216,23 @@ defmodule VulnCheck.Solver do
         )
 
       reachable_routine != nil ->
-        {:reachable, :call_chain_proven,
-         "#{MFA.format(reachable_routine)} is called from an entrypoint", reachable_routine,
-         trace(index, reachable_routine)}
+        trace = trace(index, reachable_routine)
+
+        # Edges of modules without debug info are an over-approximation
+        # (every export to every import), not a proven call chain.
+        if Enum.any?(trace, &(&1.kind == :imports)) do
+          potentially(
+            :missing_beam_debug_info,
+            "#{MFA.format(reachable_routine)} is reachable only through modules " <>
+              "without debug info",
+            reachable_routine,
+            trace
+          )
+        else
+          {:reachable, :call_chain_proven,
+           "#{MFA.format(reachable_routine)} is called from an entrypoint", reachable_routine,
+           trace}
+        end
 
       hit != nil ->
         if pkg in index.model.active_daemon_packages do

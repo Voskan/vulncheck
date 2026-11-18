@@ -33,11 +33,14 @@ defmodule VulnCheck.Test.Beams do
   def compile_files!(files, ebin) do
     for file <- files, do: File.write!(file, force_debug_info(File.read!(file)))
 
-    :global.trans({__MODULE__, :compile}, fn ->
+    :global.trans({__MODULE__, self()}, fn ->
       previous = Code.get_compiler_option(:debug_info)
       previous_ignore = Code.get_compiler_option(:ignore_module_conflict)
+      previous_undefined = Code.get_compiler_option(:no_warn_undefined)
       Code.put_compiler_option(:debug_info, true)
       Code.put_compiler_option(:ignore_module_conflict, true)
+      # dependencies of fixtures are compiled to disk, not loaded
+      Code.put_compiler_option(:no_warn_undefined, :all)
 
       try do
         {:ok, modules, _} =
@@ -47,6 +50,7 @@ defmodule VulnCheck.Test.Beams do
       after
         Code.put_compiler_option(:debug_info, previous)
         Code.put_compiler_option(:ignore_module_conflict, previous_ignore)
+        Code.put_compiler_option(:no_warn_undefined, previous_undefined)
       end
     end)
   end
