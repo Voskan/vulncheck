@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Plug.Parsers` configurations in unreachable code (such as `Plug.Debugger` inside `plug` itself) no longer enable their parsers for the whole application, so multipart and urlencoded advisories of an endpoint configured with `parsers: [:json]` are unreachable again.
+- Atoms converted from strings only widen the dynamic calls of the module that converts them, instead of every dynamic call in the program; module names built with `Module.concat` still widen all of them. Each dynamic call site that keeps advisories potentially reachable is now named in the report warnings.
 - Routines named by an advisory that belong to Erlang/OTP, Elixir or another dependency (such as `List.delete/2`) are no longer reachability targets, so they cannot turn an advisory into a reachable finding. They are reported as `context_routines` in JSON, as `contextRoutines` in SARIF properties and as context in `explain`.
 - Advisories describing the same vulnerability of a package (for example the Erlang Ecosystem Foundation and GitHub records of one CVE) are merged into one finding with all identifiers as aliases, united version ranges and symbols, and the highest CVSS score. Suppressions and baselines written for any of the identifiers keep matching.
 

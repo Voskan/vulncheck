@@ -46,7 +46,6 @@ defmodule VulnCheck.Entrypoints do
           {EntrypointModel.t(), CallGraph.t()}
   def build(%Workspace{} = workspace, %CallGraph{} = graph, config \\ nil) do
     otp = OtpApp.analyze(workspace)
-    synthetic = Behaviours.synthesize(graph)
     adapters = Adapters.resolve(workspace, graph.modules, config)
     started = MapSet.new(otp.started)
     daemons = active_daemons(workspace, graph, started)
@@ -57,6 +56,8 @@ defmodule VulnCheck.Entrypoints do
          config_roots(adapters.config_refs, graph) ++
          daemon_roots(daemons, graph) ++ extra_roots(config))
       |> Enum.uniq_by(& &1.mfa)
+
+    synthetic = synthesize(graph, roots)
 
     model = %EntrypointModel{
       roots: roots,
@@ -72,6 +73,34 @@ defmodule VulnCheck.Entrypoints do
     }
 
     {model, CallGraph.add_edges(graph, synthetic.edges)}
+  end
+
+  # `Plug.Parsers` options written in unreachable code (for example inside
+  # `Plug.Debugger`) are dropped by recomputing the parsers from the
+  # configurations that the previous graph reaches. When no configuration
+  # is reachable every parser stays linked, as without configurations.
+  @parser_rounds 4
+
+  defp synthesize(graph, roots) do
+    synthetic = Behaviours.synthesize(graph)
+
+    if CallGraph.module?(graph, "Elixir.Plug.Parsers"),
+      do: refine_parsers(graph, roots, synthetic, @parser_rounds),
+      else: synthetic
+  end
+
+  defp refine_parsers(_graph, _roots, synthetic, 0), do: synthetic
+
+  defp refine_parsers(_graph, _roots, %{active_plug_parsers: :all} = synthetic, _rounds),
+    do: synthetic
+
+  defp refine_parsers(graph, roots, synthetic, rounds) do
+    reachable = graph |> CallGraph.add_edges(synthetic.edges) |> CallGraph.reachable(roots)
+    refined = Behaviours.synthesize(graph, parser_callers: reachable)
+
+    if refined.active_plug_parsers == synthetic.active_plug_parsers,
+      do: synthetic,
+      else: refine_parsers(graph, roots, refined, rounds - 1)
   end
 
   defp application_roots(otp) do

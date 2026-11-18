@@ -45,11 +45,19 @@ defmodule VulnCheck.Solver do
     Workspace
   }
 
+  # Functions that build module names from other atoms or strings. Outside
+  # modules whose dynamic calls a rule resolves (such as `Plug.Parsers`),
+  # their result may reach any dynamic call of the program.
+  @module_builders [
+    {"Elixir.Module", "concat", 1},
+    {"Elixir.Module", "concat", 2},
+    {"Elixir.Module", "safe_concat", 1},
+    {"Elixir.Module", "safe_concat", 2}
+  ]
+
+  # Functions that turn data into atoms. Their result is taken to feed the
+  # dynamic calls of the module that calls them.
   @atom_constructors MapSet.new([
-                       {"Elixir.Module", "concat", 1},
-                       {"Elixir.Module", "concat", 2},
-                       {"Elixir.Module", "safe_concat", 1},
-                       {"Elixir.Module", "safe_concat", 2},
                        {"Elixir.String", "to_atom", 1},
                        {"Elixir.String", "to_existing_atom", 1},
                        {"Elixir.List", "to_atom", 1},
@@ -79,6 +87,7 @@ defmodule VulnCheck.Solver do
       :escapes,
       :named_modules,
       :atoms_constructed,
+      :atom_modules,
       :started,
       :app_by_package
     ]
@@ -138,10 +147,8 @@ defmodule VulnCheck.Solver do
       reachable_modules: reachable_modules,
       escapes: escapes,
       named_modules: named_modules,
-      atoms_constructed:
-        Enum.any?(reachable, fn %MFA{module: m, function: f, arity: a} ->
-          MapSet.member?(@atom_constructors, {m, f, a})
-        end),
+      atoms_constructed: module_builder_reachable?(graph, model, reachable),
+      atom_modules: atom_constructing_modules(graph, reachable),
       started: MapSet.new(model.started_otp_apps),
       app_by_package:
         Map.new(workspace.packages, fn {name, package} -> {name, package.otp_app || name} end)
@@ -167,6 +174,27 @@ defmodule VulnCheck.Solver do
     advisories
     |> Enum.map(&classify(&1, index))
     |> sort()
+  end
+
+  @doc """
+  One warning per dynamic call site that keeps active findings potentially
+  reachable, naming the affected packages, so that a single unresolved
+  `apply/3` widening many advisories is visible.
+  """
+  @spec dynamic_dispatch_warnings([Finding.t()]) :: [String.t()]
+  def dynamic_dispatch_warnings(findings) do
+    findings
+    |> Enum.filter(&(&1.reason == :unresolved_dynamic_dispatch and Finding.active?(&1)))
+    |> Enum.filter(&(&1.trace != []))
+    |> Enum.group_by(&List.last(&1.trace))
+    |> Enum.sort_by(fn {%TraceHop{} = hop, _} -> {MFA.format(hop.mfa), hop.file, hop.line} end)
+    |> Enum.map(fn {%TraceHop{} = hop, group} ->
+      packages = group |> Enum.map(& &1.package) |> Enum.uniq() |> Enum.sort()
+      site = if hop.file, do: " (#{hop.file}:#{hop.line})", else: ""
+
+      "the dynamic call in #{MFA.format(hop.mfa)}#{site} cannot be resolved statically " <>
+        "and keeps #{length(group)} advisory(ies) of #{Enum.join(packages, ", ")} potentially reachable"
+    end)
   end
 
   @doc """
@@ -413,10 +441,31 @@ defmodule VulnCheck.Solver do
       Enum.find(index.escapes, fn %DynamicCall{} = call ->
         Enum.any?(targets, fn %MFA{} = target ->
           call.known_function in [nil, target.function] and call.arity in [nil, target.arity] and
-            (index.atoms_constructed or MapSet.member?(index.named_modules, target.module))
+            (index.atoms_constructed or
+               MapSet.member?(index.atom_modules, call.caller.module) or
+               MapSet.member?(index.named_modules, target.module))
         end)
       end)
     end
+  end
+
+  defp module_builder_reachable?(graph, model, reachable) do
+    Enum.any?(@module_builders, fn {m, f, a} ->
+      graph
+      |> CallGraph.callers(%MFA{module: m, function: f, arity: a})
+      |> Enum.any?(fn %CallEdge{from: from} ->
+        MapSet.member?(reachable, from) and
+          not Map.has_key?(model.resolved_dynamic_modules, from.module)
+      end)
+    end)
+  end
+
+  defp atom_constructing_modules(graph, reachable) do
+    for {m, f, a} <- @atom_constructors,
+        %CallEdge{from: from} <- CallGraph.callers(graph, %MFA{module: m, function: f, arity: a}),
+        MapSet.member?(reachable, from),
+        into: MapSet.new(),
+        do: from.module
   end
 
   defp candidate_targets(_index, %Advisory{affected_routines: [_ | _] = routines}, _pkg),

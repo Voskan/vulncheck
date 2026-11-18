@@ -86,14 +86,18 @@ defmodule VulnCheck.Entrypoints.Behaviours do
 
   @doc """
   Computes all synthetic edges for the loaded modules.
+
+  Option `:parser_callers` (a set of functions) restricts the `Plug.Parsers`
+  configurations taken into account to those written in these functions.
   """
-  @spec synthesize(CallGraph.t()) :: result()
-  def synthesize(%CallGraph{modules: modules}) do
+  @spec synthesize(CallGraph.t(), keyword()) :: result()
+  def synthesize(%CallGraph{modules: modules}, opts \\ []) do
     exports = Map.new(modules, fn {name, s} -> {name, MapSet.new(s.exports)} end)
     defined = Map.new(modules, fn {name, s} -> {name, MapSet.new(s.functions)} end)
     sorted = modules |> Map.values() |> Enum.sort_by(& &1.module)
+    callers = Keyword.get(opts, :parser_callers, :all)
 
-    {parsers, parser_edges, parser_resolved} = plug_parsers(modules, exports)
+    {parsers, parser_edges, parser_resolved} = plug_parsers(modules, exports, callers)
     {protocol_edges, protocol_resolved} = protocols(sorted, exports)
     resolved = Map.merge(parser_resolved, protocol_resolved)
 
@@ -230,12 +234,16 @@ defmodule VulnCheck.Entrypoints.Behaviours do
   end
 
   # Plug.Parsers dispatches to parser modules computed from its options.
-  defp plug_parsers(modules, exports) do
+  # Only sites whose caller is in `callers` (`:all`, or the reachable
+  # functions) contribute: `Plug.Debugger` enabling `:urlencoded` must not
+  # widen an endpoint configured with `parsers: [:json]`.
+  defp plug_parsers(modules, exports, callers) do
     sites =
       for {_name, summary} <- modules,
-          {_caller, %MFA{module: "Elixir.Plug.Parsers"} = target, args, _file, _line} <-
+          {caller, %MFA{module: "Elixir.Plug.Parsers"} = target, args, _file, _line} <-
             summary.init_literals,
           target.function in ["init", "call"],
+          callers == :all or MapSet.member?(callers, caller),
           do: {target.function, args}
 
     {parsers, decoders} =
@@ -253,8 +261,8 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     parsers =
       cond do
         sites == [] -> :all
-        parsers == [] -> :all
-        true -> parsers
+        parsers in [[], :all] -> :all
+        true -> parsers |> Enum.uniq() |> Enum.sort()
       end
 
     parser_modules =

@@ -65,7 +65,11 @@ defmodule VulnCheck.Scanner do
           summary: Summary.from_findings(findings),
           policy_violations: violations,
           warnings:
-            Enum.uniq(workspace.warnings ++ feed.warnings ++ code.warnings ++ post_warnings),
+            Enum.uniq(
+              workspace.warnings ++
+                feed.warnings ++
+                code.warnings ++ post_warnings ++ Solver.dynamic_dispatch_warnings(findings)
+            ),
           duration_ms: System.monotonic_time(:millisecond) - started,
           stats:
             feed.stats

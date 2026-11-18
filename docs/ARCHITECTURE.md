@@ -67,6 +67,7 @@ Before running graph reachability, `vulncheck` constructs synthetic edges repres
 1. **OTP Application Roots:** From each active production `.app` file's `{mod, {AppMod, _}}`, roots `AppMod.start/2` and traces child specifications (`Supervisor.init/2`, `child_spec/1`, `{ChildMod, opts}`).
 2. **Network Daemon Roots:** Active HTTP/gRPC/socket server applications in the production release closure (`:bandit`, `:cowboy`, `:cowlib`, `:ranch`, `:thousand_island`, `:grpc`, `:plug_cowboy`) register their listener/protocol entrypoints automatically so transport-layer CVEs are never misclassified as unreachable.
 3. **Behaviour & Pipeline Wiring:**
+   - Links `Plug.Parsers` only to the parsers configured in reachable code (a `parsers: [:urlencoded]` inside `Plug.Debugger` does not widen an endpoint configured with `parsers: [:json]`).
    - Links `Plug` pipelines (`init/1` and `call/2` of every plug), `Phoenix.Endpoint`, `Phoenix.Router`, `Phoenix.LiveView` (`mount/3`, `handle_params/3`, `handle_event/3`, `handle_info/2`), `GenServer`, `GenStage`, `Broadway`, and `Oban.Worker` (`perform/1`).
    - Resolves consolidated Elixir protocols (`impl_for/1` dispatch targets across loaded structs).
 4. **Configured Adapter Resolution:** Reads `config/config.exs`, `config/<env>.exs` and `config/runtime.exs` as quoted literals (never evaluated), the `configured_adapters` option and adapter literals in the project's compiled modules to tell active adapters of `Tesla`, `Swoosh`, `Ecto`, `Phoenix.PubSub`, `Finch` and `Req` apart from dormant transitive dependencies.

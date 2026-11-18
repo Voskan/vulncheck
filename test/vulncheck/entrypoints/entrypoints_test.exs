@@ -265,6 +265,52 @@ defmodule VulnCheck.Entrypoints.EntrypointsTest do
       refute mfa("Elixir.Plug.Parsers.MULTIPART.Vuln", "boundary", 1) in reachable
     end
 
+    test "parser configurations in unreachable code are ignored", %{root: root} do
+      Beams.compile!(ebin(root, "plug"), [
+        {"debugger.ex",
+         """
+         defmodule Plug.Debugger do
+           def call(conn, _opts) do
+             Plug.Parsers.call(conn, Plug.Parsers.init(parsers: [:urlencoded, :multipart]))
+           end
+         end
+         """}
+      ])
+
+      json_only = """
+      defmodule EpFix.JsonEndpoint do
+        def call(conn, _opts) do
+          Plug.Parsers.call(conn, Plug.Parsers.init(parsers: [:json], json_decoder: Jason))
+        end
+      end
+      """
+
+      {model, _graph, reachable} = analyze(plug_workspace(root, json_only))
+
+      assert model.active_plug_parsers == ["Elixir.Plug.Parsers.JSON"]
+      refute mfa("Elixir.Plug.Parsers.URLENCODED", "parse", 5) in reachable
+      refute mfa("Elixir.Plug.Parsers.MULTIPART.Vuln", "boundary", 1) in reachable
+
+      with_debugger = """
+      defmodule EpFix.DebugEndpoint do
+        def call(conn, opts) do
+          conn = Plug.Debugger.call(conn, opts)
+          Plug.Parsers.call(conn, Plug.Parsers.init(parsers: [:json], json_decoder: Jason))
+        end
+      end
+      """
+
+      {model, _graph, reachable} = analyze(plug_workspace(root, with_debugger))
+
+      assert model.active_plug_parsers == [
+               "Elixir.Plug.Parsers.JSON",
+               "Elixir.Plug.Parsers.MULTIPART",
+               "Elixir.Plug.Parsers.URLENCODED"
+             ]
+
+      assert mfa("Elixir.Plug.Parsers.MULTIPART.Vuln", "boundary", 1) in reachable
+    end
+
     test "dynamic parser lists activate every parser", %{root: root} do
       ws =
         plug_workspace(root, """

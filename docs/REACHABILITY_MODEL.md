@@ -33,7 +33,7 @@ Assigned when **both** conditions hold:
 
 Assigned when static non-reachability **cannot** be proven safely:
 - **Network / Runtime Daemon Exposure:** The vulnerable package is an active OTP server/listener in the production application tree (`:bandit`, `:cowboy`, `:cowlib`, `:ranch`, `:thousand_island`, `:grpc`, `:plug_cowboy`) and the vulnerable module belongs to its active protocol stack.
-- **Unresolved Dynamic Dispatch:** A reachable module invokes `apply(mod_var, fun_var, args)` where target module/function candidates cannot be narrowed away from the vulnerable module, and the vulnerable dependency's OTP application is loaded in `:prod`.
+- **Unresolved Dynamic Dispatch:** A reachable module invokes `apply(mod_var, fun_var, args)` where target module/function candidates cannot be narrowed away from the vulnerable module, and the vulnerable dependency's OTP application is loaded in `:prod`. A dynamic call can only name a module whose atom reaches it: one written in reachable code or configuration, one built with `Module.concat/1,2` or `Module.safe_concat/1,2` anywhere in reachable code (outside modules whose dynamic calls a framework rule resolves, such as `Plug.Parsers`), or one converted from a string (`String.to_atom/1`, `:erlang.binary_to_atom/2`, ...) in the module that makes the call. Each such call site that keeps advisories open is listed in the report warnings.
 - **Missing Symbol Granularity:** An upstream advisory lacks `programRoutines` and module-level hints, and at least one function in the vulnerable package is reachable in `:prod`.
 - **Missing `.beam` Debug Info:** A dependency `.beam` was compiled with `debug_info` stripped, preventing call-graph traversal inside that dependency.
 

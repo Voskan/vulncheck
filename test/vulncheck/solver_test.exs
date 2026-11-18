@@ -548,4 +548,97 @@ defmodule VulnCheck.SolverTest do
       refute VulnCheck.should_fail?(report([retired]), %Config{fail_on_retired: false})
     end
   end
+
+  describe "atoms feeding dynamic calls" do
+    # dyn_lib calls `module.go(x)` on a module it receives; dyn_target is
+    # never named in reachable code.
+    defp dynamic_world(names_source) do
+      root = Tmp.mkdir!("solver-dyn")
+
+      Beams.compile!(ebin(root, "dyn_lib"), [
+        {"runner.ex", "defmodule DynFix.Runner do\n  def run(module, x), do: module.go(x)\nend\n"}
+      ])
+
+      Beams.compile!(ebin(root, "dyn_names"), [{"names.ex", names_source}])
+
+      Beams.compile!(ebin(root, "dyn_target"), [
+        {"target.ex", "defmodule DynFix.Target do\n  def go(x), do: x\nend\n"}
+      ])
+
+      Beams.compile!(ebin(root, "dyn_app"), [
+        {"app.ex",
+         """
+         defmodule DynFix.Api do
+           def handle(input), do: DynFix.Runner.run(DynFix.Names.name(input), input)
+         end
+         """}
+      ])
+
+      for app <- ~w(dyn_lib dyn_names dyn_target), do: Beams.write_app!(ebin(root, app), app)
+
+      Beams.write_app!(ebin(root, "dyn_app"), "dyn_app",
+        applications: ~w(kernel stdlib elixir dyn_lib dyn_names dyn_target)a
+      )
+
+      packages =
+        for name <- ~w(dyn_lib dyn_names dyn_target) do
+          %Package{
+            name: name,
+            version: "1.0.0",
+            source: :hex,
+            scope: :prod,
+            otp_app: name,
+            ebin_dir: ebin(root, name)
+          }
+        end
+
+      ws = %Workspace{
+        root_dir: root,
+        project_name: "dyn_app",
+        project_type: :mix,
+        env: :prod,
+        otp_release: "27",
+        root_apps: ["dyn_app"],
+        root_ebin_dirs: [ebin(root, "dyn_app")],
+        packages: Map.new(packages, &{&1.name, &1})
+      }
+
+      %{modules: modules} = Loader.load_workspace(ws)
+      {model, graph} = Entrypoints.build(ws, CallGraph.build(modules), nil)
+
+      advisory =
+        advisory("D-1", "dyn_target", affected_routines: [mfa("Elixir.DynFix.Target", "go", 1)])
+
+      [finding] = Solver.solve(ws, graph, model, [advisory], %Config{})
+      finding
+    end
+
+    test "atoms built from strings in another module do not widen the call" do
+      finding =
+        dynamic_world("""
+        defmodule DynFix.Names do
+          def name(input), do: String.to_existing_atom(input)
+        end
+        """)
+
+      assert %Finding{verdict: :unreachable, reason: :function_not_called} = finding
+    end
+
+    test "module names built with Module.concat may reach any dynamic call" do
+      finding =
+        dynamic_world("""
+        defmodule DynFix.Names do
+          def name(input), do: Module.concat(DynFix, input)
+        end
+        """)
+
+      assert %Finding{verdict: :potentially_reachable, reason: :unresolved_dynamic_dispatch} =
+               finding
+
+      [warning] = Solver.dynamic_dispatch_warnings([finding])
+      assert warning =~ "the dynamic call in DynFix.Runner.run/2"
+      assert warning =~ "keeps 1 advisory(ies) of dyn_target potentially reachable"
+      assert Solver.dynamic_dispatch_warnings([%{finding | suppressed: true}]) == []
+    end
+  end
 end
