@@ -121,31 +121,48 @@ defmodule VulnCheck.Report.JSON do
       "{\\n  \\"a\\": null,\\n  \\"b\\": [\\n    1,\\n    {}\\n  ]\\n}"
   """
   @spec encode(term(), non_neg_integer()) :: String.t()
-  def encode(value, level \\ 0)
+  def encode(value, level \\ 0), do: value |> encode_iodata(level) |> IO.iodata_to_binary()
 
-  def encode(map, _level) when map == %{}, do: "{}"
+  defp encode_iodata(map, _level) when map == %{}, do: "{}"
 
-  def encode(map, level) when is_map(map) do
-    pad = String.duplicate("  ", level + 1)
+  defp encode_iodata(map, level) when is_map(map) do
+    pad = indent(level + 1)
 
     body =
       map
       |> Enum.map(fn {key, value} -> {to_string(key), value} end)
       |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.map_join(",\n", fn {key, value} ->
-        pad <> JSON.encode!(key) <> ": " <> encode(value, level + 1)
+      |> Enum.map(fn {key, value} ->
+        [pad, JSON.encode!(key), ": ", encode_iodata(value, level + 1)]
       end)
+      |> Enum.intersperse(",\n")
 
-    "{\n" <> body <> "\n" <> String.duplicate("  ", level) <> "}"
+    ["{\n", body, "\n", indent(level), "}"]
   end
 
-  def encode([], _level), do: "[]"
+  defp encode_iodata([], _level), do: "[]"
 
-  def encode(list, level) when is_list(list) do
-    pad = String.duplicate("  ", level + 1)
-    body = Enum.map_join(list, ",\n", &(pad <> encode(&1, level + 1)))
-    "[\n" <> body <> "\n" <> String.duplicate("  ", level) <> "]"
+  defp encode_iodata(list, level) when is_list(list) do
+    pad = indent(level + 1)
+
+    body =
+      list
+      |> Enum.map(fn item -> [pad, encode_iodata(item, level + 1)] end)
+      |> Enum.intersperse(",\n")
+
+    ["[\n", body, "\n", indent(level), "]"]
   end
 
-  def encode(value, _level), do: JSON.encode!(value)
+  defp encode_iodata(value, _level), do: JSON.encode!(value)
+
+  defp indent(0), do: ""
+  defp indent(1), do: "  "
+  defp indent(2), do: "    "
+  defp indent(3), do: "      "
+  defp indent(4), do: "        "
+  defp indent(5), do: "          "
+  defp indent(6), do: "            "
+  defp indent(7), do: "              "
+  defp indent(8), do: "                "
+  defp indent(n), do: String.duplicate("  ", n)
 end
