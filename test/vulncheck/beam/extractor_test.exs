@@ -80,16 +80,7 @@ defmodule VulnCheck.Beam.ExtractorTest do
     File.mkdir_p!(Path.dirname(source))
     File.write!(source, @source)
 
-    # `mix test` compiles without debug info; fixtures need it like a release build.
-    previous = Code.get_compiler_option(:debug_info)
-    Code.put_compiler_option(:debug_info, true)
-
-    try do
-      {:ok, _modules, _diagnostics} =
-        Kernel.ParallelCompiler.compile_to_path([source], ebin, return_diagnostics: true)
-    after
-      Code.put_compiler_option(:debug_info, previous)
-    end
+    VulnCheck.Test.Beams.compile_files!([source], ebin)
 
     erl = Path.join(root, "src/beam_fixture_erl.erl")
     File.mkdir_p!(Path.dirname(erl))

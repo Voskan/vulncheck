@@ -112,8 +112,7 @@ defmodule VulnCheck.Beam.AbstractWalker do
       module_refs:
         facts.refs
         |> Enum.reverse()
-        |> Enum.uniq_by(fn {caller, mod, _, _} -> {caller, mod} end)
-        |> Enum.reject(fn {_, mod, _, _} -> mod == module end),
+        |> Enum.uniq_by(fn {caller, mod, _, _} -> {caller, mod} end),
       mfa_refs: finish(facts.mfa_refs),
       init_literals: Enum.reverse(facts.init)
     }
@@ -271,6 +270,12 @@ defmodule VulnCheck.Beam.AbstractWalker do
     |> add_mfa_refs(elements, ctx, anno)
     |> walk_children(node, ctx)
   end
+
+  # Anonymous functions: their bodies run on behalf of the enclosing function.
+  defp walk({:fun, _anno, {:clauses, clauses}}, ctx, facts), do: walk_list(facts, clauses, ctx)
+
+  defp walk({:named_fun, _anno, _name, clauses}, ctx, facts),
+    do: walk_list(facts, clauses, ctx)
 
   # Patterns and guards never transfer control to another module.
   defp walk({:clause, _anno, _patterns, _guards, body}, ctx, facts),
@@ -435,6 +440,11 @@ defmodule VulnCheck.Beam.AbstractWalker do
   defp collect_bindings({gen, _, pattern, expr}, acc) when gen in @generators do
     collect_bindings(expr, add_pattern_vars(pattern, acc))
   end
+
+  defp collect_bindings({:fun, _, {:clauses, clauses}}, acc), do: collect_bindings(clauses, acc)
+
+  defp collect_bindings({:named_fun, _, name, clauses}, {matches, vars}),
+    do: collect_bindings(clauses, {matches, MapSet.put(vars, name)})
 
   defp collect_bindings(list, acc) when is_list(list),
     do: Enum.reduce(list, acc, &collect_bindings/2)
