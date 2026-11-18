@@ -207,11 +207,14 @@ defmodule VulnCheck.Report.SarifAndCiTest do
       assert [%{"physicalLocation" => primary}] = ash["locations"]
 
       assert primary["artifactLocation"] == %{
-               "uri" => "lib/ledger/reports.ex",
+               "uri" => "lib/ledger/application.ex",
                "uriBaseId" => "%SRCROOT%"
              }
 
-      assert primary["region"] == %{"startLine" => 112}
+      assert primary["region"] == %{"startLine" => 9}
+      assert [%{"id" => 1, "physicalLocation" => related}] = ash["relatedLocations"]
+      assert related["artifactLocation"]["uri"] == "lib/ledger/reports.ex"
+      assert related["region"] == %{"startLine" => 112}
 
       assert [%{"physicalLocation" => lock}] = plug["locations"]
       assert lock["artifactLocation"]["uri"] == "mix.lock"
@@ -292,7 +295,7 @@ defmodule VulnCheck.Report.SarifAndCiTest do
       assert [error, warning, violation, notice] = lines
 
       assert error =~
-               ~r/^::error file=lib\/ledger\/reports\.ex,line=112,title=CVE-2026-101028 \(HIGH%2C CVSS 7\.5\) in ash 3\.34\.2::/
+               ~r/^::error file=lib\/ledger\/application\.ex,line=9,title=CVE-2026-101028 \(HIGH%2C CVSS 7\.5\) in ash 3\.34\.2::/
 
       assert error =~ "REACHABLE: call chain proven%0ASummary: Aggregates skip read policies"
       assert error =~ "%0ATrace:%0A  1. Ledger.Application.start/2 (lib/ledger/application.ex:9)"
@@ -343,7 +346,7 @@ defmodule VulnCheck.Report.SarifAndCiTest do
 
       [ash, plug] = issues
       assert ash["severity"] == "critical"
-      assert ash["location"] == %{"path" => "lib/ledger/reports.ex", "lines" => %{"begin" => 112}}
+      assert ash["location"] == %{"path" => "lib/ledger/application.ex", "lines" => %{"begin" => 9}}
 
       assert ash["description"] =~
                "[reachable] CVE-2026-101028 in ash 3.34.2 via Ash.Actions.Aggregate.run/4"
@@ -354,6 +357,58 @@ defmodule VulnCheck.Report.SarifAndCiTest do
 
       with_unreachable = GitLab.issues(report(), %Config{show_unreachable: true})
       assert Enum.find(with_unreachable, &(&1["check_name"] == "GHSA-hk-1"))["severity"] == "info"
+    end
+  end
+
+  test "project annotations normalize Unicode paths and preserve fingerprints" do
+    f = reachable()
+    [first, second | rest] = f.trace
+    first = %{first | file: "/srv/ledger/_build/../lib/å b #%.ex"}
+    second = %{second | file: "lib//views/./r é.ex"}
+    report = report([%{f | trace: [first, second | rest]}])
+
+    result =
+      SARIF.document(report, %Config{}) |> get_in(["runs", Access.at(0), "results", Access.at(0)])
+
+    [loc] = result["locations"]
+    assert loc["physicalLocation"]["artifactLocation"]["uri"] == "lib/%C3%A5%20b%20%23%25.ex"
+    [related] = result["relatedLocations"]
+    assert related["physicalLocation"]["artifactLocation"]["uri"] == "lib/views/r%20%C3%A9.ex"
+    assert result["partialFingerprints"]["primaryLocationLineHash"] == f.fingerprint
+
+    assert GitHub.render(report, %Config{}) =~ "file=lib/å b #%25.ex,line=9"
+    assert [issue] = GitLab.issues(report, %Config{})
+    assert issue["location"]["path"] == "lib/å b #%.ex"
+  end
+
+  test "dependency-only and external hops use the actual lockfile entry in every CI format" do
+    f = reachable()
+    [a, b, c, d] = f.trace
+
+    trace = [
+      %{a | file: "/srv/ledger/_build/prod/lib/ash/lib/aggregate.ex"},
+      %{b | file: "./deps/ash/lib/ash.ex"},
+      %{c | file: "lib/../../outside.ex"},
+      %{d | file: "/external/ancestor.ex"}
+    ]
+
+    for {type, lock} <- [mix: "mix.lock", rebar3: "rebar.lock", gleam: "manifest.toml"] do
+      report = report([%{f | trace: trace}])
+
+      report = %{
+        report
+        | workspace: %{report.workspace | project_type: type, lockfile: "/srv/ledger/" <> lock}
+      }
+
+      [issue] = GitLab.issues(report, %Config{})
+      assert issue["location"] == %{"path" => lock, "lines" => %{"begin" => 3}}
+      assert GitHub.render(report, %Config{}) =~ "file=#{lock},line=3"
+      [result] = SARIF.document(report, %Config{}) |> get_in(["runs", Access.at(0), "results"])
+      refute Map.has_key?(result, "relatedLocations")
+      [location] = result["locations"]
+      assert location["physicalLocation"]["artifactLocation"]["uri"] == lock
+      assert location["physicalLocation"]["region"] == %{"startLine" => 3}
+      assert result["partialFingerprints"]["primaryLocationLineHash"] == f.fingerprint
     end
   end
 end

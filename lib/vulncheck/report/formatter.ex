@@ -130,23 +130,35 @@ defmodule VulnCheck.Report.Formatter do
   """
   @spec project_file?(String.t() | nil) :: boolean()
   def project_file?(file) when is_binary(file) do
-    Path.type(file) == :relative and not String.starts_with?(file, ["deps/", "_build/", "../"])
+    Path.type(file) == :relative and
+      not String.starts_with?(file, ["deps/", "_build/", "../"]) and
+      file not in ["", ".", "..", "deps", "_build"]
   end
 
   def project_file?(_file), do: false
 
   @doc """
-  Location used to annotate a finding: the call site in the project's own
-  code from which the vulnerable dependency is entered (for a chain from a
-  daemon or a configured module, the project line that starts or names it)
-  or, when no hop is in the project, the package entry in the lockfile.
+  Location used to annotate a finding. Chooses the first trace hop in the
+  project source tree, or the package entry in the lockfile.
   """
   @spec primary_location(Finding.t(), Workspace.t() | nil) :: {String.t(), pos_integer()}
-  def primary_location(%Finding{trace: trace} = finding, workspace) do
-    case trace |> Enum.filter(&project_file?(&1.file)) |> List.last() do
-      %TraceHop{file: file, line: line} -> {file, line || 1}
-      nil -> lock_location(finding, workspace)
+  def primary_location(%Finding{} = finding, workspace) do
+    case project_locations(finding.trace, workspace) do
+      [%TraceHop{file: file, line: line} | _] -> {file, line}
+      [] -> lock_location(finding, workspace)
     end
+  end
+
+  @doc "Trace hops that can be annotated in the project, with normalized paths."
+  @spec project_locations([TraceHop.t()], Workspace.t() | nil) :: [TraceHop.t()]
+  def project_locations(hops, workspace) do
+    root = if workspace, do: Path.expand(workspace.root_dir), else: "/vulncheck-project"
+
+    for %TraceHop{file: file, line: line} = hop <- hops,
+        is_binary(file) and file != "" and String.valid?(file),
+        path = Path.relative_to(Path.expand(file, root), root),
+        project_file?(path),
+        do: %{hop | file: path, line: if(is_integer(line) and line > 0, do: line, else: 1)}
   end
 
   defp lock_location(_finding, nil), do: {"mix.lock", 1}
@@ -154,7 +166,7 @@ defmodule VulnCheck.Report.Formatter do
   defp lock_location(%Finding{package: name}, %Workspace{} = ws) do
     line =
       case Map.get(ws.packages, name) do
-        %Package{lock_line: line} when is_integer(line) -> line
+        %Package{lock_line: line} when is_integer(line) and line > 0 -> line
         _ -> 1
       end
 
@@ -162,7 +174,7 @@ defmodule VulnCheck.Report.Formatter do
   end
 
   defp manifest(%Workspace{lockfile: lockfile, root_dir: root}) when is_binary(lockfile),
-    do: Path.relative_to(lockfile, root)
+    do: Path.relative_to(Path.expand(lockfile, root), Path.expand(root))
 
   defp manifest(%Workspace{project_type: :rebar3}), do: "rebar.config"
   defp manifest(%Workspace{project_type: :gleam}), do: "gleam.toml"

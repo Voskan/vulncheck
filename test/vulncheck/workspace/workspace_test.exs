@@ -354,6 +354,26 @@ defmodule VulnCheck.WorkspaceTest do
       assert packages["jsx"].version == "2.8.0"
       assert {:error, _} = VulnCheck.Workspace.RebarLock.parse("foo.\n")
     end
+
+    test "locates rebar lock entries on shared and split lines" do
+      assert {:ok, packages} =
+               VulnCheck.Workspace.RebarLock.parse("""
+               % {<<"third">>,{pkg,<<"third">>,<<"1.0.0">>},0}
+               {"1.2.0",
+                [{<<"first">>,{pkg,<<"first">>,<<"1.0.0">>},0}, {<<"second">>,{pkg,<<"second">>,<<"1.0.0">>},0},
+                 {
+                   << "third" >>,
+                   {
+                     pkg, <<"third">>, <<"1.0.0">>
+                   },
+                   0
+                 }]}.
+               """)
+
+      assert packages["first"].lock_line == 3
+      assert packages["second"].lock_line == 3
+      assert packages["third"].lock_line == 5
+    end
   end
 
   describe "Gleam projects" do

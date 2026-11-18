@@ -4,10 +4,9 @@ defmodule VulnCheck.Report.SARIF do
   static analysis dashboards.
 
   Every advisory becomes a rule whose `security-severity` carries the CVSS
-  score. Each result is anchored at the call site in the project's own code
-  from which the vulnerable dependency is entered (or at the package entry
-  of the lockfile when the chain starts in configuration or supervision),
-  and its `codeFlows` replay the whole witness call chain. Unreachable
+  score. Each result is anchored at the first project hop, or at the
+  package entry of the lockfile. Additional project hops are related
+  locations, and `codeFlows` replay the whole witness call chain. Unreachable
   findings are emitted with `level: "none"` only with `--show-unreachable`.
   """
 
@@ -131,7 +130,22 @@ defmodule VulnCheck.Report.SARIF do
         }
         |> put_context(f.context_routines)
     }
+    |> put_related_locations(f, report.workspace)
     |> put_code_flows(f)
+  end
+
+  defp put_related_locations(result, finding, workspace) do
+    locations = Formatter.project_locations(finding.trace, workspace)
+
+    related =
+      locations
+      |> Enum.drop(1)
+      |> Enum.with_index(1)
+      |> Enum.map(fn {hop, id} ->
+        hop.file |> location(hop.line, Formatter.hop(hop)) |> Map.put("id", id)
+      end)
+
+    if related == [], do: result, else: Map.put(result, "relatedLocations", related)
   end
 
   defp put_context(properties, []), do: properties
@@ -200,7 +214,11 @@ defmodule VulnCheck.Report.SARIF do
 
   defp artifact(file) do
     if Path.type(file) == :absolute,
-      do: %{"uri" => "file://" <> URI.encode(file)},
-      else: %{"uri" => URI.encode(file), "uriBaseId" => "%SRCROOT%"}
+      do: %{"uri" => "file://" <> encode_path(file, true)},
+      else: %{"uri" => encode_path(file, false), "uriBaseId" => "%SRCROOT%"}
+  end
+
+  defp encode_path(file, absolute?) do
+    URI.encode(file, &(&1 == ?/ or URI.char_unreserved?(&1) or (absolute? and &1 == ?:)))
   end
 end

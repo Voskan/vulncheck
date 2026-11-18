@@ -11,6 +11,8 @@ defmodule VulnCheck.Workspace.RebarLock do
   alias VulnCheck.ErlTerm
   alias VulnCheck.Types.Package
 
+  @lock_entries ~r/%[^\r\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\{\s*<<\s*("(?:\\.|[^"\\])*")\s*>>\s*,\s*\{\s*(?:pkg|git)\s*,/s
+
   @doc "Parses `rebar.lock` content into `name => Package`."
   @spec parse(String.t()) :: {:ok, %{String.t() => Package.t()}} | {:error, String.t()}
   def parse(content) do
@@ -118,14 +120,25 @@ defmodule VulnCheck.Workspace.RebarLock do
   end
 
   defp name_lines(content) do
-    content
-    |> String.split("\n")
-    |> Enum.with_index(1)
-    |> Enum.reduce(%{}, fn {line, number}, acc ->
-      case Regex.run(~r/\{<<"([^"]+)">>\s*,\s*\{(pkg|git)/, line) do
-        [_, name, _] -> Map.put_new(acc, name, number)
-        _ -> acc
-      end
+    @lock_entries
+    |> Regex.scan(content, return: :index)
+    |> Enum.reduce({%{}, 0, 1}, fn
+      [_, {offset, length}], {locations, last_offset, line} when offset >= 0 ->
+        prefix = binary_part(content, last_offset, offset - last_offset)
+        line = line + length(:binary.matches(prefix, "\n"))
+        literal = binary_part(content, offset, length)
+
+        locations =
+          case ErlTerm.parse(literal <> ".") do
+            {:ok, [name]} -> Map.put_new(locations, name, line)
+            _ -> locations
+          end
+
+        {locations, offset, line}
+
+      _, acc ->
+        acc
     end)
+    |> elem(0)
   end
 end
