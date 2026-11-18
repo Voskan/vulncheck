@@ -7,12 +7,13 @@ defmodule VulnCheck.Scanner do
     3. summarize compiled `.beam` files and build the call graph,
     4. synthesize OTP/framework entrypoints and edges,
     5. classify every advisory,
-    6. apply post-processing steps (suppressions, baselines, ...).
+    6. apply suppressions (`.vulncheck.ignore`), `--baseline` and `--diff`,
+       then any extra post-processing steps.
 
   Steps 3 and 4 are skipped when no advisory needs code analysis.
   """
 
-  alias VulnCheck.{Config, Entrypoints, Solver}
+  alias VulnCheck.{Config, Diff, Entrypoints, Ignore, Solver}
   alias VulnCheck.Beam.{CallGraph, Loader}
   alias VulnCheck.Feeds.Store
   alias VulnCheck.Types.{ScanReport, Summary}
@@ -25,6 +26,8 @@ defmodule VulnCheck.Scanner do
   `:cna_base_url`, `:mitre_base_url`, `:hex_api_url`, ...). In addition:
 
     * `:beam_cache` — `false` disables the `.beam` summary cache
+    * `:ignore` — `false` skips the ignore file
+    * `:today` — date used to evaluate suppression expiry
     * `:postprocess` — list of `fun(findings, report_context) -> {findings, violations, warnings}`
   """
   @spec run(Config.t(), keyword()) :: {:ok, ScanReport.t()} | {:error, term()}
@@ -43,8 +46,9 @@ defmodule VulnCheck.Scanner do
       context = %{workspace: workspace, config: config}
 
       {findings, violations, post_warnings} =
-        opts
-        |> Keyword.get(:postprocess, [])
+        config
+        |> default_steps(opts)
+        |> Kernel.++(Keyword.get(opts, :postprocess, []))
         |> Enum.reduce({findings, [], []}, fn step, {findings, violations, warnings} ->
           {findings, new_violations, new_warnings} = step.(findings, context)
           {findings, violations ++ new_violations, warnings ++ new_warnings}
@@ -52,29 +56,50 @@ defmodule VulnCheck.Scanner do
 
       findings = Solver.sort(findings)
 
-      {:ok,
-       %ScanReport{
-         workspace: workspace,
-         generated_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
-         tool_version: VulnCheck.version(),
-         findings: findings,
-         summary: Summary.from_findings(findings),
-         policy_violations: violations,
-         warnings: Enum.uniq(workspace.warnings ++ feed.warnings ++ code.warnings ++ post_warnings),
-         duration_ms: System.monotonic_time(:millisecond) - started,
-         stats:
-           feed.stats
-           |> Map.merge(code.stats)
-           |> Map.merge(%{
-             packages: map_size(workspace.packages),
-             timings_ms: %{
-               workspace: t_workspace,
-               feeds: t_feeds,
-               code: t_code,
-               solve: t_solve
-             }
-           })
-       }}
+      report =
+        %ScanReport{
+          workspace: workspace,
+          generated_at: DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601(),
+          tool_version: VulnCheck.version(),
+          findings: findings,
+          summary: Summary.from_findings(findings),
+          policy_violations: violations,
+          warnings:
+            Enum.uniq(workspace.warnings ++ feed.warnings ++ code.warnings ++ post_warnings),
+          duration_ms: System.monotonic_time(:millisecond) - started,
+          stats:
+            feed.stats
+            |> Map.merge(code.stats)
+            |> Map.merge(%{
+              packages: map_size(workspace.packages),
+              timings_ms: %{
+                workspace: t_workspace,
+                feeds: t_feeds,
+                code: t_code,
+                solve: t_solve
+              }
+            })
+        }
+
+      write_baseline(report, config)
+    end
+  end
+
+  defp default_steps(config, opts) do
+    ignore =
+      if Keyword.get(opts, :ignore, true), do: [Ignore.step(Keyword.take(opts, [:today]))], else: []
+
+    baseline = if config.baseline, do: [Diff.baseline_step(config.baseline)], else: []
+    diff = if config.diff, do: [Diff.diff_step(config.diff)], else: []
+    ignore ++ baseline ++ diff
+  end
+
+  defp write_baseline(report, %Config{write_baseline: nil}), do: {:ok, report}
+
+  defp write_baseline(report, %Config{write_baseline: path} = config) do
+    case Diff.write_baseline(report, Path.expand(path, Config.project_root(config))) do
+      :ok -> {:ok, report}
+      {:error, reason} -> {:error, {:write_baseline, path, reason}}
     end
   end
 

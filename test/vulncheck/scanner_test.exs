@@ -171,6 +171,31 @@ defmodule VulnCheck.ScannerTest do
 
     assert report.summary.suppressed == 1
     assert "post step ran" in report.warnings
+
+    Tmp.write!(root, ".vulncheck.ignore", """
+    [%{id: "CVE-2026-54892", reason: "patched at the edge", expires: "2025-01-01"}]
+    """)
+
+    baseline = Path.join(Tmp.mkdir!("scan-baseline"), "base.json")
+
+    config = %Config{
+      project_dir: root,
+      cache_dir: Tmp.mkdir!("scan-cache"),
+      write_baseline: baseline
+    }
+
+    assert {:ok, with_ignore} = VulnCheck.scan(config, opts)
+    assert [%{suppression_expired: true} | _] = with_ignore.findings
+
+    assert with_ignore.policy_violations == [
+             "suppression of EEF-CVE-2026-54892 (plug) expired on 2025-01-01"
+           ]
+
+    assert File.exists?(baseline)
+
+    assert {:ok, again} = VulnCheck.scan(%{config | write_baseline: nil, baseline: baseline}, opts)
+    assert again.findings == []
+    assert "2 finding(s) already present in the baseline" in again.warnings
     refute VulnCheck.should_fail?(report, %Config{})
 
     empty = Tmp.mkdir!("scan-empty")
