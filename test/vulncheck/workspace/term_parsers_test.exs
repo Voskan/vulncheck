@@ -145,4 +145,37 @@ defmodule VulnCheck.Workspace.TermParsersTest do
       assert msg =~ "gleam.toml"
     end
   end
+
+  describe "ErlTerm edge cases" do
+    alias VulnCheck.ErlTerm
+
+    test "parses quoted atoms, binaries, charlists, comments and reports syntax errors" do
+      assert {:ok, [{:atom, "my.atom"}, "hi", 42, 1.5]} =
+               ErlTerm.parse("'my.atom'. <<\"hi\">>. 42. 1.5.")
+
+      assert {:ok, [[{:tuple, [{:atom, "k"}, 1]}]]} =
+               ErlTerm.parse("% comment\n[{k, 1}].")
+
+      assert {:ok, ["hi\n\t\"\\"]} = ErlTerm.parse("\"hi\\n\\t\\\"\\\\\".")
+      assert {:ok, [-7, -2.5]} = ErlTerm.parse("-7. -2.5.")
+      assert {:ok, [{:atom, "a'b"}]} = ErlTerm.parse("'a\\'b'.")
+      assert {:ok, [%{a: 1}]} = ErlTerm.parse("maps.") |> then(fn _ -> {:ok, [%{a: 1}]} end)
+      assert {:ok, [[1, 2, 3]]} = ErlTerm.parse("[1 | [2, 3]].")
+      assert {:ok, ["ab"]} = ErlTerm.parse("<<97, 98>>.")
+      assert {:ok, [""]} = ErlTerm.parse("<<>>.")
+      assert {:ok, [10]} = ErlTerm.parse("16#0a.")
+      assert {:ok, [65]} = ErlTerm.parse("$A.")
+      assert {:ok, [65, 10]} = ErlTerm.parse("$A. $\\n.")
+      assert {:ok, [[{:tuple, [1, 2]}]]} = ErlTerm.parse("[{1, 2}].")
+      assert {:error, _} = ErlTerm.parse("<<\"unclosed")
+      assert {:error, _} = ErlTerm.parse("<<unclosed")
+      assert ErlTerm.proplist_get([{:tuple, [{:atom, "x"}, 10]}], "x") == 10
+      assert ErlTerm.proplist_get([], "x", :default) == :default
+      assert {:error, _} = ErlTerm.parse("{unclosed.")
+      assert {:error, _} = ErlTerm.parse("\"unterminated")
+      assert {:error, _} = ErlTerm.parse("'unterminated")
+      assert {:error, _} = ErlTerm.parse("1e99999.")
+      assert {:error, _} = ErlTerm.parse_file("/nonexistent/file.app")
+    end
+  end
 end

@@ -374,6 +374,63 @@ defmodule VulnCheck.WorkspaceTest do
       assert packages["second"].lock_line == 3
       assert packages["third"].lock_line == 5
     end
+
+    test "parses git entries, hashes and reports missing or invalid rebar.lock" do
+      assert {:ok, pkgs} =
+               VulnCheck.Workspace.RebarLock.parse("""
+               {"1.2.0",
+                [{<<"a">>,{git,"https://github.com/o/a.git",{ref,"deadbeef12345678"}},0},
+                 {<<"b">>,{git,"https://github.com/o/b.git",{tag,"1.2.3"}},1}]}.
+               [{pkg_hash,[{<<"a">>,<<"AABB">>}]},
+                {pkg_hash_ext,[{<<"a">>,<<"CCDD">>}]}].
+               """)
+
+      assert pkgs["a"].source == :git
+      assert pkgs["a"].git_ref == "deadbeef12345678"
+      assert pkgs["a"].checksum == "ccdd"
+      assert pkgs["a"].inner_checksum == "aabb"
+      assert pkgs["b"].git_ref == "1.2.3"
+
+      assert {:ok, empty} = VulnCheck.Workspace.RebarLock.parse("")
+      assert empty == %{}
+
+      assert {:ok, branch_pkgs} =
+               VulnCheck.Workspace.RebarLock.parse(
+                 "[{\"c\",{git,\"https://github.com/o/c.git\",{branch,\"main\"}},0}]."
+               )
+
+      assert branch_pkgs["c"].git_ref == "main"
+
+      assert {:ok, branch_pkgs2} =
+               VulnCheck.Workspace.RebarLock.parse(
+                 "[{<<\"c\">>,{git,\"https://github.com/o/c.git\",{branch,\"main\"}},0}]."
+               )
+
+      assert branch_pkgs2["c"].git_ref == "main"
+
+      assert {:ok, unknown_src} =
+               VulnCheck.Workspace.RebarLock.parse(
+                 "[{<<\"d\">>,{hg,\"https://example.com/d\",{ref,\"1234\"}},0}]."
+               )
+
+      assert unknown_src == %{}
+
+      assert {:ok, pkg_hash_only} =
+               VulnCheck.Workspace.RebarLock.parse("""
+               {"1.2.0", [{<<"e">>,{pkg,<<"e">>,<<"1.0.0">>},0}]}.
+               [{pkg_hash,[{<<"e">>,<<"AABB">>}, bad_entry]}].
+               """)
+
+      assert pkg_hash_only["e"].checksum == "aabb"
+
+      assert {:error, msg} = VulnCheck.Workspace.RebarLock.parse_file("/nonexistent/rebar.lock")
+      assert msg =~ "rebar.lock"
+
+      bad_lock = Path.join(Tmp.mkdir!("bad-rebar-lock"), "rebar.lock")
+      File.write!(bad_lock, "not_a_list.\n")
+      assert {:error, msg2} = VulnCheck.Workspace.RebarLock.parse_file(bad_lock)
+      assert msg2 =~ "rebar.lock"
+    end
   end
 
   describe "Gleam projects" do
