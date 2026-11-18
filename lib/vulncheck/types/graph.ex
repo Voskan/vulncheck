@@ -25,6 +25,7 @@ defmodule VulnCheck.Types.CallEdge do
     * `:behaviour_callback` — a callback wired by an OTP or framework behaviour
     * `:supervisor_child` — a module started or referenced as a child/plug
     * `:dynamic_apply` — an `apply/3` site resolved to a concrete target
+    * `:dynamic_candidate` — a possible target of an unresolved invocation
     * `:imports` — an over-approximated edge derived from the `:imports` table of
       a `.beam` without debug info
   """
@@ -38,6 +39,7 @@ defmodule VulnCheck.Types.CallEdge do
           | :behaviour_callback
           | :supervisor_child
           | :dynamic_apply
+          | :dynamic_candidate
           | :imports
 
   @type t :: %__MODULE__{
@@ -50,7 +52,7 @@ defmodule VulnCheck.Types.CallEdge do
 
   @doc "Whether the edge can support a confirmed call chain."
   @spec proven?(t()) :: boolean()
-  def proven?(%__MODULE__{kind: kind}), do: kind != :imports
+  def proven?(%__MODULE__{kind: kind}), do: kind not in [:imports, :dynamic_candidate]
 end
 
 defmodule VulnCheck.Types.DynamicCall do
@@ -62,7 +64,16 @@ defmodule VulnCheck.Types.DynamicCall do
   """
 
   @enforce_keys [:caller]
-  defstruct [:caller, :known_module, :known_function, :arity, :file, :line, min_arity: 0]
+  defstruct [
+    :caller,
+    :known_module,
+    :known_function,
+    :arity,
+    :file,
+    :line,
+    kind: :module_function,
+    min_arity: 0
+  ]
 
   @type t :: %__MODULE__{
           caller: VulnCheck.Types.MFA.t(),
@@ -71,7 +82,8 @@ defmodule VulnCheck.Types.DynamicCall do
           arity: non_neg_integer() | nil,
           min_arity: non_neg_integer(),
           file: String.t() | nil,
-          line: non_neg_integer() | nil
+          line: non_neg_integer() | nil,
+          kind: :module_function | :function_value
         }
 
   @doc "`true` when a function of `arity` may be the target of the call."

@@ -17,7 +17,7 @@ defmodule VulnCheck.Cache do
 
   alias VulnCheck.Config
 
-  @beam_cache_version 2
+  @beam_cache_version 3
   @bundle_manifest "manifest.json"
 
   @type fetch_status :: :network | :cached | :revalidated | :stale

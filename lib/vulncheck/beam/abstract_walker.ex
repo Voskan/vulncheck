@@ -184,20 +184,8 @@ defmodule VulnCheck.Beam.AbstractWalker do
 
   # Local call.
   defp walk({:call, anno, {:atom, _, fun}, args}, ctx, facts) when is_list(args) do
-    arity = length(args)
-
-    target =
-      cond do
-        MapSet.member?(ctx.defined, {fun, arity}) -> ctx.module
-        mod = Map.get(ctx.imports, {fun, arity}) -> name(mod)
-        :erl_internal.bif(fun, arity) -> "erlang"
-        true -> ctx.module
-      end
-
-    facts
-    |> add_edge(ctx, mfa(target, Atom.to_string(fun), arity), anno, kind(anno))
-    |> add_mfa_refs(args, ctx, anno)
-    |> walk_list(args, ctx)
+    target = local_module(ctx, fun, length(args))
+    named_call(facts, ctx, anno, target, Atom.to_string(fun), args)
   end
 
   # Static remote call (with the apply family handled specially).
@@ -205,34 +193,7 @@ defmodule VulnCheck.Beam.AbstractWalker do
        when is_list(args) do
     mod = name(mod)
     fun = Atom.to_string(fun)
-    arity = length(args)
-
-    facts =
-      cond do
-        apply3?(mod, fun, arity) ->
-          [m, f, a] = args
-          dynamic_site(facts, ctx, anno, m, f, list_length(a, ctx.env), min_length(a, ctx.env))
-
-        {mod, fun, arity} in [{"erlang", "make_fun", 3}, {"Elixir.Function", "capture", 3}] ->
-          [m, f, a] = args
-          dynamic_site(facts, ctx, anno, m, f, integer(a, ctx.env))
-
-        true ->
-          facts
-          |> add_edge(ctx, mfa(mod, fun, arity), anno, kind(anno))
-          |> add_mfa_refs(args, ctx, anno)
-      end
-
-    facts =
-      if MapSet.member?(@init_targets, {mod, fun, arity}) do
-        literals = Enum.map(args, &literal(&1, ctx.env, 0))
-        entry = {ctx.caller, mfa(mod, fun, arity), literals, ctx.file, line(anno)}
-        %{facts | init: [entry | facts.init]}
-      else
-        facts
-      end
-
-    walk_list(facts, args, ctx)
+    named_call(facts, ctx, anno, mod, fun, args)
   end
 
   # Remote call with a computed module and/or function (`mod.fun(...)`).
@@ -243,13 +204,17 @@ defmodule VulnCheck.Beam.AbstractWalker do
     |> walk_list([mod_expr, fun_expr | args], ctx)
   end
 
+  # Erlang also lowers apply(Fun, [Args]) to an invocation through a function value.
+  defp walk({:call, anno, capture, args}, ctx, facts) when is_list(args) do
+    facts
+    |> invoke_fun(ctx, anno, capture, length(args), length(args))
+    |> walk_list(args, ctx)
+  end
+
   # Local capture `&fun/1`.
   defp walk({:fun, anno, {:function, fun, arity}}, ctx, facts)
        when is_atom(fun) and is_integer(arity) do
-    target =
-      if MapSet.member?(ctx.defined, {fun, arity}) or not :erl_internal.bif(fun, arity),
-        do: ctx.module,
-        else: "erlang"
+    target = local_module(ctx, fun, arity)
 
     add_edge(facts, ctx, mfa(target, Atom.to_string(fun), arity), anno, :static_call)
   end
@@ -325,11 +290,117 @@ defmodule VulnCheck.Beam.AbstractWalker do
 
   defp walk_list(facts, other, ctx), do: walk(other, ctx, facts)
 
-  defp apply3?("erlang", "apply", 3), do: true
-  defp apply3?("Elixir.Kernel", "apply", 3), do: true
-  defp apply3?(_mod, _fun, _arity), do: false
+  defp local_module(ctx, fun, arity) do
+    cond do
+      MapSet.member?(ctx.defined, {fun, arity}) -> ctx.module
+      mod = Map.get(ctx.imports, {fun, arity}) -> name(mod)
+      :erl_internal.bif(fun, arity) -> "erlang"
+      true -> ctx.module
+    end
+  end
+
+  defp named_call(facts, ctx, anno, mod, "apply", [capture, args])
+       when mod in ["erlang", "Elixir.Kernel"] do
+    facts
+    |> invoke_fun(ctx, anno, capture, list_length(args, ctx.env), min_length(args, ctx.env))
+    |> walk_list([args], ctx)
+  end
+
+  defp named_call(facts, ctx, anno, mod, fun, args) do
+    arity = length(args)
+
+    facts =
+      case {mod, fun, args} do
+        {mod, "apply", [m, f, a]} when mod in ["erlang", "Elixir.Kernel"] ->
+          dynamic_site(facts, ctx, anno, m, f, list_length(a, ctx.env), min_length(a, ctx.env))
+
+        {"erlang", "make_fun", [m, f, a]} ->
+          dynamic_site(facts, ctx, anno, m, f, integer(a, ctx.env))
+
+        {"Elixir.Function", "capture", [m, f, a]} ->
+          dynamic_site(facts, ctx, anno, m, f, integer(a, ctx.env))
+
+        _ ->
+          facts
+          |> add_edge(ctx, mfa(mod, fun, arity), anno, kind(anno))
+          |> add_mfa_refs(args, ctx, anno)
+      end
+
+    facts =
+      if MapSet.member?(@init_targets, {mod, fun, arity}) do
+        literals = Enum.map(args, &literal(&1, ctx.env, 0))
+        entry = {ctx.caller, mfa(mod, fun, arity), literals, ctx.file, line(anno)}
+        %{facts | init: [entry | facts.init]}
+      else
+        facts
+      end
+
+    walk_list(facts, args, ctx)
+  end
 
   # -- dynamic dispatch ------------------------------------------------------------
+
+  defp invoke_fun(facts, ctx, anno, capture, arity, min_arity) do
+    case bound_value(capture, ctx.env, 0) do
+      {:fun, _, {:function, fun, n}} when is_atom(fun) and is_integer(n) ->
+        invoke_known_fun(
+          facts,
+          ctx,
+          anno,
+          local_module(ctx, fun, n),
+          name(fun),
+          n,
+          arity,
+          min_arity
+        )
+
+      {:fun, _, {:function, {:atom, _, mod}, {:atom, _, fun}, {:integer, _, n}}} ->
+        invoke_known_fun(facts, ctx, anno, name(mod), name(fun), n, arity, min_arity)
+
+      {:fun, _, {:clauses, _}} ->
+        walk(capture, ctx, facts)
+
+      {:named_fun, _, _, _} ->
+        walk(capture, ctx, facts)
+
+      _ ->
+        call = %DynamicCall{
+          caller: ctx.caller,
+          kind: :function_value,
+          arity: arity,
+          min_arity: min_arity,
+          file: ctx.file,
+          line: line(anno)
+        }
+
+        walk(capture, ctx, %{facts | dynamic: [call | facts.dynamic]})
+    end
+  end
+
+  defp invoke_known_fun(facts, ctx, anno, mod, fun, n, arity, min_arity) do
+    cond do
+      n == arity ->
+        add_edge(facts, ctx, mfa(mod, fun, n), anno, :dynamic_apply)
+
+      is_nil(arity) and n >= min_arity ->
+        add_edge(facts, ctx, mfa(mod, fun, n), anno, :dynamic_candidate)
+
+      true ->
+        facts
+    end
+  end
+
+  defp bound_value({:var, _, var} = expr, env, depth) when depth < 8 do
+    case Map.get(env, var) do
+      [value] -> bound_value(value, env, depth + 1)
+      _ -> expr
+    end
+  end
+
+  defp bound_value({:match, _, _lhs, expr}, env, depth) when depth < 8,
+    do: bound_value(expr, env, depth + 1)
+
+  defp bound_value(expr, _env, _depth), do: expr
 
   defp dynamic_site(facts, ctx, anno, mod_expr, fun_expr, arity, min_arity \\ 0) do
     mods = resolve_atoms(mod_expr, ctx.env, 0)
@@ -337,8 +408,11 @@ defmodule VulnCheck.Beam.AbstractWalker do
 
     case {mods, funs, arity} do
       {{:ok, mods}, {:ok, funs}, arity} when is_integer(arity) ->
-        Enum.reduce(for(m <- mods, f <- funs, do: {m, f}), facts, fn {m, f}, acc ->
-          add_edge(acc, ctx, mfa(m, f, arity), anno, :dynamic_apply)
+        targets = for m <- mods, f <- funs, do: {m, f}
+        kind = if match?([_], targets), do: :dynamic_apply, else: :dynamic_candidate
+
+        Enum.reduce(targets, facts, fn {m, f}, acc ->
+          add_edge(acc, ctx, mfa(m, f, arity), anno, kind)
         end)
 
       _ ->

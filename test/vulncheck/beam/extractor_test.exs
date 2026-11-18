@@ -59,7 +59,7 @@ defmodule VulnCheck.Beam.ExtractorTest do
 
   @erlang """
   -module(beam_fixture_erl).
-  -export([go/1, cap/0]).
+  -export([go/1, cap/0, plain/2, qualified/2, captured/1, direct/1, unknown/2, unknown_direct/2]).
   -import(lists, [reverse/1]).
 
   go(X) ->
@@ -70,6 +70,13 @@ defmodule VulnCheck.Beam.ExtractorTest do
       M:handle(X).
 
   cap() -> fun beam_fixture_dep:handle/1.
+  plain(F, X) -> apply(beam_fixture_dep, F, [X]).
+  qualified(F, X) -> erlang:apply(beam_fixture_dep, F, [X]).
+  captured(X) -> apply(fun helper/1, [X]).
+  direct(X) -> F = fun helper/1, F(X).
+  unknown(F, Args) -> apply(F, Args).
+  unknown_direct(F, X) -> F(X).
+  helper(X) -> X.
   """
 
   setup_all do
@@ -104,6 +111,58 @@ defmodule VulnCheck.Beam.ExtractorTest do
   end
 
   defp mfa(m, f, a), do: MFA.new(m, f, a)
+
+  test "tracks unqualified, qualified and function-value applications", ctx do
+    %{modules: %{"beam_fixture_erl" => summary}} = load(ctx)
+
+    for fun <- ~w(plain qualified) do
+      assert Enum.any?(summary.dynamic_dispatches, fn call ->
+               call.caller.function == fun and call.known_module == "beam_fixture_dep" and
+                 call.kind == :module_function and call.arity == 1 and is_integer(call.line)
+             end)
+    end
+
+    for fun <- ~w(captured direct) do
+      assert Enum.any?(summary.edges, fn edge ->
+               edge.from.function == fun and edge.to == mfa("beam_fixture_erl", "helper", 1) and
+                 CallEdge.proven?(edge)
+             end)
+
+      refute Enum.any?(summary.dynamic_dispatches, &(&1.caller.function == fun))
+    end
+
+    assert Enum.any?(summary.dynamic_dispatches, fn call ->
+             call.caller.function == "unknown" and call.kind == :function_value and
+               is_nil(call.arity)
+           end)
+
+    assert Enum.any?(summary.dynamic_dispatches, fn call ->
+             call.caller.function == "unknown_direct" and call.kind == :function_value and
+               call.arity == 1
+           end)
+  end
+
+  test "a locally defined Erlang apply is an ordinary call", %{root: root} do
+    ebin = Tmp.mkdir!("apply-shadow")
+
+    path =
+      Tmp.write!(root, "src/apply_shadow.erl", """
+      -module(apply_shadow).
+      -export([start/2]).
+      -compile({no_auto_import, [apply/3]}).
+      start(F, V) -> apply(data, F, [V]).
+      apply(_, _, [V]) -> V.
+      """)
+
+    {:ok, :apply_shadow} =
+      :compile.file(String.to_charlist(path), [:debug_info, {:outdir, String.to_charlist(ebin)}])
+
+    assert {:ok, summary, :analyzed} = Loader.load_file(Path.join(ebin, "apply_shadow.beam"))
+    assert summary.dynamic_dispatches == []
+
+    assert %CallEdge{kind: :static_call} =
+             Enum.find(summary.edges, &(&1.to == mfa("apply_shadow", "apply", 3)))
+  end
 
   test "extracts static edges with exact files and lines", ctx do
     %{modules: modules, warnings: [], stats: stats} = load(ctx)
@@ -226,7 +285,7 @@ defmodule VulnCheck.Beam.ExtractorTest do
     assert {"go", ":beam_fixture_dep.handle/1", :dynamic_apply} in targets
     assert {"cap", ":beam_fixture_dep.handle/1", :static_call} in targets
     assert Enum.any?(erl.mfa_refs, &(MFA.format(&1.to) == ":beam_fixture_dep.loop/2"))
-    assert erl.dynamic_dispatches == []
+    refute Enum.any?(erl.dynamic_dispatches, &(&1.caller.function in ["go", "cap"]))
   end
 
   test "stripped beams fall back to the imports table", ctx do
@@ -263,12 +322,17 @@ defmodule VulnCheck.Beam.ExtractorTest do
     assert {:ok, second, :cached} = Loader.load_file(path, cache: config, root_dir: ctx.root)
     assert second == first
 
+    [current] = Path.wildcard(Path.join(VulnCheck.Cache.beam_dir(config), "*.etf"))
+    {:vulncheck_beam, 3, key, summary} = :erlang.binary_to_term(File.read!(current), [:safe])
+    File.write!(current, :erlang.term_to_binary({:vulncheck_beam, 2, key, summary}))
+    assert {:ok, ^first, :analyzed} = Loader.load_file(path, cache: config, root_dir: ctx.root)
+
     # a different root yields a different cache entry (relative paths depend on it)
     assert {:ok, _, :analyzed} = Loader.load_file(path, cache: config, root_dir: "/elsewhere")
 
     [entry | _] = Path.wildcard(Path.join(VulnCheck.Cache.beam_dir(config), "*.etf"))
 
-    assert {:vulncheck_beam, 2, _, %ModuleSummary{}} =
+    assert {:vulncheck_beam, 3, _, %ModuleSummary{}} =
              :erlang.binary_to_term(File.read!(entry), [:safe])
   end
 

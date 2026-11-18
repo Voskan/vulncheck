@@ -252,6 +252,68 @@ defmodule VulnCheck.ScannerTest do
     assert ash.reason_detail =~ "missing compiled .app for project application admin"
   end
 
+  test "unresolved dispatch keeps a candidate potential only while its caller is reached", ctx do
+    ash_ebin = Path.join(ctx.root, "_build/prod/lib/ash/ebin")
+    shop_ebin = Path.join(ctx.root, "_build/prod/lib/shop/ebin")
+
+    Beams.compile!(ash_ebin, [
+      {"aggregate.ex",
+       """
+       defmodule Ash.Actions.Aggregate do
+         def run(value, _, _, _), do: value
+         def preview(value, _, _, _), do: value
+       end
+       """}
+    ])
+
+    Beams.compile!(shop_ebin, [
+      {"catalog.ex",
+       """
+       defmodule Shop.Catalog do
+         def list, do: Ash.read(:products, [])
+         def invoke(function), do: apply(Ash.Actions.Aggregate, function, [0, 1, 2, 3])
+       end
+       """}
+    ])
+
+    {_, inactive} = scan_ash(ctx)
+    assert inactive.reason == :function_not_called
+
+    Beams.compile!(shop_ebin, [
+      {"application.ex",
+       """
+       defmodule Shop.Application do
+         def start(_, function), do: Shop.Catalog.invoke(function)
+       end
+       """}
+    ])
+
+    {active_report, active} = scan_ash(ctx)
+    assert active.verdict == :potentially_reachable
+    assert active.reason == :unresolved_dynamic_dispatch
+    assert active.target_mfa == MFA.new("Elixir.Ash.Actions.Aggregate", "run", 4)
+    assert List.last(active.trace).kind == :dynamic_candidate
+    assert Enum.at(active.trace, -2).line == 3
+    assert Enum.any?(active_report.warnings, &String.contains?(&1, "Shop.Catalog.invoke/1"))
+
+    Beams.compile!(shop_ebin, [
+      {"catalog.ex",
+       """
+       defmodule Shop.Catalog do
+         def invoke(function) do
+           apply(Ash.Actions.Aggregate, function, [0, 1, 2, 3])
+           Ash.Actions.Aggregate.run(0, 1, 2, 3)
+         end
+       end
+       """}
+    ])
+
+    {_, confirmed} = scan_ash(ctx)
+    assert confirmed.verdict == :reachable
+    assert confirmed.reason == :call_chain_proven
+    assert Enum.at(confirmed.trace, -2).line == 4
+  end
+
   defp scan_ash(%{root: root, opts: opts}) do
     config = %Config{project_dir: root, cache_dir: Tmp.mkdir!("scan-cache"), env: :prod}
     assert {:ok, report} = VulnCheck.scan(config, opts)

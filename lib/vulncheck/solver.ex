@@ -153,8 +153,9 @@ defmodule VulnCheck.Solver do
 
     escapes =
       for {_name, %ModuleSummary{} = summary} <- graph.modules,
-          not Map.has_key?(model.resolved_dynamic_modules, summary.module),
           %DynamicCall{known_module: nil} = call <- summary.dynamic_dispatches,
+          call.kind == :function_value or
+            not Map.has_key?(model.resolved_dynamic_modules, summary.module),
           not MapSet.member?(model.resolved_dynamic_calls, call),
           MapSet.member?(reachable, call.caller),
           do: call
@@ -234,7 +235,7 @@ defmodule VulnCheck.Solver do
     findings
     |> Enum.filter(&(&1.reason == :unresolved_dynamic_dispatch and Finding.active?(&1)))
     |> Enum.filter(&(&1.trace != []))
-    |> Enum.group_by(&List.last(&1.trace))
+    |> Enum.group_by(&dynamic_call_site(&1.trace))
     |> Enum.sort_by(fn {%TraceHop{} = hop, _} -> {MFA.format(hop.mfa), hop.file, hop.line} end)
     |> Enum.map(fn {%TraceHop{} = hop, group} ->
       packages = group |> Enum.map(& &1.package) |> Enum.uniq() |> Enum.sort()
@@ -242,6 +243,15 @@ defmodule VulnCheck.Solver do
 
       "the dynamic call in #{MFA.format(hop.mfa)}#{site} cannot be resolved statically " <>
         "and keeps #{length(group)} advisory(ies) of #{Enum.join(packages, ", ")} potentially reachable"
+    end)
+  end
+
+  defp dynamic_call_site(hops) do
+    hops
+    |> Enum.chunk_every(2, 1, :discard)
+    |> Enum.find_value(List.last(hops), fn
+      [caller, %TraceHop{kind: :dynamic_candidate}] -> caller
+      _ -> nil
     end)
   end
 
@@ -390,12 +400,21 @@ defmodule VulnCheck.Solver do
   defp routine_verdict({:proven, routine, hops}), do: proven(routine, hops)
 
   defp routine_verdict({:possible, routine, hops}) do
-    potentially(
-      :missing_beam_debug_info,
-      "#{MFA.format(routine)} is reachable only through modules without debug info",
-      routine,
-      hops
-    )
+    if Enum.any?(hops, &(&1.kind == :dynamic_candidate)) do
+      potentially(
+        :unresolved_dynamic_dispatch,
+        "#{MFA.format(routine)} is a possible target of an unresolved invocation",
+        routine,
+        hops
+      )
+    else
+      potentially(
+        :missing_beam_debug_info,
+        "#{MFA.format(routine)} is reachable only through modules without debug info",
+        routine,
+        hops
+      )
+    end
   end
 
   defp affected_by_incomplete_artifacts(
@@ -603,7 +622,8 @@ defmodule VulnCheck.Solver do
         Enum.any?(targets, fn %MFA{} = target ->
           call.known_function in [nil, target.function] and
             DynamicCall.arity_compatible?(call, target.arity) and
-            (index.atoms_constructed or
+            (call.kind == :function_value or
+               index.atoms_constructed or
                MapSet.member?(index.atom_modules, call.caller.module) or
                MapSet.member?(index.named_modules, target.module))
         end)

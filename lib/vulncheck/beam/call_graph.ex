@@ -11,13 +11,13 @@ defmodule VulnCheck.Beam.CallGraph do
 
   alias VulnCheck.Types.{CallEdge, Entrypoint, MFA, ModuleSummary, TraceHop}
 
-  defstruct out_edges: %{}, in_edges: %{}, modules: %{}, pairs: MapSet.new()
+  defstruct out_edges: %{}, in_edges: %{}, modules: %{}, pairs: %{}
 
   @type t :: %__MODULE__{
           out_edges: %{MFA.t() => [CallEdge.t()]},
           in_edges: %{MFA.t() => [CallEdge.t()]},
           modules: %{String.t() => ModuleSummary.t()},
-          pairs: MapSet.t()
+          pairs: %{{MFA.t(), MFA.t()} => boolean()}
         }
 
   @doc """
@@ -41,15 +41,18 @@ defmodule VulnCheck.Beam.CallGraph do
   end
 
   @doc """
-  Adds edges to the graph. Duplicate `{from, to}` pairs keep the first edge.
+  Adds edges to the graph. Duplicate pairs prefer proven edges, with ties
+  keeping the first edge.
   """
   @spec add_edges(t(), [CallEdge.t()]) :: t()
   def add_edges(%__MODULE__{} = graph, edges) do
     {fresh, pairs} =
       Enum.reduce(edges, {[], graph.pairs}, fn %CallEdge{from: from, to: to} = edge, {acc, pairs} ->
-        if MapSet.member?(pairs, {from, to}),
+        proof = CallEdge.proven?(edge)
+
+        if Map.get(pairs, {from, to}) in [proof, true],
           do: {acc, pairs},
-          else: {[edge | acc], MapSet.put(pairs, {from, to})}
+          else: {[edge | acc], Map.put(pairs, {from, to}, proof)}
       end)
 
     fresh = Enum.reverse(fresh)
@@ -57,14 +60,19 @@ defmodule VulnCheck.Beam.CallGraph do
     %{
       graph
       | pairs: pairs,
-        out_edges: append(graph.out_edges, Enum.group_by(fresh, & &1.from)),
-        in_edges: append(graph.in_edges, Enum.group_by(fresh, & &1.to))
+        out_edges: append(graph.out_edges, Enum.group_by(fresh, & &1.from), pairs),
+        in_edges: append(graph.in_edges, Enum.group_by(fresh, & &1.to), pairs)
     }
   end
 
-  defp append(index, groups) do
+  defp append(index, groups, pairs) do
     Enum.reduce(groups, index, fn {key, list}, acc ->
-      Map.update(acc, key, list, &(&1 ++ list))
+      edges =
+        Enum.filter(Map.get(acc, key, []) ++ list, fn edge ->
+          Map.fetch!(pairs, {edge.from, edge.to}) == CallEdge.proven?(edge)
+        end)
+
+      Map.put(acc, key, edges)
     end)
   end
 

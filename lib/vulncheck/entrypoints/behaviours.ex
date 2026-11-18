@@ -11,7 +11,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
       function to that module's start functions and callbacks
       (`:supervisor_child`).
     * `apply(Mod, fun, args)` with a known module and an unknown function
-      links every exported function of matching arity (`:dynamic_apply`).
+      links every exported function of matching arity as a candidate.
     * Protocol functions are linked to the matching `defimpl` functions.
     * `Plug.Parsers` is linked only to the parsers configured statically
       (`parsers: [:json]`), or to every parser when the list is dynamic;
@@ -205,7 +205,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
          resolved_calls
        ) do
     calls
-    |> Enum.reject(&MapSet.member?(resolved_calls, &1))
+    |> Enum.filter(&(&1.kind == :module_function and not MapSet.member?(resolved_calls, &1)))
     |> Enum.flat_map(fn %DynamicCall{} = call ->
       targets =
         case call.known_module do
@@ -224,7 +224,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
           to: %MFA{module: target, function: function, arity: arity},
           file: call.file,
           line: call.line,
-          kind: :dynamic_apply
+          kind: :dynamic_candidate
         }
       end
     end)
@@ -443,7 +443,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
         callbacks ->
           for parser <- parser_modules,
               {:ok, %ModuleSummary{dynamic_dispatches: calls}} <- [Map.fetch(modules, parser)],
-              %DynamicCall{known_module: nil} = call <- calls do
+              %DynamicCall{known_module: nil, kind: :module_function} = call <- calls do
             json = if parser == "Elixir.Plug.Parsers.JSON", do: decoders, else: []
 
             targets =
@@ -454,12 +454,23 @@ defmodule VulnCheck.Entrypoints.Behaviours do
           end
       end
 
+    init = %MFA{module: "Elixir.Plug.Parsers", function: "init", arity: 1}
+    calls = Map.get(modules, init.module, %{dynamic_dispatches: []}).dynamic_dispatches
+
+    site =
+      Enum.find(calls, fn call ->
+        call.caller == init and call.known_function == "init" and
+          DynamicCall.arity_compatible?(call, 1)
+      end)
+
     edges =
       for parser <- parser_modules, Map.has_key?(modules, parser) do
         %CallEdge{
-          from: %MFA{module: "Elixir.Plug.Parsers", function: "init", arity: 1},
+          from: init,
           to: %MFA{module: parser, function: "init", arity: 1},
-          kind: :dynamic_apply
+          file: site && site.file,
+          line: site && site.line,
+          kind: if(parsers == :all, do: :dynamic_candidate, else: :dynamic_apply)
         }
       end
 

@@ -27,6 +27,7 @@ defmodule VulnCheck.Types.TraceHop do
           | :behaviour_callback
           | :supervisor_child
           | :dynamic_apply
+          | :dynamic_candidate
           | :imports
 
   @type t :: %__MODULE__{

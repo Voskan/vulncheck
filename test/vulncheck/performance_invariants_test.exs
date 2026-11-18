@@ -43,6 +43,7 @@ defmodule VulnCheck.PerformanceInvariantsTest do
          """
          defmodule Shop.Router do
            def init(opts), do: Plug.Parsers.MULTIPART.init(opts)
+         def callback(fun, args), do: apply(fun, args)
          end
          """}
       ]
