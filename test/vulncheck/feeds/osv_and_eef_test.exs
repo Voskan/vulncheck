@@ -333,6 +333,10 @@ defmodule VulnCheck.Feeds.OsvAndEefTest do
       assert TextHints.otp_constraint("Affects OTP <= 25 when verify_none is set.") == "<= 25"
       assert TextHints.otp_constraint("Affects OTP 24 and later.") == nil
       assert TextHints.otp_constraint("Fixed in OTP 26 and 27.") == nil
+      assert TextHints.otp_constraint("This does not affect OTP 24 and 25.") == nil
+      assert TextHints.otp_constraint("This affects OTP 24 and 25 and later.") == nil
+      assert TextHints.otp_constraint("This is exploitable before OTP 27.3.") == "< 27.3"
+      assert TextHints.otp_constraint("Vulnerable on OTP 26.2 and 27.3.") == "26.2 || 27.3"
       assert TextHints.otp_constraint(nil) == nil
     end
   end

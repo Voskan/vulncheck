@@ -1,7 +1,7 @@
 defmodule VulnCheck.Feeds.MergeTest do
   use ExUnit.Case, async: true
 
-  alias VulnCheck.Feeds.{Merge, OSV}
+  alias VulnCheck.Feeds.{EefCna, Merge, OSV}
   alias VulnCheck.Semver
   alias VulnCheck.Test.Feeds
   alias VulnCheck.Types.{Advisory, MFA, VersionRange}
@@ -19,6 +19,25 @@ defmodule VulnCheck.Feeds.MergeTest do
   end
 
   describe "merge/1" do
+    test "OTP restrictions cannot narrow a source without the same constraint" do
+      first = advisory("A", ["B"], otp_constraints: "<= 25")
+      second = advisory("B", [])
+
+      assert [%Advisory{otp_constraints: nil, otp_constraints_conflict: true} = merged] =
+               Merge.merge([first, second])
+
+      record = %{
+        "containers" => %{
+          "cna" => %{"descriptions" => [%{"value" => "Only affects releases before OTP 26."}]}
+        }
+      }
+
+      assert EefCna.apply_record(merged, record).otp_constraints == nil
+
+      assert [%Advisory{otp_constraints: "<= 25", otp_constraints_conflict: false}] =
+               Merge.merge([first, %{second | otp_constraints: "<= 25"}])
+    end
+
     test "folds the EEF and GitHub records of one CVE into one advisory" do
       eef =
         advisory("EEF-CVE-2026-39804", ["CVE-2026-39804"],

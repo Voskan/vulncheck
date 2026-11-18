@@ -6,16 +6,18 @@ defmodule VulnCheck.Types.VersionRange do
       "every version since the beginning".
     * `fixed` — first unaffected version (exclusive upper bound).
     * `last_affected` — last affected version (inclusive upper bound).
+    * `limit` — exclusive scope of the interval, without asserting a fix.
 
-  When both `fixed` and `last_affected` are `nil` the interval is open-ended.
+  When all upper bounds are `nil`, the interval is open-ended.
   """
 
-  defstruct introduced: nil, fixed: nil, last_affected: nil
+  defstruct introduced: nil, fixed: nil, last_affected: nil, limit: nil
 
   @type t :: %__MODULE__{
           introduced: String.t() | nil,
           fixed: String.t() | nil,
-          last_affected: String.t() | nil
+          last_affected: String.t() | nil,
+          limit: String.t() | nil
         }
 end
 
@@ -70,6 +72,7 @@ defmodule VulnCheck.Types.Advisory do
     affected_modules: [],
     affected_routines: [],
     otp_constraints: nil,
+    otp_constraints_conflict: false,
     retirement: nil,
     symbol_source: nil,
     enriched: false
@@ -94,6 +97,7 @@ defmodule VulnCheck.Types.Advisory do
           affected_modules: [String.t()],
           affected_routines: [MFA.t()],
           otp_constraints: String.t() | nil,
+          otp_constraints_conflict: boolean(),
           retirement: Retirement.t() | nil,
           symbol_source: :cve | :osv | :text | nil,
           enriched: boolean()

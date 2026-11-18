@@ -17,8 +17,8 @@ defmodule VulnCheck.Feeds.Merge do
       contributes an open range;
     * routines, modules, CWEs and references are united; the highest CVSS
       score and severity win;
-    * summary, details and OTP constraints come from the canonical record,
-      falling back to the others when it has none.
+    * summary and details prefer the canonical record. An OTP restriction
+      is retained only when every merged record agrees.
 
   The result is deterministic for any input order.
   """
@@ -89,6 +89,7 @@ defmodule VulnCheck.Feeds.Merge do
     ids = ordered |> Enum.flat_map(&[&1.id | &1.aliases]) |> Enum.uniq()
     ranges = ranges(ordered)
     {score, vector} = cvss(ordered)
+    {otp_constraints, otp_conflict?} = otp_constraints(ordered)
 
     %Advisory{
       canonical
@@ -110,7 +111,8 @@ defmodule VulnCheck.Feeds.Merge do
         affected_modules: union_of(ordered, & &1.affected_modules),
         affected_routines: union_of(ordered, & &1.affected_routines),
         symbol_source: Enum.find_value(ordered, &(&1.affected_routines != [] && &1.symbol_source)),
-        otp_constraints: first_present(ordered, & &1.otp_constraints),
+        otp_constraints: otp_constraints,
+        otp_constraints_conflict: otp_conflict?,
         enriched: Enum.any?(ordered, & &1.enriched)
     }
   end
@@ -139,6 +141,14 @@ defmodule VulnCheck.Feeds.Merge do
 
   defp severity(members) do
     members |> Enum.map(& &1.severity) |> Enum.reduce(&Advisory.max_severity/2)
+  end
+
+  defp otp_constraints(members) do
+    case {Enum.any?(members, & &1.otp_constraints_conflict),
+          Enum.uniq_by(members, & &1.otp_constraints)} do
+      {false, [member]} -> {member.otp_constraints, false}
+      _ -> {nil, true}
+    end
   end
 
   defp first_present(members, fun) do

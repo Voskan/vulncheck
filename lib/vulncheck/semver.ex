@@ -83,21 +83,17 @@ defmodule VulnCheck.Semver do
   @spec in_range?(String.t(), VersionRange.t()) :: boolean()
   def in_range?(version, %VersionRange{} = range) do
     lower_ok =
-      case range.introduced do
-        nil -> true
-        "0" -> true
-        "*" -> true
-        introduced -> compare(version, introduced) != :lt
-      end
+      range.introduced == "0" or not valid?(range.introduced) or
+        compare(version, range.introduced) != :lt
 
     upper_ok =
       cond do
-        range.fixed not in [nil, "*"] -> compare(version, range.fixed) == :lt
-        range.last_affected not in [nil, "*"] -> compare(version, range.last_affected) != :gt
+        valid?(range.fixed) -> compare(version, range.fixed) == :lt
+        valid?(range.last_affected) -> compare(version, range.last_affected) != :gt
         true -> true
       end
 
-    lower_ok and upper_ok
+    lower_ok and upper_ok and (not valid?(range.limit) or compare(version, range.limit) == :lt)
   end
 
   @doc """
@@ -117,7 +113,7 @@ defmodule VulnCheck.Semver do
       not valid?(version) ->
         true
 
-      Enum.any?(advisory.affected_versions, &(compare(&1, version) == :eq)) ->
+      Enum.any?(advisory.affected_versions, &(not valid?(&1) or compare(&1, version) == :eq)) ->
         true
 
       true ->
@@ -130,55 +126,42 @@ defmodule VulnCheck.Semver do
 
   Each range's `events` are processed in version order: an `introduced` event
   opens an interval that the next `fixed` or `last_affected` event closes.
+  A `limit` restricts the range without declaring a fixed release.
   `GIT` ranges are ignored because they cannot be compared with package
   versions.
   """
   @spec from_osv_ranges([map()] | nil) :: [VersionRange.t()]
   def from_osv_ranges(ranges) when is_list(ranges) do
     Enum.flat_map(ranges, fn
-      %{"type" => "GIT"} -> []
-      %{"events" => events} when is_list(events) -> events_to_ranges(events)
-      _ -> []
-    end)
-  end
-
-  def from_osv_ranges(_), do: []
-
-  @doc """
-  Converts CVE 5.1 `versions` entries into version ranges. Only entries with
-  `"status": "affected"` produce ranges.
-  """
-  @spec from_cve_versions([map()] | nil) :: [VersionRange.t()]
-  def from_cve_versions(versions) when is_list(versions) do
-    Enum.flat_map(versions, fn
-      %{"status" => "affected"} = entry ->
-        introduced = normalize_bound(entry["version"])
-
-        cond do
-          is_binary(entry["lessThan"]) ->
-            [%VersionRange{introduced: introduced, fixed: normalize_bound(entry["lessThan"])}]
-
-          is_binary(entry["lessThanOrEqual"]) ->
-            [
-              %VersionRange{
-                introduced: introduced,
-                last_affected: normalize_bound(entry["lessThanOrEqual"])
-              }
-            ]
-
-          is_binary(introduced) and introduced != "0" ->
-            [%VersionRange{introduced: introduced, last_affected: introduced}]
-
-          true ->
-            [%VersionRange{}]
-        end
+      %{"events" => events} = range when is_list(events) ->
+        if Map.get(range, "type", "SEMVER") in ["SEMVER", "ECOSYSTEM"],
+          do: events_to_ranges(events),
+          else: []
 
       _ ->
         []
     end)
   end
 
+  def from_osv_ranges(_), do: []
+
+  @doc """
+  Converts numbered CVE 5.1 `versions` entries into ranges. Affected and
+  unknown segments are retained. Commit ranges require a different matcher.
+  """
+  @spec from_cve_versions([map()] | nil) :: [VersionRange.t()]
+  def from_cve_versions(versions) when is_list(versions) do
+    Enum.flat_map(versions, &cve_entry_ranges/1)
+  end
+
   def from_cve_versions(_), do: []
+
+  @doc "Numbered range hints for a CVE affected product. An affected or unknown default keeps the set open."
+  @spec from_cve_affected(map()) :: [VersionRange.t()]
+  def from_cve_affected(%{"defaultStatus" => "unaffected"} = entry),
+    do: from_cve_versions(entry["versions"])
+
+  def from_cve_affected(_entry), do: [%VersionRange{}]
 
   @doc """
   Collects the `fixed` versions declared by a list of ranges.
@@ -186,8 +169,10 @@ defmodule VulnCheck.Semver do
   @spec fixed_versions([VersionRange.t()]) :: [String.t()]
   def fixed_versions(ranges) do
     ranges
+    |> Enum.filter(fn range ->
+      valid?(range.fixed) and (not valid?(range.limit) or compare(range.fixed, range.limit) != :gt)
+    end)
     |> Enum.map(& &1.fixed)
-    |> Enum.reject(&(&1 in [nil, "*"]))
     |> Enum.uniq()
     |> sort()
   end
@@ -201,19 +186,14 @@ defmodule VulnCheck.Semver do
   """
   @spec recommended_fix(String.t(), Advisory.t()) :: String.t() | nil
   def recommended_fix(installed, %Advisory{} = advisory) do
-    branch_fix =
-      advisory.version_ranges
-      |> Enum.filter(&(in_range?(installed, &1) and &1.fixed not in [nil, "*"]))
-      |> Enum.map(& &1.fixed)
-      |> sort()
-      |> List.first()
+    if valid?(installed) and affected?(installed, advisory) do
+      branch = advisory.version_ranges |> Enum.filter(&in_range?(installed, &1)) |> fixed_versions()
+      other = sort(advisory.fixed_versions ++ fixed_versions(advisory.version_ranges))
 
-    branch_fix ||
-      (advisory.fixed_versions ++ fixed_versions(advisory.version_ranges))
-      |> Enum.filter(&(valid?(&1) and compare(&1, installed) == :gt))
-      |> Enum.reject(&affected?(&1, advisory))
-      |> sort()
-      |> List.first()
+      Enum.find(branch ++ other, fn fix ->
+        valid?(fix) and compare(fix, installed) == :gt and not affected?(fix, advisory)
+      end)
+    end
   end
 
   @doc """
@@ -221,8 +201,9 @@ defmodule VulnCheck.Semver do
 
   Supported expressions: `"< 26"`, `"<= 25"`, `">= 24 and <= 25"`,
   `"24 || 25"`, `"== 25"`, `"25"`. Comparison happens at the precision of the
-  constraint, so `"<= 25"` matches OTP `25.3.2`. A `nil` or unparseable
-  constraint is treated as affecting every runtime (fail-safe).
+  constraint, so `"<= 25"` matches OTP `25.3.2`. When the known release
+  prefix matches a more precise boundary, the comparison remains open.
+  A `nil` or unparseable constraint is treated as affecting every runtime.
 
       iex> VulnCheck.Semver.otp_affected?("27", "<= 25")
       false
@@ -320,16 +301,71 @@ defmodule VulnCheck.Semver do
   defp normalize_bound(value) when is_binary(value), do: String.trim(value)
   defp normalize_bound(_), do: nil
 
+  defp cve_entry_ranges(%{"versionType" => "git"}), do: []
+
+  defp cve_entry_ranges(%{"status" => status} = entry)
+       when status in ["affected", "unaffected", "unknown"] do
+    range = cve_interval(entry)
+
+    changes =
+      for %{"at" => at, "status" => next} <- List.wrap(entry["changes"]),
+          next in ["affected", "unaffected", "unknown"],
+          valid?(at) and in_range?(at, range),
+          do: {at, next}
+
+    {segments, current, start} =
+      changes
+      |> Enum.sort(fn {a, _}, {b, _} -> compare(a, b) != :gt end)
+      |> Enum.reduce({[], status, range.introduced}, fn {at, next}, {segments, current, start} ->
+        closed = %VersionRange{introduced: start, limit: at}
+        {cve_segment(segments, current, closed), next, at}
+      end)
+
+    Enum.reverse(cve_segment(segments, current, %{range | introduced: start}))
+  end
+
+  defp cve_entry_ranges(_), do: []
+
+  defp cve_segment(segments, "unaffected", _range), do: segments
+  defp cve_segment(segments, _status, range), do: [range | segments]
+
+  defp cve_interval(entry) do
+    first = normalize_bound(entry["version"])
+    upper = normalize_bound(entry["lessThan"] || entry["lessThanOrEqual"])
+    wildcard_limit = cve_wildcard_limit(upper)
+
+    cond do
+      wildcard_limit -> %VersionRange{introduced: first, limit: wildcard_limit}
+      is_binary(entry["lessThan"]) -> %VersionRange{introduced: first, fixed: upper}
+      is_binary(entry["lessThanOrEqual"]) -> %VersionRange{introduced: first, last_affected: upper}
+      is_binary(first) and first != "0" -> %VersionRange{introduced: first, last_affected: first}
+      true -> %VersionRange{}
+    end
+  end
+
+  defp cve_wildcard_limit(nil), do: nil
+
+  defp cve_wildcard_limit(upper) do
+    with true <- String.ends_with?(upper, ".*"),
+         {:ok, segments} <- upper |> String.trim_trailing(".*") |> parse_segments() do
+      {last, prefix} = List.pop_at(segments, -1)
+      Enum.join(prefix ++ [last + 1], ".") <> "-0"
+    else
+      _ -> nil
+    end
+  end
+
   defp events_to_ranges(events) do
+    limits = for %{"limit" => limit} <- events, is_binary(limit), do: limit
+    limit = if Enum.all?(limits, &valid?/1), do: limits |> sort() |> List.last()
+
     sorted =
       events
-      |> Enum.flat_map(fn event ->
-        cond do
-          is_binary(event["introduced"]) -> [{:introduced, event["introduced"]}]
-          is_binary(event["fixed"]) -> [{:fixed, event["fixed"]}]
-          is_binary(event["last_affected"]) -> [{:last_affected, event["last_affected"]}]
-          true -> []
-        end
+      |> Enum.flat_map(fn
+        %{"introduced" => version} when is_binary(version) -> [{:introduced, version}]
+        %{"fixed" => version} when is_binary(version) -> [{:fixed, version}]
+        %{"last_affected" => version} when is_binary(version) -> [{:last_affected, version}]
+        _ -> []
       end)
       |> Enum.with_index()
       |> Enum.sort(fn {{_, a}, ia}, {{_, b}, ib} ->
@@ -360,7 +396,7 @@ defmodule VulnCheck.Semver do
       end)
 
     ranges = if open, do: [%VersionRange{introduced: open} | ranges], else: ranges
-    Enum.reverse(ranges)
+    ranges |> Enum.map(&%{&1 | limit: limit}) |> Enum.reverse()
   end
 
   defp event_compare("0", "0"), do: :eq
@@ -371,10 +407,10 @@ defmodule VulnCheck.Semver do
   defp parse_constraint(constraints) do
     disjuncts =
       constraints
-      |> String.split(~r/\s*(\|\||\bor\b)\s*/i, trim: true)
+      |> String.split(~r/\s*(\|\||\bor\b)\s*/i)
       |> Enum.map(fn disjunct ->
         disjunct
-        |> String.split(~r/\s*(&&|\band\b|,)\s*/i, trim: true)
+        |> String.split(~r/\s*(&&|\band\b|,)\s*/i)
         |> Enum.map(&parse_comparison/1)
       end)
 
@@ -414,9 +450,15 @@ defmodule VulnCheck.Semver do
   defp normalize_op("~>"), do: :~>
 
   defp check(op, release, segments) do
-    truncated = Enum.take(release ++ List.duplicate(0, length(segments)), length(segments))
-    result = compare_numbers(truncated, segments)
+    precision = min(length(release), length(segments))
+    result = compare_numbers(Enum.take(release, precision), Enum.take(segments, precision))
 
+    if result == :eq and precision < length(segments),
+      do: true,
+      else: compare_otp(op, result, hd(release) == hd(segments))
+  end
+
+  defp compare_otp(op, result, same_major) do
     case op do
       :== -> result == :eq
       :!= -> result != :eq
@@ -424,7 +466,7 @@ defmodule VulnCheck.Semver do
       :<= -> result != :gt
       :> -> result == :gt
       :>= -> result != :lt
-      :~> -> result != :lt and hd(release) == hd(segments)
+      :~> -> result != :lt and same_major
     end
   end
 end

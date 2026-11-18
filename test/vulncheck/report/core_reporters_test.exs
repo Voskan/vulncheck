@@ -75,6 +75,7 @@ defmodule VulnCheck.Report.CoreReportersTest do
         severity: :high,
         cvss_score: 7.5,
         fixed_versions: ["3.34.6"],
+        recommended_fix: "3.34.6",
         verdict: :reachable,
         reason: :call_chain_proven,
         summary: "Aggregates skip related resources' read policies",
@@ -107,6 +108,7 @@ defmodule VulnCheck.Report.CoreReportersTest do
         installed_version: "1.16.2",
         cvss_score: 6.5,
         fixed_versions: ["1.16.4"],
+        recommended_fix: "1.16.4",
         verdict: :potentially_reachable,
         reason: :active_network_daemon,
         summary: "Quadratic-time nested parameter decoding",
@@ -183,7 +185,7 @@ defmodule VulnCheck.Report.CoreReportersTest do
                "Lockfile: 4 prod packages (1 dev/test excluded) · Scan time: 142 ms (cached)"
 
       assert output =~
-               "[REACHABLE] CVE-2026-101028 (GHSA-xj24-8f5c-pp5p) (HIGH · CVSS 7.5) — ash 3.34.2 (fix: >= 3.34.6)"
+               "[REACHABLE] CVE-2026-101028 (GHSA-xj24-8f5c-pp5p) (HIGH · CVSS 7.5) — ash 3.34.2 (fix: 3.34.6)"
 
       assert output =~ "  Target:  Ash.Actions.Aggregate.run/4"
 
@@ -196,7 +198,7 @@ defmodule VulnCheck.Report.CoreReportersTest do
                """
 
       assert output =~
-               "[POTENTIALLY REACHABLE] CVE-2026-54892 (GHSA-plug-0001) (MEDIUM · CVSS 6.5) — plug 1.16.2 (fix: >= 1.16.4)"
+               "[POTENTIALLY REACHABLE] CVE-2026-54892 (GHSA-plug-0001) (MEDIUM · CVSS 6.5) — plug 1.16.2 (fix: 1.16.4)"
 
       assert output =~
                "  Reason:  Plug.Parsers :urlencoded enabled in the endpoint (active_network_daemon)"
@@ -379,7 +381,7 @@ defmodule VulnCheck.Report.CoreReportersTest do
       assert output =~ "| Noise reduction | 57% |"
       assert output =~ "### Reachable (1)"
       assert output =~ "#### CVE-2026-101028 (GHSA-xj24-8f5c-pp5p) — `ash` 3.34.2"
-      assert output =~ "- **Fix:** `>= 3.34.6`"
+      assert output =~ "- **Fix:** `3.34.6`"
       assert output =~ "| # | Call | Location |\n| ---: | --- | --- |"
 
       assert output =~

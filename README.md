@@ -91,7 +91,7 @@ VulnCheck 1.0.0 — BEAM Reachability Vulnerability Audit
 Target: my_fintech_api (mix, Elixir 1.18.2 / OTP 27.2, env: prod)
 Lockfile: 74 prod packages (19 dev/test excluded) · Scan time: 142 ms (cached)
 
-[REACHABLE] CVE-2026-101028 (HIGH · CVSS 7.5) — ash 3.34.2 (fix: >= 3.34.6)
+[REACHABLE] CVE-2026-101028 (HIGH · CVSS 7.5) — ash 3.34.2 (fix: 3.34.6)
   Summary: Ash.count, Ash.exists and Ash.aggregate skip related resources' read policies
   Target:  Ash.Actions.Aggregate.run/4
   Trace:
@@ -100,7 +100,7 @@ Lockfile: 74 prod packages (19 dev/test excluded) · Scan time: 142 ms (cached)
     3. Ash.count/2                               (deps/ash/lib/ash.ex:1184)
     4. Ash.Actions.Aggregate.run/4               (deps/ash/lib/ash/actions/aggregate.ex:29)
 
-[POTENTIALLY REACHABLE] CVE-2026-54892 (MEDIUM · CVSS 6.5) — plug 1.16.2 (fix: >= 1.16.4)
+[POTENTIALLY REACHABLE] CVE-2026-54892 (MEDIUM · CVSS 6.5) — plug 1.16.2 (fix: 1.16.4)
   Summary: Quadratic-time nested parameter decoding in Plug.Conn.Query
   Reason:  plug runs inside the HTTP pipeline started by MyFintechWeb.Endpoint (active_network_daemon)
 

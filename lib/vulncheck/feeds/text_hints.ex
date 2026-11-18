@@ -56,38 +56,63 @@ defmodule VulnCheck.Feeds.TextHints do
   def otp_constraint(nil), do: nil
 
   def otp_constraint(text) when is_binary(text) do
-    text
-    |> String.split(~r/(?<=[.;!?])\s+|\n+/)
-    |> Enum.filter(
-      &Regex.match?(~r/\b(affect|vulnerab|only (on|when|with)|running on|exploitable)/i, &1)
-    )
-    |> Enum.find_value(&sentence_constraint/1)
+    candidates =
+      text
+      |> String.split(~r/(?<=[.;!?])\s+|\n+/)
+      |> Enum.filter(fn sentence ->
+        Regex.match?(~r/\bOTP\b/i, sentence) and
+          Regex.match?(
+            ~r/\b(affect|vulnerab|only (on|when|with)|running on|exploitable)/i,
+            sentence
+          )
+      end)
+      |> Enum.map(&sentence_constraint/1)
+      |> Enum.uniq()
+
+    case candidates do
+      [constraint] -> constraint
+      _ -> nil
+    end
   end
 
   defp sentence_constraint(sentence) do
     otp = ~S"(?:Erlang\/)?OTP[ -]?"
+    version = ~S"\d+(?:\.\d+)*(?!\d|\.\d)"
 
     cond do
+      Regex.match?(
+        ~r/\b(?:not\s+(?:only\s+)?(?:affect\w*|vulnerab\w*|exploitable)|unaffected|except|unless)\b|\b(?:and|or)\s+(?:later|newer|above|higher)\b/i,
+        sentence
+      ) ->
+        nil
+
       match =
           Regex.run(
-            ~r/#{otp}(\d+)((?:\s*(?:,|and|or|&)\s*(?:#{otp})?\d+)+)(?!\s*(?:and|or)\s+(?:later|newer|above|higher))(?!\.\d)/i,
+            ~r/#{otp}(#{version})((?:\s*(?:,|and|or|&)\s*(?:#{otp})?#{version})+)(?!\s*(?:and|or)\s+\w)/i,
             sentence
           ) ->
         [_, first, rest] = match
-        numbers = [first | Regex.scan(~r/\d+/, rest) |> List.flatten()]
+        numbers = [first | Regex.scan(~r/\d+(?:\.\d+)*/, rest) |> List.flatten()]
         Enum.join(numbers, " || ")
 
       match =
-          Regex.run(~r/#{otp}(\d+)\s+(?:and|or)\s+(?:earlier|older|below|lower|prior)/i, sentence) ->
+          Regex.run(
+            ~r/#{otp}(#{version})\s+(?:and|or)\s+(?:earlier|older|below|lower|prior)\b/i,
+            sentence
+          ) ->
         [_, n] = match
         "<= #{n}"
 
       match =
-          Regex.run(~r/(?:before|prior to|older than|below|lower than)\s+#{otp}(\d+)/i, sentence) ->
+          Regex.run(
+            ~r/(?:before|prior to|older than|below|lower than)\s+#{otp}(#{version})(?!\s+(?:and|or|through|to)\b)/i,
+            sentence
+          ) ->
         [_, n] = match
         "< #{n}"
 
-      match = Regex.run(~r/#{otp}(<=|<|>=|>)\s*(\d+)/i, sentence) ->
+      match =
+          Regex.run(~r/#{otp}(<=|<|>=|>)\s*(#{version})(?!\s+(?:and|or|through|to)\b)/i, sentence) ->
         [_, op, n] = match
         "#{op} #{n}"
 

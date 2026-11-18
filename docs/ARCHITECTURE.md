@@ -32,10 +32,12 @@ Standard OSV Hex exports omit function-level symbols (`ecosystem_specific` is `n
    - Downloaded as a single compressed archive, size- and entry-limited before decompression, and revalidated with HTTP `ETag` / `If-None-Match` once the cache TTL expires.
    - Records of the same vulnerability of a package (the EEF `EEF-CVE-*` and GitHub `GHSA-*` records of one CVE share the CVE alias) are merged into one advisory: canonical id `EEF-CVE-*`, then `CVE-*`, then `GHSA-*`; united version ranges, symbols and references; the highest CVSS score.
    - Matched in memory against locked package versions in milliseconds.
+   - OSV range limits bound applicability without claiming a fix. Recommended versions must be newer than the installed version and outside all known affected ranges and explicit affected versions.
 2. **EEF CNA CVE 5.1 Enricher (`https://cna.erlef.org/cves/<CVE-ID>.json`, fallback `https://cveawg.mitre.org/api/cve/<CVE-ID>`):**
    - Fetched **only** for advisories whose package and version range match the target project's lockfile.
    - Extracts `containers.cna.affected[].programRoutines` (normalized from Erlang MFA strings like <code>'Elixir.Plug.Conn.Query':decode/4</code> or `hex_http_httpc:http_options/2` into `{module_atom_or_name, function_name, arity}`), `modules`, CVSS v3.1/v4.0 vectors, CWE identifiers, and OTP version constraints.
    - Cached on disk per CVE and refetched when the OSV record was modified after the cached copy was fetched.
+   - Numbered CVE ranges can refine advisories without OSV version data. An affected or unknown CVE default keeps that fallback open. Conflicting or missing OTP restrictions across merged sources prevent the merged record from excluding a runtime.
 3. **Hex.pm Package Retirement Metadata:**
    - Queries cached package retirement records to flag packages marked retired due to security or deprecation.
 

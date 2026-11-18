@@ -64,6 +64,7 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
         cvss_score: 7.5,
         cwes: ["CWE-863"],
         fixed_versions: ["3.34.6"],
+        recommended_fix: "3.34.6",
         summary: "Aggregates skip read policies",
         verdict: :reachable,
         reason: :call_chain_proven,
@@ -233,7 +234,7 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
              ]
 
       assert reachable["cwes"] == [863]
-      assert reachable["recommendation"] == "Upgrade ash to >= 3.34.6"
+      assert reachable["recommendation"] == "Upgrade ash to 3.34.6"
 
       assert reachable["analysis"] == %{
                "state" => "exploitable",
@@ -313,7 +314,7 @@ defmodule VulnCheck.Report.CycloneDXAndOpenVEXTest do
       assert reachable["status"] == "affected"
 
       assert reachable["action_statement"] ==
-               "Upgrade ash to >= 3.34.6 (reachable through Ash.Actions.Aggregate.run/4)"
+               "Upgrade ash to 3.34.6 (reachable through Ash.Actions.Aggregate.run/4)"
 
       refute Map.has_key?(reachable, "justification")
       refute Map.has_key?(reachable, "impact_statement")

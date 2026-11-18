@@ -143,7 +143,7 @@ defmodule VulnCheck.Feeds.EefCna do
 
     ranges =
       if advisory.version_ranges == [] and advisory.affected_versions == [] do
-        Enum.flat_map(entries, &Semver.from_cve_versions(&1["versions"]))
+        Enum.flat_map(entries, &Semver.from_cve_affected/1)
       else
         advisory.version_ranges
       end
@@ -169,10 +169,15 @@ defmodule VulnCheck.Feeds.EefCna do
         cwes: Enum.uniq(advisory.cwes ++ cwes),
         version_ranges: ranges,
         fixed_versions: Enum.uniq(advisory.fixed_versions ++ Semver.fixed_versions(ranges)),
-        otp_constraints: advisory.otp_constraints || TextHints.otp_constraint(descriptions),
+        otp_constraints: otp_constraints(advisory, descriptions),
         enriched: true
     }
   end
+
+  defp otp_constraints(%Advisory{otp_constraints_conflict: true}, _descriptions), do: nil
+
+  defp otp_constraints(advisory, descriptions),
+    do: advisory.otp_constraints || TextHints.otp_constraint(descriptions)
 
   # Merged advisories keep the highest score of their sources.
   defp strongest({nil, own_vector}, {nil, vector}), do: {nil, own_vector || vector}

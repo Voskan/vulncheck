@@ -94,6 +94,34 @@ defmodule VulnCheck.SemverTest do
       assert advisory.fixed_versions == ["1.15.5", "1.16.4", "1.17.2", "1.18.3", "1.19.3"]
     end
 
+    test "only recommends releases outside all known affected intervals and versions" do
+      advisory = %Advisory{
+        id: "A",
+        package: "p",
+        version_ranges: [
+          %VersionRange{introduced: "1.0.0", fixed: "1.2.0"},
+          %VersionRange{introduced: "1.1.0", fixed: "1.3.0"}
+        ]
+      }
+
+      assert Semver.recommended_fix("1.1.5", advisory) == "1.3.0"
+      assert Semver.recommended_fix("1.1.5", %{advisory | affected_versions: ["1.3.0"]}) == nil
+      assert Semver.recommended_fix("1.3.0", advisory) == nil
+      assert Semver.recommended_fix("unknown", advisory) == nil
+    end
+
+    test "an OSV limit is exclusive and does not invent a fix" do
+      [range] =
+        Semver.from_osv_ranges([
+          %{"type" => "SEMVER", "events" => [%{"introduced" => "1.0.0"}, %{"limit" => "2.0.0"}]}
+        ])
+
+      assert Semver.in_range?("1.9.9", range)
+      refute Semver.in_range?("2.0.0", range)
+      assert Semver.fixed_versions([range]) == []
+      assert Semver.in_range?("99.0.0", %{range | limit: "unknown"})
+    end
+
     test "introduced 0, last_affected, open-ended and unsorted events" do
       [range] =
         Semver.from_osv_ranges([
@@ -192,6 +220,34 @@ defmodule VulnCheck.SemverTest do
       assert Semver.in_range?("4.0.0", d)
       assert Semver.from_cve_versions(nil) == []
     end
+
+    test "handles numbered status changes and wildcards without treating them as fixes" do
+      versions = [
+        %{
+          "version" => "1.0.0",
+          "versionType" => "semver",
+          "lessThan" => "1.*",
+          "status" => "affected",
+          "changes" => [
+            %{"at" => "1.4.0", "status" => "unaffected"},
+            %{"at" => "1.8.0", "status" => "affected"}
+          ]
+        },
+        %{"version" => "other", "versionType" => "git", "status" => "affected"}
+      ]
+
+      ranges = Semver.from_cve_affected(%{"defaultStatus" => "unaffected", "versions" => versions})
+      advisory = %Advisory{id: "A", package: "p", version_ranges: ranges}
+      assert Semver.affected?("1.3.9", advisory)
+      refute Semver.affected?("1.4.0", advisory)
+      assert Semver.affected?("1.8.0", advisory)
+      refute Semver.affected?("2.0.0-rc.1", advisory)
+      assert Semver.fixed_versions(ranges) == []
+
+      assert Semver.from_cve_affected(%{"defaultStatus" => "unknown", "versions" => versions}) == [
+               %VersionRange{}
+             ]
+    end
   end
 
   describe "otp_affected?/2" do
@@ -224,6 +280,15 @@ defmodule VulnCheck.SemverTest do
       assert Semver.otp_affected?("27", "sometimes")
       assert Semver.otp_affected?("27", "")
       assert Semver.otp_affected?("not-a-release", "<= 25")
+      assert Semver.otp_affected?("26", ">= 27 and")
+    end
+
+    test "an incomplete OTP release can satisfy a more precise boundary" do
+      assert Semver.otp_affected?("27", ">= 27.3")
+      assert Semver.otp_affected?("27.3", "== 27.3.4")
+      assert Semver.otp_affected?("27.3", "!= 27.3.4")
+      refute Semver.otp_affected?("26", ">= 27.3")
+      refute Semver.otp_affected?("28", "< 27.3")
     end
   end
 end

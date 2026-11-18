@@ -199,7 +199,9 @@ defmodule VulnCheck.Explain do
         true -> nil
       end
 
-    case Enum.reject([lower, upper], &is_nil/1) do
+    limit = if r.limit, do: "< #{r.limit} (range limit)"
+
+    case Enum.reject([lower, upper, limit], &is_nil/1) do
       [] -> "all versions"
       parts -> Enum.join(parts, ", ")
     end

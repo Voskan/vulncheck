@@ -66,11 +66,9 @@ defmodule VulnCheck.Report.Formatter do
   @spec reason_label(Finding.reason()) :: String.t()
   def reason_label(reason), do: Map.get(@reason_labels, reason, Atom.to_string(reason))
 
-  @doc "Fix hint, e.g. `>= 1.16.4`, or `nil`."
+  @doc "The specific recommended fixed release, or `nil`."
   @spec fix_text(Finding.t()) :: String.t() | nil
-  def fix_text(%Finding{recommended_fix: fix}) when is_binary(fix), do: ">= " <> fix
-  def fix_text(%Finding{fixed_versions: [_ | _] = versions}), do: ">= " <> List.last(versions)
-  def fix_text(_finding), do: nil
+  def fix_text(%Finding{recommended_fix: fix}), do: fix
 
   @doc "Formats an MFA in Elixir or Erlang notation."
   @spec mfa(MFA.t() | nil) :: String.t() | nil
