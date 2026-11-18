@@ -38,10 +38,14 @@ defmodule VulnCheck.Feeds.Archive do
       when offset >= 0 and compressed_size >= 0 and offset < byte_size(zip) do
     expected = elem(info, 1)
 
-    with <<0x04034B50::32-little, _version::16, flags::16-little, method::16-little, _timestamp::32,
-           crc::32-little, local_compressed::32-little, local_size::32-little, name_size::16-little,
-           extra_size::16-little, rest::binary>> <-
-           binary_part(zip, offset, byte_size(zip) - offset),
+    header = binary_part(zip, offset, byte_size(zip) - offset)
+
+    # Local file header, field by field.
+    with <<0x04034B50::32-little, _version::16, tail::binary>> <- header,
+         <<flags::16-little, method::16-little, _timestamp::32, tail::binary>> <- tail,
+         <<crc::32-little, local_compressed::32-little, tail::binary>> <- tail,
+         <<local_size::32-little, name_size::16-little, tail::binary>> <- tail,
+         <<extra_size::16-little, rest::binary>> <- tail,
          true <- (flags &&& 0x41) == 0,
          skip = name_size + extra_size,
          <<_::binary-size(^skip), compressed::binary-size(^compressed_size), trailer::binary>> <-
