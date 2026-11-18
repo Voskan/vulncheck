@@ -174,7 +174,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18"
-      - uses: Voskan/vulncheck@v1
+      - uses: Voskan/vulncheck@v1.0.0
         with:
           fail-on: potentially_reachable
           diff: origin/${{ github.base_ref }}
@@ -190,6 +190,8 @@ The action builds the escript, compiles the project (`compile: false` skips this
 vulncheck:
   image: hexpm/elixir:1.18.4-erlang-27.3.4.16-alpine-3.22.5
   script:
+    - mix local.hex --force --if-missing
+    - mix local.rebar --force --if-missing
     - mix deps.get
     - MIX_ENV=prod mix compile
     - mix escript.install hex vulncheck --force

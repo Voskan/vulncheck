@@ -1,6 +1,6 @@
 # Output Schemas: JSON, SARIF 2.1.0, CycloneDX 1.6 & OpenVEX v0.2.0
 
-All machine-readable outputs produced by `vulncheck` use deterministic key ordering and sorted finding lists so CI artifacts and baselines are byte-reproducible.
+All machine-readable outputs produced by `vulncheck` use deterministic key ordering, sorted finding lists, and stable finding `fingerprint` hashes. Serialization is byte-reproducible for a fixed timestamp, while per-run metadata (`generated_at`, `duration_ms`, and SBOM/VEX document serials/timestamps) reflects the scan execution unless a fixed timestamp is supplied.
 
 ---
 

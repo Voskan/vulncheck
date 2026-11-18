@@ -34,7 +34,7 @@ At the same time, **a naive static call graph is unsafe on the BEAM**: HTTP serv
   - `REACHABLE` — Concrete call chain from an application/OTP entrypoint to a vulnerable `Module.fun/arity` (printed with exact `file:line` hops), either `call_chain_proven` or `daemon_call_chain` when it starts at the protocol handler of a network daemon the project starts (the trace then opens with the line that starts it) or runs on data received by a protocol client the project uses.
   - `POTENTIALLY_REACHABLE` — Package runs as an active OTP daemon/supervisor child, participates in an unresolved `apply/3` boundary, or lacks symbol-level CVE granularity while loaded in `:prod`.
   - Daemons are servers (`bandit`, `cowboy`, `cowboy_telemetry`, `cowlib`, `grpc`, `plug_cowboy`, `ranch`, `thousand_island`) started by the project, and `phoenix_pubsub` when the project starts `Phoenix.PubSub`. The protocol clients `mint`, `gun` and `finch` add the functions that process server responses as soon as the project reaches the client. See [`docs/REACHABILITY_MODEL.md`](docs/REACHABILITY_MODEL.md).
-  - `UNREACHABLE` — Mathematically excluded (`function_not_called`, `module_not_loaded`, `adapter_not_configured`, `otp_app_not_started`, `non_prod_dependency`, or `otp_version_unaffected`). Dependencies declared with `runtime: false`, and the packages only they need, are build-time only and reported as `non_prod_dependency`.
+  - `UNREACHABLE` — Statically excluded within the `.beam` call-graph and OTP execution model (`function_not_called`, `module_not_loaded`, `adapter_not_configured`, `otp_app_not_started`, `non_prod_dependency`, or `otp_version_unaffected`). Dependencies declared with `runtime: false`, and the packages only they need, are build-time only unless their modules are directly called (`non_prod_dependency`).
 - **Multi-Language BEAM Support:** Works as `mix vulncheck` inside Elixir / Umbrella projects and as a standalone `vulncheck` escript for Erlang (`rebar3`) and Gleam (`manifest.toml`) builds.
 - **Compliance & CI Ready:** Outputs ANSI Terminal reports, deterministic JSON, Markdown, **SARIF 2.1.0 (`codeFlows`)**, GitHub Actions annotations & Step Summaries, GitLab Code Quality reports, **CycloneDX 1.6 SBOM**, and **OpenVEX v0.2.0** (`vulnerable_code_not_in_execute_path`).
 
@@ -48,7 +48,7 @@ At the same time, **a naive static call graph is unsafe on the BEAM**: HTTP serv
 | EEF CNA CVE 5.1 `programRoutines` MFA ingestion | No | No | No | **Yes** |
 | Post-macro `.beam` call-graph reachability | No | No | No | **Yes (`file:line` call chains)** |
 | OTP supervision & `Plug` / `Tesla` adapter awareness | No | No | No | **Yes (sound 3-tier model)** |
-| OTP / Elixir runtime version gating | No | No | No | **Yes** |
+| OTP runtime version gating (`--otp-version`) | No | No | No | **Yes** (Elixir version in metadata is the scanner VM) |
 | SARIF 2.1.0 `codeFlows` & OpenVEX / CycloneDX 1.6 | No | No | SARIF (app rules) | **Yes** |
 | Air-gapped offline bundle mode | No | No | Yes | **Yes (`--offline` / `--bundle`)** |
 
@@ -72,6 +72,7 @@ Compile your project (so `.beam` debug chunks are up to date) and run the audit:
 
 ```bash
 mix deps.get
+MIX_ENV=prod mix compile
 mix vulncheck
 ```
 
@@ -154,7 +155,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18.2"
-      - uses: Voskan/vulncheck@v1
+      - uses: Voskan/vulncheck@v1.0.0
         with:
           fail-on: potentially_reachable
           upload-sarif: true
@@ -169,6 +170,7 @@ jobs:
 - [Configuration, Suppressions & CI/CD Guide](docs/CONFIGURATION_AND_CI.md)
 - [Output Schemas: JSON, SARIF 2.1.0, CycloneDX 1.6 & OpenVEX v0.2.0](docs/OUTPUT_FORMATS.md)
 - [Performance & Memory Benchmarks](docs/BENCHMARKS.md)
+- [Validation & Soundness Corpus](docs/VALIDATION.md)
 
 ---
 

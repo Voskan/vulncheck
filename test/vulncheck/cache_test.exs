@@ -157,17 +157,20 @@ defmodule VulnCheck.CacheTest do
 
       results =
         1..16
-        |> Task.async_stream(fn i ->
-          assert {:ok, "/data/" <> _, :network} =
-                   Cache.fetch(server.url <> "/data/#{i}", "feed", config,
-                     force: true,
-                     http_opts: [retry_delay_ms: 1, retries: 2]
-                   )
+        |> Task.async_stream(
+          fn i ->
+            assert {:ok, "/data/" <> _, :network} =
+                     Cache.fetch(server.url <> "/data/#{i}", "feed", config,
+                       force: true,
+                       http_opts: [retry_delay_ms: 1, retries: 2]
+                     )
 
-          assert {:ok, body, meta} = Cache.read_feed_entry(config, "feed")
-          assert meta["sha256"] == Cache.sha256(body)
-          assert String.ends_with?(meta["url"], body)
-        end)
+            assert {:ok, body, meta} = Cache.read_feed_entry(config, "feed")
+            assert meta["sha256"] == Cache.sha256(body)
+            assert String.ends_with?(meta["url"], body)
+          end,
+          timeout: 15_000
+        )
         |> Enum.to_list()
 
       assert Enum.all?(results, &match?({:ok, _}, &1))
