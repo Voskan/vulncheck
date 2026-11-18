@@ -136,7 +136,7 @@ defmodule VulnCheck.ConfigTest do
       "--no-retired"
     ]
 
-    assert {:ok, config} = Config.from_cli_and_file(argv)
+    assert {:ok, config} = Config.from_cli_and_file(argv, cwd: dir)
     assert config.fail_on == :any
     assert config.format == :sarif
     assert config.min_severity == :medium
@@ -144,7 +144,8 @@ defmodule VulnCheck.ConfigTest do
     assert config.show_unreachable
     assert config.otp_version == "25"
     assert config.offline
-    assert config.output == "out.sarif"
+    # paths on the command line are relative to the working directory
+    assert config.output == Path.join(dir, "out.sarif")
     refute config.check_retired
   end
 

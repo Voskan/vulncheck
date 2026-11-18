@@ -175,7 +175,7 @@ defmodule VulnCheck.Config do
         with :ok <- check_args(args, opts),
              {:ok, base} <- base_config(parsed, opts),
              {:ok, file_config} <- load_file(base),
-             {:ok, config} <- apply_cli(file_config, parsed) do
+             {:ok, config} <- apply_cli(file_config, expand_cli_paths(parsed, opts)) do
           {:ok, %{config | args: args}}
         end
 
@@ -277,6 +277,31 @@ defmodule VulnCheck.Config do
     else
       {:error, "project directory does not exist: #{project_dir}"}
     end
+  end
+
+  # Paths given on the command line are relative to the working directory;
+  # paths in `.vulncheck.exs` are relative to the project root.
+  defp expand_cli_paths(parsed, opts) do
+    cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
+
+    Enum.map(parsed, fn
+      {key, value}
+      when key in [
+             :output,
+             :sbom,
+             :vex,
+             :baseline,
+             :write_baseline,
+             :bundle,
+             :ignore_file,
+             :cache_dir
+           ] and
+             value != "" ->
+        {key, Path.expand(value, cwd)}
+
+      other ->
+        other
+    end)
   end
 
   defp apply_cli(config, parsed) do

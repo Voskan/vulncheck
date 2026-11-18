@@ -8,7 +8,7 @@ defmodule VulnCheck do
   whether the vulnerable functions can actually execute in production.
   """
 
-  alias VulnCheck.{Config, Scanner}
+  alias VulnCheck.{Config, Explain, Scanner}
   alias VulnCheck.Feeds.HexRetired
   alias VulnCheck.Types.{Finding, ScanReport}
 
@@ -33,9 +33,39 @@ defmodule VulnCheck do
   def scan(%Config{} = config, opts), do: Scanner.run(config, opts)
 
   def scan(path, opts) when is_binary(path) do
+    {config, run_opts} = split_options(path, opts)
+    Scanner.run(config, run_opts)
+  end
+
+  @doc """
+  Describes an advisory (`CVE-...`, `EEF-CVE-...`, `GHSA-...`) and, when the
+  project directory locks the affected package, its local reachability
+  verdict and call trace.
+
+  Accepts the same options as `scan/2`, plus `:project_dir` (default `"."`)
+  or a `:config` struct.
+
+      {:ok, %{advisories: [advisory | _], local: local}} =
+        VulnCheck.explain("CVE-2026-101028", project_dir: "path/to/app")
+  """
+  @spec explain(String.t(), keyword()) :: {:ok, Explain.result()} | {:error, term()}
+  def explain(advisory_id, opts \\ []) when is_binary(advisory_id) do
+    {config, run_opts} =
+      case Keyword.pop(opts, :config) do
+        {%Config{} = config, rest} ->
+          {config, rest}
+
+        {nil, rest} ->
+          split_options(Keyword.get(rest, :project_dir, "."), Keyword.delete(rest, :project_dir))
+      end
+
+    Explain.run(advisory_id, config, run_opts)
+  end
+
+  defp split_options(path, opts) do
     fields = Map.keys(%Config{}) -- [:__struct__]
     {config_opts, run_opts} = Keyword.split(opts, fields)
-    Scanner.run(struct(%Config{project_dir: path}, config_opts), run_opts)
+    {struct(%Config{project_dir: Path.expand(path)}, config_opts), run_opts}
   end
 
   @doc """
