@@ -100,7 +100,7 @@ defmodule VulnCheck.Workspace do
   defp load_project(%{type: type} = info, config) when type in [:mix, :umbrella] do
     env = Atom.to_string(config.env)
 
-    with {:ok, locked} <- MixLock.parse_file(info.lockfile),
+    with {:ok, locked, lock_warnings} <- MixLock.parse_file_with_warnings(info.lockfile),
          {:ok, root_project} <- MixProject.parse_file(info.manifest) do
       app_projects = umbrella_projects(type, info.root, root_project)
       projects = if type == :umbrella, do: app_projects, else: [root_project]
@@ -108,7 +108,7 @@ defmodule VulnCheck.Workspace do
 
       {build_env, build_dir, warnings} = choose_build(info.root, "_build", "lib", config.env)
 
-      {prod_roots, non_prod_roots, build_roots, path_packages, parsed?} =
+      {prod_roots, non_prod_roots, build_roots, path_packages, parsed?, parse_issues} =
         collect_mix_roots(projects ++ root_extra(type, root_project), env, MapSet.new(root_apps))
 
       app_ebins =
@@ -141,14 +141,16 @@ defmodule VulnCheck.Workspace do
         |> enrich_deps_from_app_files()
         |> assign_scopes(prod_roots, non_prod_roots, build_roots)
 
-      warnings =
+      dynamic_warnings =
         if parsed?,
-          do: warnings,
-          else:
-            warnings ++
-              [
-                "dependencies in mix.exs are built dynamically; all locked packages are treated as :prod"
-              ]
+          do: [],
+          else: [
+            "dependencies in mix.exs are built dynamically; all locked packages are treated as :prod"
+          ]
+
+      all_issues = lock_warnings ++ parse_issues
+      warnings = warnings ++ all_issues ++ dynamic_warnings
+      artifact_issues = Enum.map(all_issues, &{nil, &1})
 
       {:ok,
        %Workspace{
@@ -168,13 +170,14 @@ defmodule VulnCheck.Workspace do
          consolidated_dirs: consolidated_dirs(build_dir, root_apps),
          packages: packages,
          configured_adapters: config.configured_adapters,
-         warnings: warnings
+         warnings: warnings,
+         artifact_issues: artifact_issues
        }}
     end
   end
 
   defp load_project(%{type: :rebar3} = info, config) do
-    with {:ok, locked} <- RebarLock.parse_file(info.lockfile) do
+    with {:ok, locked, lock_warnings} <- RebarLock.parse_file_with_warnings(info.lockfile) do
       apps = rebar_root_apps(info.root)
       root_apps = Enum.map(apps, &elem(&1, 0))
 
@@ -233,7 +236,8 @@ defmodule VulnCheck.Workspace do
          root_ebin_dirs: root_ebins,
          packages: packages,
          configured_adapters: config.configured_adapters,
-         warnings: warnings
+         warnings: warnings ++ lock_warnings,
+         artifact_issues: Enum.map(lock_warnings, &{nil, &1})
        }}
     end
   end
@@ -323,15 +327,15 @@ defmodule VulnCheck.Workspace do
   defp root_extra(_type, _root_project), do: []
 
   defp collect_mix_roots(projects, env, sibling_apps) do
-    initial = {%{prod: [], non_prod: [], build_only: []}, %{}, true, MapSet.new()}
+    initial = {%{prod: [], non_prod: [], build_only: []}, %{}, true, MapSet.new(), []}
 
-    {roots, path_packages, parsed?, _seen} =
+    {roots, path_packages, parsed?, _seen, issues} =
       Enum.reduce(projects, initial, fn project, acc ->
         collect_project(project, env, sibling_apps, :prod, acc)
       end)
 
     {Enum.uniq(roots.prod), Enum.uniq(roots.non_prod), Enum.uniq(roots.build_only), path_packages,
-     parsed?}
+     parsed?, issues |> Enum.reverse() |> Enum.uniq()}
   end
 
   # A dependency inherits the scope of the project declaring it, narrowed
@@ -344,12 +348,19 @@ defmodule VulnCheck.Workspace do
     end
   end
 
-  defp collect_project(project, env, siblings, inherited, {roots, paths, parsed?, seen}) do
+  defp collect_project(project, env, siblings, inherited, {roots, paths, parsed?, seen, issues}) do
     parsed? = parsed? and project.deps_parsed
     seen = MapSet.put(seen, project.file)
 
-    Enum.reduce(project.deps, {roots, paths, parsed?, seen}, fn dep, acc ->
-      {roots, paths, parsed?, seen} = acc
+    issues =
+      if project.deps_parsed do
+        issues
+      else
+        ["partially parsed #{project.file}; dependency scopes may be incomplete" | issues]
+      end
+
+    Enum.reduce(project.deps, {roots, paths, parsed?, seen, issues}, fn dep, acc ->
+      {roots, paths, parsed?, seen, issues} = acc
       scope = dep_scope(dep, env, inherited)
 
       roots =
@@ -363,7 +374,7 @@ defmodule VulnCheck.Workspace do
 
         cond do
           MapSet.member?(seen, mix_file) ->
-            {roots, paths, parsed?, seen}
+            {roots, paths, parsed?, seen, issues}
 
           File.regular?(mix_file) ->
             case MixProject.parse_file(mix_file) do
@@ -383,23 +394,34 @@ defmodule VulnCheck.Workspace do
                   runtime: dep.runtime
                 }
 
+                sub_issues =
+                  if sub.deps_parsed do
+                    issues
+                  else
+                    [
+                      "partially parsed #{mix_file} for path dependency #{dep.name}; dependency scopes may be incomplete"
+                      | issues
+                    ]
+                  end
+
                 collect_project(
                   sub,
                   env,
                   siblings,
                   scope,
-                  {roots, Map.put(paths, dep.name, package), parsed?, seen}
+                  {roots, Map.put(paths, dep.name, package), parsed?, seen, sub_issues}
                 )
 
               {:error, _} ->
-                {roots, paths, false, seen}
+                issue = "could not parse #{mix_file} for path dependency #{dep.name}"
+                {roots, paths, false, seen, [issue | issues]}
             end
 
           true ->
-            {roots, paths, parsed?, seen}
+            {roots, paths, parsed?, seen, issues}
         end
       else
-        {roots, paths, parsed?, seen}
+        {roots, paths, parsed?, seen, issues}
       end
     end)
   end

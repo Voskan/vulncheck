@@ -22,15 +22,44 @@ defmodule VulnCheck.Workspace.MixLock do
   """
   @spec parse(String.t(), keyword()) :: {:ok, %{String.t() => Package.t()}} | {:error, String.t()}
   def parse(content, opts \\ []) do
+    with {:ok, packages, _warnings} <- parse_with_warnings(content, opts), do: {:ok, packages}
+  end
+
+  @doc """
+  Like `parse/2`, returning `{:ok, packages, warnings}` where `warnings` lists
+  any unsupported lockfile entries.
+  """
+  @spec parse_with_warnings(String.t(), keyword()) ::
+          {:ok, %{String.t() => Package.t()}, [String.t()]} | {:error, String.t()}
+  def parse_with_warnings(content, opts \\ []) do
     file = Keyword.get(opts, :file, "mix.lock")
 
     case Literal.parse(content, file: file) do
       {:ok, {:map, entries}} ->
         lines = key_lines(content)
 
+        {rev_packages, rev_warnings} =
+          Enum.reduce(entries, {[], []}, fn {key, value}, {pkgs, warns} ->
+            case entry(key, value) do
+              [%Package{} = pkg] ->
+                {[pkg | pkgs], warns}
+
+              [] ->
+                name =
+                  case key do
+                    {:atom, n} -> n
+                    n when is_binary(n) -> n
+                    other -> inspect(other)
+                  end
+
+                {pkgs,
+                 ["unsupported entry #{name} in #{file}; dependency could not be parsed" | warns]}
+            end
+          end)
+
         packages =
-          entries
-          |> Enum.flat_map(fn {key, value} -> entry(key, value) end)
+          rev_packages
+          |> Enum.reverse()
           |> Map.new(fn package -> {package.name, package} end)
 
         names = Map.keys(packages)
@@ -47,7 +76,7 @@ defmodule VulnCheck.Workspace.MixLock do
              }}
           end)
 
-        {:ok, packages}
+        {:ok, packages, Enum.reverse(rev_warnings)}
 
       {:ok, _other} ->
         {:error, "#{file}: expected a map of locked dependencies"}
@@ -57,6 +86,16 @@ defmodule VulnCheck.Workspace.MixLock do
 
       {:error, message} when is_binary(message) ->
         {:error, message}
+    end
+  end
+
+  @doc "Reads and parses `mix.lock`, also returning unsupported-entry warnings."
+  @spec parse_file_with_warnings(Path.t()) ::
+          {:ok, %{String.t() => Package.t()}, [String.t()]} | {:error, String.t()}
+  def parse_file_with_warnings(path) do
+    case File.read(path) do
+      {:ok, content} -> parse_with_warnings(content, file: path)
+      {:error, reason} -> {:error, "#{path}: #{:file.format_error(reason)}"}
     end
   end
 

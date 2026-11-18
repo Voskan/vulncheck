@@ -134,7 +134,13 @@ defmodule VulnCheck.Scanner do
       loaded = Loader.load_workspace(workspace, config, cache: cache)
       graph = CallGraph.build(loaded.modules)
       {model, graph} = Entrypoints.build(workspace, graph, config)
-      model = %{model | artifact_issues: loaded.artifact_issues ++ model.artifact_issues}
+
+      model = %{
+        model
+        | artifact_issues:
+            loaded.artifact_issues ++ workspace.artifact_issues ++ model.artifact_issues
+      }
+
       analysis = artifact_analysis(loaded, model, workspace)
 
       %{

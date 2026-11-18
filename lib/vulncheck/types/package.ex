@@ -80,7 +80,8 @@ defmodule VulnCheck.Types.Workspace do
     consolidated_dirs: [],
     packages: %{},
     configured_adapters: %{},
-    warnings: []
+    warnings: [],
+    artifact_issues: []
   ]
 
   @type t :: %__MODULE__{
@@ -100,7 +101,8 @@ defmodule VulnCheck.Types.Workspace do
           consolidated_dirs: [String.t()],
           packages: %{String.t() => Package.t()},
           configured_adapters: %{atom() => [String.t()]},
-          warnings: [String.t()]
+          warnings: [String.t()],
+          artifact_issues: [{String.t() | nil, String.t()}]
         }
 
   @doc "Returns the packages that belong to the production closure."
