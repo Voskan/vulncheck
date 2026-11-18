@@ -217,12 +217,16 @@ defmodule VulnCheck.PerformanceInvariantsTest do
   # -- the atom vocabulary of cached summaries ----------------------------------
 
   test "cached summaries only hold atoms defined by the modules loaded before decoding" do
+    # Read the on-disk compilation even when coverage instruments the loaded modules.
+    ebin = Mix.Project.compile_path()
+
     # `Loader` loads these before the first `binary_to_term(bin, [:safe])`;
     # an atom outside their tables would turn a fresh VM's cache hits into misses
     vocabulary =
       [ModuleSummary, CallEdge, DynamicCall, MFA, AbstractWalker, Cache, Loader]
       |> Enum.flat_map(fn module ->
-        {:ok, {^module, [atoms: atoms]}} = :beam_lib.chunks(:code.which(module), [:atoms])
+        beam = ebin |> Path.join("#{module}.beam") |> String.to_charlist()
+        {:ok, {^module, [atoms: atoms]}} = :beam_lib.chunks(beam, [:atoms])
         Enum.map(atoms, &elem(&1, 1))
       end)
       |> MapSet.new()
@@ -230,7 +234,7 @@ defmodule VulnCheck.PerformanceInvariantsTest do
 
     dirs = [
       {nil, Path.join(:code.lib_dir(:elixir), "ebin")},
-      {nil, :code.which(Loader) |> Path.dirname()}
+      {nil, ebin}
     ]
 
     result = Loader.load_dirs(dirs, cache: false)
