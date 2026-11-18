@@ -11,15 +11,28 @@ defmodule VulnCheck.Test.Beams do
     files =
       for {name, source} <- sources do
         path = Path.join(root, name)
-        File.write!(path, source)
+        File.write!(path, force_debug_info(source))
         path
       end
 
     compile_files!(files, ebin)
   end
 
+  # `mix test` compiles test files concurrently with a global
+  # `debug_info: false`; force debug info per module on the same line so
+  # line numbers stay intact.
+  def force_debug_info(source) do
+    Regex.replace(
+      ~r/^(\s*(?:defmodule|defimpl)\b.*\bdo)$/m,
+      source,
+      "\\1; @compile {:debug_info, true}"
+    )
+  end
+
   # Compiler options are global, so concurrent test modules take turns.
   def compile_files!(files, ebin) do
+    for file <- files, do: File.write!(file, force_debug_info(File.read!(file)))
+
     :global.trans({__MODULE__, :compile}, fn ->
       previous = Code.get_compiler_option(:debug_info)
       previous_ignore = Code.get_compiler_option(:ignore_module_conflict)

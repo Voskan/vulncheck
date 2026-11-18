@@ -1,0 +1,182 @@
+defmodule VulnCheck.ScannerTest do
+  use ExUnit.Case, async: true
+
+  alias VulnCheck.Config
+  alias VulnCheck.Test.{Beams, Feeds, HTTPServer, Tmp}
+  alias VulnCheck.Types.{Finding, MFA, ScanReport}
+
+  @sha String.duplicate("a", 64)
+
+  setup do
+    root = Tmp.mkdir!("scan-project")
+
+    Tmp.write!(root, "mix.exs", """
+    defmodule Shop.MixProject do
+      use Mix.Project
+
+      def project, do: [app: :shop, version: "0.1.0", deps: deps()]
+
+      def application, do: [mod: {Shop.Application, []}]
+
+      defp deps, do: [{:ash, "~> 3.0"}, {:plug, "~> 1.16"}]
+    end
+    """)
+
+    Tmp.write!(root, "mix.lock", """
+    %{
+      "ash": {:hex, :ash, "3.34.2", "#{@sha}", [:mix], [], "hexpm", "#{@sha}"},
+      "plug": {:hex, :plug, "1.16.2", "#{@sha}", [:mix], [], "hexpm", "#{@sha}"},
+    }
+    """)
+
+    lib = &Path.join(root, "_build/prod/lib/#{&1}/ebin")
+
+    Beams.compile!(lib.("ash"), [
+      {"ash.ex",
+       """
+       defmodule Ash do
+         def read(query, opts), do: Ash.Actions.Read.run(query, opts)
+         def count(query, opts), do: Ash.Actions.Aggregate.run(query, opts, :count, [])
+       end
+
+       defmodule Ash.Actions.Read do
+         def run(query, _opts), do: query
+       end
+
+       defmodule Ash.Actions.Aggregate do
+         def run(query, _opts, _kind, _extra), do: query
+       end
+       """}
+    ])
+
+    Beams.compile!(lib.("plug"), [
+      {"query.ex",
+       """
+       defmodule Plug.Conn.Query do
+         def decode(query, acc, _a, _b), do: decode_each(query, acc)
+         def decode_each(query, _acc), do: split_keys(query, 1, 2, 3, 4, 5)
+         def split_keys(query, _, _, _, _, _), do: query
+       end
+       """}
+    ])
+
+    Beams.compile!(lib.("shop"), [
+      {"shop.ex",
+       """
+       defmodule Shop.Application do
+         def start(_type, _args) do
+           Shop.Catalog.list()
+           Shop.Web.params("a=1")
+           {:ok, self()}
+         end
+       end
+
+       defmodule Shop.Catalog do
+         def list, do: Ash.read(:products, [])
+       end
+
+       defmodule Shop.Web do
+         def params(qs), do: Plug.Conn.Query.decode(qs, %{}, false, false)
+       end
+       """}
+    ])
+
+    Beams.write_app!(lib.("ash"), "ash")
+    Beams.write_app!(lib.("plug"), "plug")
+
+    Beams.write_app!(lib.("shop"), "shop",
+      applications: [:kernel, :stdlib, :elixir, :ash, :plug],
+      mod: "Elixir.Shop.Application"
+    )
+
+    zip = Feeds.zip([Feeds.osv_ash(), Feeds.osv_plug(), Feeds.osv_phoenix()])
+
+    ash_cve =
+      Feeds.cve_record("CVE-2026-101028", "ash", ["'Elixir.Ash.Actions.Aggregate':run/4"])
+
+    plug_cve =
+      Feeds.cve_record("CVE-2026-54892", "plug", [
+        "'Elixir.Plug.Conn.Query':decode/4",
+        "'Elixir.Plug.Conn.Query':split_keys/6"
+      ])
+
+    server =
+      HTTPServer.start!(fn
+        %{path: "/osv/all.zip"} -> {200, [], zip}
+        %{path: "/cna/CVE-2026-101028.json"} -> {200, [], JSON.encode!(ash_cve)}
+        %{path: "/cna/CVE-2026-54892.json"} -> {200, [], JSON.encode!(plug_cve)}
+        _ -> {404, [], ""}
+      end)
+
+    opts = [
+      osv_url: server.url <> "/osv/all.zip",
+      cna_base_url: server.url <> "/cna",
+      mitre_base_url: server.url <> "/mitre",
+      hex_api_url: server.url <> "/hex"
+    ]
+
+    %{root: root, opts: opts}
+  end
+
+  test "scans a compiled project end to end", %{root: root, opts: opts} do
+    config = %Config{project_dir: root, cache_dir: Tmp.mkdir!("scan-cache"), env: :prod}
+
+    assert {:ok, %ScanReport{} = report} = VulnCheck.Scanner.run(config, opts)
+
+    assert [plug, ash] = report.findings
+    assert %Finding{package: "plug", verdict: :reachable, reason: :call_chain_proven} = plug
+    assert plug.target_mfa == MFA.new("Elixir.Plug.Conn.Query", "decode", 4)
+    assert plug.recommended_fix == "1.16.4"
+
+    assert Enum.map(plug.trace, &MFA.format(&1.mfa)) == [
+             "Shop.Application.start/2",
+             "Shop.Web.params/1",
+             "Plug.Conn.Query.decode/4"
+           ]
+
+    assert [_, %{file: "_build/prod/lib/shop/src/shop.ex", line: 4} | _] = plug.trace
+
+    assert %Finding{package: "ash", verdict: :unreachable, reason: :function_not_called} = ash
+    assert ash.fixed_versions == ["3.34.6"]
+
+    assert report.summary.reachable == 1
+    assert report.summary.unreachable == 1
+    assert report.tool_version == VulnCheck.version()
+    assert report.stats.modules >= 7
+    assert report.stats.matched_advisories == 2
+    assert is_map(report.stats.timings_ms)
+    assert VulnCheck.should_fail?(report, config)
+
+    # warm run: beam summaries come from the cache
+    assert {:ok, warm} = VulnCheck.scan(config, opts)
+    assert warm.stats.cached == warm.stats.beams
+    assert Enum.map(warm.findings, & &1.fingerprint) == Enum.map(report.findings, & &1.fingerprint)
+  end
+
+  test "keyword API, post-processing and error handling", %{root: root, opts: opts} do
+    step = fn findings, %{config: %Config{}} ->
+      {Enum.map(findings, &%{&1 | suppressed: &1.package == "plug"}), [], ["post step ran"]}
+    end
+
+    assert {:ok, report} =
+             VulnCheck.scan(root,
+               cache_dir: Tmp.mkdir!("scan-cache"),
+               env: :prod,
+               postprocess: [step],
+               osv_url: opts[:osv_url],
+               cna_base_url: opts[:cna_base_url],
+               mitre_base_url: opts[:mitre_base_url],
+               hex_api_url: opts[:hex_api_url]
+             )
+
+    assert report.summary.suppressed == 1
+    assert "post step ran" in report.warnings
+    refute VulnCheck.should_fail?(report, %Config{})
+
+    empty = Tmp.mkdir!("scan-empty")
+    assert {:error, {:unknown_project, _}} = VulnCheck.scan(empty, offline: true)
+
+    assert {:error, {:feeds, :offline_cache_missing}} =
+             VulnCheck.scan(root, cache_dir: Tmp.mkdir!("scan-cache"), offline: true)
+  end
+end
