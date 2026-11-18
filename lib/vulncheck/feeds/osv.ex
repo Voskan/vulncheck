@@ -147,6 +147,7 @@ defmodule VulnCheck.Feeds.OSV do
       versions = Enum.flat_map(blocks, & &1.versions)
       ranges = include_unbounded_blocks(blocks, ranges, versions)
       git_repos = blocks |> Enum.flat_map(& &1.git_repos) |> Enum.uniq()
+      git_ranges = blocks |> Enum.flat_map(& &1.git_ranges) |> Enum.uniq()
 
       scoped_ratings =
         for {entry, block} <- Enum.zip(entries, blocks),
@@ -187,6 +188,7 @@ defmodule VulnCheck.Feeds.OSV do
         affected_routines: routines,
         affected_blocks: blocks,
         git_repos: git_repos,
+        git_ranges: git_ranges,
         symbol_source: if(routines != [], do: :osv),
         otp_constraints:
           string_or_nil(database["otp_constraints"]) ||
@@ -227,7 +229,8 @@ defmodule VulnCheck.Feeds.OSV do
     git_repos = git_ranges |> Enum.map(& &1.repo) |> Enum.reject(&is_nil/1) |> Enum.uniq()
 
     %{
-      ranges: Semver.from_osv_ranges(entry["ranges"]) ++ git_ranges,
+      ranges: Semver.from_osv_ranges(entry["ranges"]),
+      git_ranges: git_ranges,
       versions: entry |> list("versions") |> Enum.filter(&is_binary/1),
       modules: modules,
       routines: routines,
