@@ -18,7 +18,7 @@ WORKDIR /src
 
 COPY mix.exs mix.lock ./
 COPY lib lib
-RUN mix local.hex --force --if-missing && mix escript.build && ./vulncheck --version
+RUN mix escript.build && ./vulncheck --version
 
 FROM hexpm/erlang:${OTP_VERSION}-alpine-${ALPINE_VERSION} AS runtime
 

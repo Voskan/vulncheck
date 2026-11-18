@@ -114,6 +114,32 @@ jobs:
           mix escript.build
           ./vulncheck --version
           ./vulncheck --help > /dev/null
+          mix run --no-deps-check -e '
+            osv = JSON.encode!(%{
+              "id" => "GHSA-smoke-plug-0001",
+              "affected" => [%{
+                "package" => %{"ecosystem" => "Hex", "name" => "plug"},
+                "ranges" => [%{"type" => "SEMVER", "events" => [%{"introduced" => "1.0.0"}, %{"fixed" => "1.16.0"}]}]
+              }]
+            })
+            {:ok, {_name, zip}} = :zip.create(~c"osv_all.zip", [{~c"GHSA-smoke-plug-0001.json", osv}], [:memory])
+            cache_dir = Path.join(System.tmp_dir!(), "vulncheck_ci_smoke_cache")
+            File.rm_rf!(cache_dir)
+            cfg = %VulnCheck.Config{cache_dir: cache_dir, offline: false}
+            rel = VulnCheck.Feeds.OSV.cache_file()
+            :ok = VulnCheck.Cache.publish_entry(
+              Path.join(VulnCheck.Cache.feeds_dir(cfg), rel),
+              zip,
+              %{"sha256" => VulnCheck.Cache.sha256(zip), "fetched_at_unix" => System.os_time(:second)}
+            )
+            {:ok, _} = VulnCheck.Cache.Bundle.export_bundle(cfg, "/tmp/vulncheck-smoke-bundle.tar.gz")
+          '
+          ./vulncheck --project-dir benchmarks/real_world/umbrella_three_apps --offline --bundle /tmp/vulncheck-smoke-bundle.tar.gz --format json --fail-on none > /tmp/vulncheck-smoke.json
+          elixir -e '
+            data = File.read!("/tmp/vulncheck-smoke.json") |> JSON.decode!()
+            findings = Map.fetch!(data, "findings")
+            true = Enum.any?(findings, &(&1["package"] == "plug" and &1["advisory_id"] == "GHSA-smoke-plug-0001"))
+          '
 
   dogfood-security-audit:
     name: Scan VulnCheck with VulnCheck
