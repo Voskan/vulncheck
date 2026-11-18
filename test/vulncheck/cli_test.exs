@@ -284,6 +284,25 @@ defmodule VulnCheck.CLITest do
       assert out =~ "Verdict:   UNREACHABLE — function not called"
     end
 
+    test "separates platform routines from package routines" do
+      advisory = %VulnCheck.Types.Advisory{
+        id: "EEF-CVE-2026-108529",
+        package: "bandit",
+        summary: "quadratic work",
+        affected_routines: [
+          VulnCheck.Types.MFA.new("Elixir.Bandit.HTTP2.Connection", "do_pending_sends", 2),
+          VulnCheck.Types.MFA.new("Elixir.List", "delete", 2)
+        ],
+        symbol_source: :cve
+      }
+
+      out =
+        VulnCheck.Explain.format(%{query: "x", advisories: [advisory], local: nil, warnings: []})
+
+      assert out =~ "Routines:  Bandit.HTTP2.Connection.do_pending_sends/2 (source: cve)"
+      assert out =~ "Context:   List.delete/2 (Erlang/OTP or Elixir; not a target)"
+    end
+
     test "fails for unknown advisories and missing ids" do
       cache = Project.cache!()
       dir = Tmp.mkdir!("cli-explain")

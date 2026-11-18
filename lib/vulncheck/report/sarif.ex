@@ -120,17 +120,24 @@ defmodule VulnCheck.Report.SARIF do
       "message" => %{"text" => message(f)},
       "locations" => [location(file, line, nil)],
       "partialFingerprints" => %{"primaryLocationLineHash" => f.fingerprint},
-      "properties" => %{
-        "verdict" => Atom.to_string(f.verdict),
-        "reason" => Atom.to_string(f.reason),
-        "package" => f.package,
-        "installedVersion" => f.installed_version,
-        "fixedVersions" => f.fixed_versions,
-        "targetMfa" => Formatter.mfa(f.target_mfa)
-      }
+      "properties" =>
+        %{
+          "verdict" => Atom.to_string(f.verdict),
+          "reason" => Atom.to_string(f.reason),
+          "package" => f.package,
+          "installedVersion" => f.installed_version,
+          "fixedVersions" => f.fixed_versions,
+          "targetMfa" => Formatter.mfa(f.target_mfa)
+        }
+        |> put_context(f.context_routines)
     }
     |> put_code_flows(f)
   end
+
+  defp put_context(properties, []), do: properties
+
+  defp put_context(properties, routines),
+    do: Map.put(properties, "contextRoutines", Enum.map(routines, &Formatter.mfa/1))
 
   defp message(%Finding{} = f) do
     verdict =

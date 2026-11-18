@@ -145,6 +145,20 @@ defmodule VulnCheck.Report.SarifAndCiTest do
   end
 
   describe "sarif" do
+    test "adds context routines to the result properties when present" do
+      [first | rest] = findings()
+      with_context = %{first | context_routines: [MFA.new("Elixir.Enum", "map_join", 3)]}
+
+      [result | others] =
+        report([with_context | rest])
+        |> SARIF.render(%Config{})
+        |> JSON.decode!()
+        |> get_in(["runs", Access.at(0), "results"])
+
+      assert result["properties"]["contextRoutines"] == ["Enum.map_join/3"]
+      refute Enum.any?(others, &Map.has_key?(&1["properties"], "contextRoutines"))
+    end
+
     test "produces a SARIF 2.1.0 log with indexed rules, locations and code flows" do
       rendered = SARIF.render(report(), %Config{})
       assert rendered == SARIF.render(report(), %Config{})

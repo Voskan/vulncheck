@@ -8,6 +8,9 @@ defmodule VulnCheck.Solver do
   witness trace of any reachable function is rebuilt in time proportional
   to its length.
 
+  Routines and modules of the advisory that belong to other packages or to
+  Erlang/OTP and Elixir are context only (`VulnCheck.Solver.RoutineScope`).
+
   Decision order for an advisory of package `pkg`:
 
     1. retired release → `:retired`
@@ -26,6 +29,7 @@ defmodule VulnCheck.Solver do
   alias VulnCheck.{Config, Semver}
   alias VulnCheck.Beam.CallGraph
   alias VulnCheck.Feeds.HexRetired
+  alias VulnCheck.Solver.RoutineScope
 
   alias VulnCheck.Types.{
     Advisory,
@@ -188,9 +192,21 @@ defmodule VulnCheck.Solver do
     if advisory.retirement do
       HexRetired.to_finding(advisory, package)
     else
-      {verdict, reason, detail, target, trace} = decide(advisory, package, index)
-      finding(advisory, package, verdict, reason, detail, target, trace)
+      {scoped, context} = scope(advisory, package, index)
+      {verdict, reason, detail, target, trace} = decide(scoped, package, index)
+
+      %{
+        finding(advisory, package, verdict, reason, detail, target, trace)
+        | context_routines: context
+      }
     end
+  end
+
+  # Routines outside the package (stdlib functions, other dependencies) are
+  # context, never targets.
+  defp scope(advisory, package, index) do
+    owners = Enum.uniq([package.name, Map.get(index.app_by_package, package.name, package.name)])
+    RoutineScope.scope(advisory, owners, index.graph.modules)
   end
 
   # -- decision procedure ----------------------------------------------------------

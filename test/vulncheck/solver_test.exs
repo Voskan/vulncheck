@@ -268,6 +268,75 @@ defmodule VulnCheck.SolverTest do
     assert finding.reason_detail =~ "SolFix.Ash.Actions.Aggregate.run/4"
   end
 
+  describe "routines outside the package" do
+    test "stdlib routines are context, never targets", ctx do
+      finding =
+        one(
+          ctx,
+          advisory("A-20", "sol_ash",
+            affected_routines: [
+              mfa("Elixir.SolFix.Ash.Actions.Aggregate", "run", 4),
+              mfa("Elixir.GenServer", "start_link", 3)
+            ]
+          )
+        )
+
+      assert %Finding{verdict: :unreachable, reason: :function_not_called} = finding
+      assert finding.reason_detail =~ "SolFix.Ash.Actions.Aggregate.run/4"
+      refute finding.reason_detail =~ "GenServer"
+      assert finding.context_routines == [mfa("Elixir.GenServer", "start_link", 3)]
+    end
+
+    test "routines of another dependency are context", ctx do
+      finding =
+        one(
+          ctx,
+          advisory("A-21", "sol_ash",
+            affected_routines: [
+              mfa("Elixir.SolFix.Json", "decode", 1),
+              mfa("Elixir.SolFix.Ash.Actions.Read", "run", 2)
+            ]
+          )
+        )
+
+      assert %Finding{verdict: :reachable, reason: :call_chain_proven} = finding
+      assert finding.target_mfa == mfa("Elixir.SolFix.Ash.Actions.Read", "run", 2)
+      assert finding.context_routines == [mfa("Elixir.SolFix.Json", "decode", 1)]
+    end
+
+    test "only context routines fall back to package-level evidence", ctx do
+      routines = [mfa("Elixir.GenServer", "start_link", 3), mfa("lists", "reverse", 1)]
+
+      used = one(ctx, advisory("A-22", "sol_ash", affected_routines: routines))
+      assert %Finding{verdict: :potentially_reachable, reason: :missing_symbol_granularity} = used
+      assert used.target_mfa.module =~ "SolFix.Ash"
+      assert used.context_routines == routines
+
+      unused = one(ctx, advisory("A-23", "sol_unused", affected_routines: routines))
+      assert %Finding{verdict: :unreachable, reason: :otp_app_not_started} = unused
+    end
+
+    test "unknown modules without .beam files stay targets", ctx do
+      ghost = mfa("Elixir.SolFix.Ash.Ghost", "run", 1)
+      finding = one(ctx, advisory("A-24", "sol_ash", affected_routines: [ghost]))
+
+      assert %Finding{verdict: :unreachable, reason: :function_not_called} = finding
+      assert finding.context_routines == []
+    end
+
+    test "platform modules are recognised without creating atoms" do
+      alias VulnCheck.Solver.RoutineScope
+
+      assert RoutineScope.platform_module?("lists")
+      before = :erlang.system_info(:atom_count)
+      assert RoutineScope.platform_module?("Elixir.List")
+      assert RoutineScope.platform_module?("Elixir.Logger")
+      refute RoutineScope.platform_module?("Elixir.SolFix.NeverDefined.Anywhere")
+      refute RoutineScope.platform_module?("hackney_url")
+      assert :erlang.system_info(:atom_count) == before
+    end
+  end
+
   test "module_not_loaded for an unused parser module", ctx do
     finding =
       one(

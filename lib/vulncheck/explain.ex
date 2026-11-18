@@ -10,6 +10,7 @@ defmodule VulnCheck.Explain do
   alias VulnCheck.{Cache, Config}
   alias VulnCheck.Feeds.{EefCna, OSV}
   alias VulnCheck.Report.Formatter
+  alias VulnCheck.Solver.RoutineScope
   alias VulnCheck.Types.{Advisory, Finding, MFA, VersionRange, Workspace}
   alias VulnCheck.Workspace.Detector
 
@@ -154,7 +155,8 @@ defmodule VulnCheck.Explain do
       {"Fixed", Enum.join(a.fixed_versions, ", ")},
       {"OTP", a.otp_constraints},
       {"Modules", Enum.join(a.affected_modules, ", ")},
-      {"Routines", routines(a)}
+      {"Routines", routines(a)},
+      {"Context", context(a)}
     ]
 
     body =
@@ -205,9 +207,25 @@ defmodule VulnCheck.Explain do
 
   defp routines(%Advisory{affected_routines: []}), do: nil
 
-  defp routines(%Advisory{affected_routines: routines, symbol_source: source}) do
-    list = Enum.map_join(routines, ", ", &MFA.format/1)
-    if source, do: "#{list} (source: #{source})", else: list
+  defp routines(%Advisory{symbol_source: source} = advisory) do
+    case RoutineScope.split(advisory, [advisory.package], %{}).routines do
+      [] ->
+        nil
+
+      own ->
+        list = Enum.map_join(own, ", ", &MFA.format/1)
+        if source, do: "#{list} (source: #{source})", else: list
+    end
+  end
+
+  defp context(%Advisory{} = advisory) do
+    case RoutineScope.split(advisory, [advisory.package], %{}).context_routines do
+      [] ->
+        nil
+
+      routines ->
+        Enum.map_join(routines, ", ", &MFA.format/1) <> " (Erlang/OTP or Elixir; not a target)"
+    end
   end
 
   defp format_local(nil, _advisories), do: "Local project: none found in the target directory"
@@ -237,6 +255,11 @@ defmodule VulnCheck.Explain do
     Enum.join([header | lines], "\n")
   end
 
+  defp context_line([]), do: []
+
+  defp context_line(routines),
+    do: ["  Context:   #{Enum.map_join(routines, ", ", &Formatter.mfa/1)} (outside the package)"]
+
   defp finding_lines(%Finding{} = f) do
     verdict = f.verdict |> Atom.to_string() |> String.upcase() |> String.replace("_", " ")
     detail = if f.reason_detail in [nil, ""], do: "", else: " (#{f.reason_detail})"
@@ -265,6 +288,7 @@ defmodule VulnCheck.Explain do
         "  Verdict:   #{verdict} — #{Formatter.reason_label(f.reason)}#{detail}"
       ] ++
         if(f.target_mfa, do: ["  Target:    #{Formatter.mfa(f.target_mfa)}"], else: []) ++
+        context_line(f.context_routines) ++
         suppressed ++ trace,
       "\n"
     )

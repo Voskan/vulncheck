@@ -81,6 +81,7 @@ defmodule VulnCheck.Report.JSON do
       "reason" => Atom.to_string(f.reason),
       "reason_detail" => f.reason_detail,
       "target_mfa" => Formatter.mfa(f.target_mfa),
+      "context_routines" => Enum.map(f.context_routines, &Formatter.mfa/1),
       "trace" => Enum.map(f.trace, &hop/1),
       "fingerprint" => f.fingerprint,
       "suppressed" => f.suppressed,

@@ -275,6 +275,20 @@ defmodule VulnCheck.Report.CoreReportersTest do
   end
 
   describe "json" do
+    test "lists context routines of a finding" do
+      [first | rest] = findings()
+
+      with_context = %{
+        first
+        | context_routines: [MFA.new("Elixir.List", "delete", 2), MFA.new("lists", "reverse", 1)]
+      }
+
+      doc = Elixir.JSON.decode!(JSON.render(report([with_context | rest]), %Config{}))
+      [rendered | others] = doc["findings"]
+      assert rendered["context_routines"] == ["List.delete/2", ":lists.reverse/1"]
+      assert Enum.all?(others, &(&1["context_routines"] == []))
+    end
+
     test "round-trips all schema fields and is byte-reproducible" do
       rendered = JSON.render(report(), %Config{})
       assert rendered == JSON.render(report(), %Config{})

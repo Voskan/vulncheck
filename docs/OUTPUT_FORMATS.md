@@ -15,6 +15,7 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
       "aliases": [
         "CVE-2026-101028"
       ],
+      "context_routines": [],
       "cvss_score": 7.5,
       "cwes": [
         "CWE-863"
@@ -72,6 +73,7 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
       "aliases": [
         "CVE-2026-103502"
       ],
+      "context_routines": [],
       "cvss_score": 5.9,
       "cwes": [],
       "fingerprint": "32cebf59e14a9377e324c49c74ac8afa420d4be22093b3ae7279d4965a75c265",
@@ -127,6 +129,8 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
 }
 ```
 
+`context_routines` lists functions that the advisory names on the vulnerable path but that belong to Erlang/OTP, Elixir or another dependency (for example `List.delete/2` in an HTTP/2 advisory). They explain the advisory and are never used as reachability targets.
+
 ---
 
 ## 2. SARIF 2.1.0 with `codeFlows` (`--format sarif`)
@@ -136,6 +140,7 @@ Designed for **GitHub Code Scanning** (`github/codeql-action/upload-sarif`):
 - Each unique advisory maps to a `reportingDescriptor` in `tool.driver.rules` with `security-severity` populated from CVSS so GitHub displays accurate `Critical` / `High` / `Medium` / `Low` badges.
 - The primary location is the **last call site in the project's own code** before the trace enters the dependency (or the package's line in the lockfile when no project frame is involved, e.g. an active OTP daemon), so GitHub annotates pull requests on the code that makes the vulnerable call.
 - `codeFlows[].threadFlows[].locations` encodes the complete multi-hop call trace from entrypoint to vulnerable dependency routine.
+- `properties.contextRoutines` lists routines named by the advisory that live outside the vulnerable package (see `context_routines` below); they are never targets.
 - `UNREACHABLE` advisories are omitted by default (or emitted with `level: "none"` when `--show-unreachable` is passed).
 - `partialFingerprints.primaryLocationLineHash` carries the finding fingerprint (stable across runs), so Code Scanning tracks alerts across commits instead of reopening them.
 
