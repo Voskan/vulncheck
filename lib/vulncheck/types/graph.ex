@@ -130,6 +130,8 @@ defmodule VulnCheck.Types.ModuleSummary do
   @type literal ::
           {:atom, String.t()}
           | {:tuple, [literal()]}
+          | {:map, [{literal(), literal()}]}
+          | {:fun, String.t()}
           | [literal()]
           | binary()
           | number()

@@ -8,7 +8,7 @@ defmodule VulnCheck.Cache do
       feeds/osv_hex_all.zip            OSV Hex archive
       feeds/osv_hex_all.zip.meta.json  etag, fetched_at_unix, sha256, url
       feeds/cves/<CVE-ID>.json         EEF CNA / MITRE CVE 5.1 records
-      feeds/retired/<package>.json     Hex.pm package metadata
+      feeds/hex/packages/<name>.json   Hex.pm package metadata
       beam-v1/<sha256>.etf             cached module summaries
 
   Every write goes to a unique temporary file that is then renamed into
