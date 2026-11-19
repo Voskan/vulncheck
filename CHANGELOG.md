@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Calling a function value (`callback.()`, `fun.(conn, data)`) no longer keeps every advisory with a routine of the same arity open as `unresolved_dynamic_dispatch`. A function value is a capture or closure created by analyzed code, and both are already part of the call graph. On a project with Bandit, Plug, Tesla over Mint and hackney, nine `function_not_called` verdicts that 1.0.0 reported as `potentially_reachable` are unreachable again, and framework rules such as the `Plug.Parsers` parser selection apply to the whole module again.
+
 ## [1.0.0] - 2026-11-18
 
 First stable release.

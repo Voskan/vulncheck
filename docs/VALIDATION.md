@@ -33,18 +33,18 @@ The test suite includes compiled BEAM mini-projects under [`test/vulncheck/integ
 ### Reference Run Results
 
 * **Tools:** Elixir 1.20.5 / Erlang/OTP 29 / rebar 3.28.0 / VulnCheck 1.0.0
-* **Advisory Bundle SHA-256:** `94d3f6eacda3b0dbb06351aff9ddc6b875ba0630d4302591fbf72ee8fb7a18f8` (80 files, 363 advisories)
+* **Advisory Bundle SHA-256:** `9a4bcb4d6aa5692fb6469c387e8c8c67d4814bf7447a636bdf9c4b214fec5f1f` (72 files, 363 advisories)
 
 | Project | Matched | Precision | Recall | Noise Reduction | Status | Lockfile SHA-256 (prefix) |
 | :--- | ---: | ---: | ---: | ---: | :---: | :--- |
-| `phoenix_bandit` | 25/25 | 100.0% | 100.0% | 0.0% (0/25) | PASS | `81a4445b7f50` |
+| `phoenix_bandit` | 25/25 | 100.0% | 100.0% | 12.0% (3/25) | PASS | `81a4445b7f50` |
 | `plug_cowboy_multipart` | 17/17 | 100.0% | 100.0% | 0.0% (0/17) | PASS | `f98e580de2e1` |
-| `tesla_mint_hackney` | 25/25 | 100.0% | 100.0% | 16.0% (4/25) | PASS | `ac9fd02faf1d` |
+| `tesla_mint_hackney` | 25/25 | 100.0% | 100.0% | 24.0% (6/25) | PASS | `ac9fd02faf1d` |
 | `umbrella_three_apps` | 5/5 | 100.0% | 100.0% | 80.0% (4/5) | PASS | `551949566c7d` |
-| `rebar3_hackney` | 6/6 | 100.0% | 100.0% | 0.0% (0/6) | PASS | `05ca9d5d51d0` |
-| **Total** | **78/78** | **100.0%** | **100.0%** | **10.3% (8/78)** | **PASS** | — |
+| `rebar3_hackney` | 6/6 | 100.0% | 100.0% | 16.7% (1/6) | PASS | `05ca9d5d51d0` |
+| **Total** | **78/78** | **100.0%** | **100.0%** | **17.9% (14/78)** | **PASS** | — |
 
-On `phoenix_bandit`, `bandit 1.5.0` and `hpax 0.1.2` advisories are either reachable from the started `Bandit` supervision pipeline or kept `potentially_reachable` (`active_network_daemon`), while the 3 non-proven `plug 1.15.2` advisories are conservatively kept `potentially_reachable` (`unresolved_dynamic_dispatch`) due to dynamic `apply/3` sites in `Plug`/`Bandit`, yielding 0% noise reduction on that specific dependency combination while `umbrella_three_apps` achieves 80% noise reduction and `tesla_mint_hackney` achieves 16%.
+On `phoenix_bandit`, `bandit 1.5.0` and `hpax 0.1.2` advisories are either reachable from the started `Bandit` supervision pipeline or kept `potentially_reachable` (`active_network_daemon`), while the 3 multipart advisories of `plug 1.15.2` are `unreachable` (`function_not_called`): only `Plug.Parsers.MULTIPART` calls `Plug.Conn.read_part_headers/2`, and the endpoint configures the JSON parser alone. On `tesla_mint_hackney` and `rebar3_hackney`, the `hackney` advisories whose routines hackney itself never calls without `:hackney.request/5` (`:hackney_url.normalize/2`, the SOCKS5 transport, `:hackney_url.make_url/3`) are `unreachable` when the project does not reach them. Each of these verdicts was checked against the dependency sources, as noted in `real_world_expected.exs`.
 
 ```bash
 MIX_ENV=prod mix escript.build
