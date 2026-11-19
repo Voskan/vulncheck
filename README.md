@@ -10,6 +10,8 @@
 
 `vulncheck` bridges the gap between lockfile dependency scanners (`mix deps.audit`, `mix hex.audit`) and what your compiled BEAM release actually executes. Instead of failing CI whenever any transitive Hex package receives a CVE, `vulncheck` pairs **OSV.dev** and **Erlang Ecosystem Foundation (EEF) CNA CVE 5.1 `programRoutines`** metadata with **post-macro `.beam` bytecode call graphs, OTP supervision roots, Plug/Phoenix pipelines, and runtime adapter configurations** to prove whether vulnerable functions are reachable in your production code.
 
+![VulnCheck terminal audit demo](docs/assets/vulncheck-demo.gif)
+
 ---
 
 ## Why VulnCheck Exists
@@ -78,11 +80,11 @@ mix vulncheck
 
 ### Standalone Escript (Erlang `rebar3`, Gleam, or CI Containers)
 
-Build the standalone escript from source (or install from Hex once it is published via `mix escript.install hex vulncheck`):
+Install the standalone escript from Hex.pm (or build from source with `MIX_ENV=prod mix escript.build`):
 
 ```bash
-MIX_ENV=prod mix escript.build
-./vulncheck --project-dir /path/to/service
+mix escript.install hex vulncheck
+vulncheck --project-dir /path/to/service
 ```
 
 ---
