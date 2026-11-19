@@ -47,7 +47,7 @@ Each project also has a noise-reduction floor, the share of `unreachable` findin
 
 ### Reference Run Results
 
-* **Tools:** Elixir 1.20.5 / Erlang/OTP 29 / rebar 3.28.0 / VulnCheck built from `560906c`
+* **Tools:** Elixir 1.20.5 / Erlang/OTP 29 / rebar 3.28.0 / VulnCheck 1.0.1
 * **Advisory bundle:** `benchmarks/feeds/validation-feeds.tar.gz`, SHA-256 `9a4bcb4d6aa5692fb6469c387e8c8c67d4814bf7447a636bdf9c4b214fec5f1f` (72 files, 363 advisories), built from the OSV Hex feed, EEF CNA CVE 5.1 records and Hex.pm package metadata of 2026-11-19
 
 | Project | Verdicts | TP | FP | FN | TN | Precision | Recall | Noise reduction | Floor | Status |

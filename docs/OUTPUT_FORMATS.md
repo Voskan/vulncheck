@@ -123,7 +123,7 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
   },
   "tool": {
     "name": "vulncheck",
-    "version": "1.0.0"
+    "version": "1.0.1"
   },
   "warnings": []
 }

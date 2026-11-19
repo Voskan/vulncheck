@@ -78,7 +78,7 @@ mix vulncheck
 
 ### Standalone Escript (Erlang `rebar3`, Gleam, or CI Containers)
 
-Build the standalone escript from source (or install from Hex once `1.0.0` is published via `mix escript.install hex vulncheck`):
+Build the standalone escript from source (or install from Hex once it is published via `mix escript.install hex vulncheck`):
 
 ```bash
 MIX_ENV=prod mix escript.build
@@ -90,7 +90,7 @@ MIX_ENV=prod mix escript.build
 ## Example Terminal Output
 
 ```text
-VulnCheck 1.0.0 — BEAM Reachability Vulnerability Audit
+VulnCheck 1.0.1 — BEAM Reachability Vulnerability Audit
 Target: my_fintech_api (mix, Elixir 1.18.2 / OTP 27.2, env: prod)
 Lockfile: 74 prod packages (19 dev/test excluded) · Scan time: 142 ms (cached)
 
@@ -163,7 +163,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18.2"
-      - uses: Voskan/vulncheck@v1.0.0
+      - uses: Voskan/vulncheck@v1.0.1
         with:
           fail-on: potentially_reachable
           upload-sarif: true
