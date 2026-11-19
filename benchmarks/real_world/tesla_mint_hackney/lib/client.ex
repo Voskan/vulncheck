@@ -3,5 +3,5 @@ defmodule TeslaMintHackney.Client do
 
   adapter(Tesla.Adapter.Mint)
 
-  def ping, do: get("/")
+  def fetch(url), do: get(url)
 end

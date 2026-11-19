@@ -141,6 +141,31 @@ jobs:
             true = Enum.any?(findings, &(&1["package"] == "plug" and &1["advisory_id"] == "GHSA-smoke-plug-0001"))
           '
 
+  real-world-validation:
+    name: Real-world validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          rebar3-version: "3.24"
+
+      - run: mix deps.get
+
+      - name: Build the escript
+        env:
+          MIX_ENV: prod
+        run: mix escript.build
+
+      - name: Scan the pinned projects against the pinned advisory bundle
+        run: |
+          mix run benchmarks/validate_real_world.exs --offline \
+            --bundle benchmarks/feeds/validation-feeds.tar.gz --markdown >> "$GITHUB_STEP_SUMMARY"
+
   dogfood-security-audit:
     name: Scan VulnCheck with VulnCheck
     runs-on: ubuntu-latest
