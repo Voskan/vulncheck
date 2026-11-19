@@ -200,7 +200,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18"
-      - uses: Voskan/vulncheck@v1.0.0
+      - uses: Voskan/vulncheck@v1.0.1
         with:
           fail-on: potentially_reachable
           upload-sarif: true
@@ -227,7 +227,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18"
-      - uses: Voskan/vulncheck@v1.0.0
+      - uses: Voskan/vulncheck@v1.0.1
         with:
           fail-on: potentially_reachable
           diff: origin/${{ github.base_ref }}
@@ -269,7 +269,7 @@ The image runs the escript as an unprivileged user on an Erlang runtime with `gi
 ```yaml
 repos:
   - repo: https://github.com/Voskan/vulncheck
-    rev: v1.0.0
+    rev: v1.0.1
     hooks:
       - id: vulncheck
 ```
