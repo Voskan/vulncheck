@@ -877,6 +877,96 @@ defmodule VulnCheck.Integration.SoundnessCorpusTest do
     assert List.last(finding.trace).mfa == MFA.new("Elixir.Gateway.Token", "verify", 2)
   end
 
+  # A function value is a closure or capture created by analyzed code, so
+  # calling one reaches nothing beyond the captures already in the graph.
+  @jose_callbacks %{
+    name: "jose",
+    version: "1.11.10",
+    ex: [
+      {"lib/jose.ex",
+       """
+       defmodule JOSE.JWT do
+         def decode(token), do: {:jwt, token}
+       end
+
+       defmodule JOSE.Callbacks do
+         def run(callback), do: callback.()
+         def run(callback, arg), do: callback.(arg)
+       end
+       """}
+    ]
+  }
+
+  defp gateway!(token_source) do
+    mix_project!("gateway",
+      mod: "Gateway.Application",
+      applications: [:jose],
+      packages: [@jose_callbacks],
+      ex: [
+        {"lib/gateway.ex",
+         """
+         defmodule Gateway.Application do
+           def start(_type, _args), do: Gateway.Token.verify("token")
+         end
+
+         #{token_source}
+         """}
+      ]
+    )
+  end
+
+  test "7C: calling a function value reaches only captured functions" do
+    unrelated =
+      gateway!("""
+      defmodule Gateway.Token do
+        def verify(token) do
+          JOSE.Callbacks.run(fn -> token end)
+          JOSE.Callbacks.run(fn value -> check(value) end, token)
+        end
+
+        def check(token), do: byte_size(token)
+      end
+      """)
+
+    report = scan!(unrelated)
+    finding = finding!(report, "EEF-CVE-2026-60105")
+    assert {finding.verdict, finding.reason} == {:unreachable, :function_not_called}
+    refute Enum.any?(report.warnings, &String.contains?(&1, "JOSE.Callbacks"))
+
+    captured =
+      gateway!("""
+      defmodule Gateway.Token do
+        def verify(token), do: JOSE.Callbacks.run(&JOSE.JWT.decode/1, token)
+      end
+      """)
+
+    finding = captured |> scan!() |> finding!("EEF-CVE-2026-60105")
+    assert {finding.verdict, finding.reason} == {:reachable, :call_chain_proven}
+
+    assert Enum.map(finding.trace, &MFA.format(&1.mfa)) == [
+             "Gateway.Application.start/2",
+             "Gateway.Token.verify/1",
+             "JOSE.JWT.decode/1"
+           ]
+
+    built =
+      gateway!("""
+      defmodule Gateway.Token do
+        def verify(token) do
+          decode = :erlang.make_fun(String.to_atom("Elixir.JOSE.JWT"), :decode, 1)
+          JOSE.Callbacks.run(decode, token)
+        end
+      end
+      """)
+
+    finding = built |> scan!() |> finding!("EEF-CVE-2026-60105")
+
+    assert {finding.verdict, finding.reason} ==
+             {:potentially_reachable, :unresolved_dynamic_dispatch}
+
+    assert finding.reason_detail =~ "Gateway.Token.verify/1 makes a dynamic call"
+  end
+
   test "7B: a dependency stripped of debug info is never skipped silently" do
     decimal = %{
       name: "decimal",

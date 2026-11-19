@@ -151,11 +151,18 @@ defmodule VulnCheck.Solver do
       end)
       |> MapSet.new()
 
+    # A function value is a closure or a capture created by analyzed code:
+    # captures are edges of the function that takes them, closure bodies
+    # are part of the function that defines them, captures built from atoms
+    # (`:erlang.make_fun/3`, `Function.capture/3`) are dynamic calls of
+    # their own, and code without debug info is an artifact issue. Calling
+    # a function value therefore reaches nothing the graph does not already
+    # reach, and only module-function calls can escape.
     escapes =
       for {_name, %ModuleSummary{} = summary} <- graph.modules,
-          %DynamicCall{known_module: nil} = call <- summary.dynamic_dispatches,
-          call.kind == :function_value or
-            not Map.has_key?(model.resolved_dynamic_modules, summary.module),
+          not Map.has_key?(model.resolved_dynamic_modules, summary.module),
+          %DynamicCall{known_module: nil, kind: :module_function} = call <-
+            summary.dynamic_dispatches,
           not MapSet.member?(model.resolved_dynamic_calls, call),
           MapSet.member?(reachable, call.caller),
           do: call
@@ -622,8 +629,7 @@ defmodule VulnCheck.Solver do
         Enum.any?(targets, fn %MFA{} = target ->
           call.known_function in [nil, target.function] and
             DynamicCall.arity_compatible?(call, target.arity) and
-            (call.kind == :function_value or
-               index.atoms_constructed or
+            (index.atoms_constructed or
                MapSet.member?(index.atom_modules, call.caller.module) or
                MapSet.member?(index.named_modules, target.module))
         end)

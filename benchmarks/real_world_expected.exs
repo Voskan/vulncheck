@@ -28,10 +28,11 @@
     {"phoenix_bandit", "EEF-CVE-2026-116078", :potentially_reachable, :active_network_daemon},
     {"phoenix_bandit", "EEF-CVE-2026-39803", :potentially_reachable, :active_network_daemon},
     {"phoenix_bandit", "EEF-CVE-2026-75484", :potentially_reachable, :active_network_daemon},
-    # 3 Plug advisories guarded conservatively by dynamic apply/3 in Plug/Bandit
-    {"phoenix_bandit", "EEF-CVE-2026-8468", :potentially_reachable, :unresolved_dynamic_dispatch},
-    {"phoenix_bandit", "EEF-CVE-2026-120287", :potentially_reachable, :unresolved_dynamic_dispatch},
-    {"phoenix_bandit", "EEF-CVE-2026-56814", :potentially_reachable, :unresolved_dynamic_dispatch},
+    # Multipart advisories: only Plug.Parsers.MULTIPART calls Plug.Conn.read_part_headers/2,
+    # and the endpoint only configures the JSON parser.
+    {"phoenix_bandit", "EEF-CVE-2026-8468", :unreachable, :function_not_called},
+    {"phoenix_bandit", "EEF-CVE-2026-120287", :unreachable, :function_not_called},
+    {"phoenix_bandit", "EEF-CVE-2026-56814", :unreachable, :function_not_called},
 
     # (b) plug_cowboy_multipart: Plug + Cowboy with [:urlencoded, :multipart]
     {"plug_cowboy_multipart", "EEF-CVE-2026-54892", :reachable, :call_chain_proven},
@@ -75,10 +76,10 @@
     {"tesla_mint_hackney", "EEF-CVE-2026-48596", :reachable, :call_chain_proven},
     {"tesla_mint_hackney", "EEF-CVE-2026-48597", :reachable, :call_chain_proven},
     {"tesla_mint_hackney", "EEF-CVE-2026-48598", :reachable, :call_chain_proven},
-    {"tesla_mint_hackney", "EEF-CVE-2026-47071", :potentially_reachable,
-     :unresolved_dynamic_dispatch},
-    {"tesla_mint_hackney", "EEF-CVE-2026-47076", :potentially_reachable,
-     :unresolved_dynamic_dispatch},
+    # The project only uses Tesla.Adapter.Mint: :hackney.request/5, the only caller of
+    # :hackney_url.normalize/2 and of the SOCKS5 transport, is never called.
+    {"tesla_mint_hackney", "EEF-CVE-2026-47071", :unreachable, :function_not_called},
+    {"tesla_mint_hackney", "EEF-CVE-2026-47076", :unreachable, :function_not_called},
     {"tesla_mint_hackney", "GHSA-vq52-99r9-h5pw", :potentially_reachable,
      :unresolved_dynamic_dispatch},
     {"tesla_mint_hackney", "GHSA-9fm9-hp7p-53mf", :potentially_reachable,
@@ -99,7 +100,8 @@
     {"rebar3_hackney", "EEF-CVE-2026-47076", :reachable, :call_chain_proven},
     {"rebar3_hackney", "EEF-CVE-2026-47069", :reachable, :call_chain_proven},
     {"rebar3_hackney", "EEF-CVE-2026-47071", :potentially_reachable, :unresolved_dynamic_dispatch},
-    {"rebar3_hackney", "EEF-CVE-2026-47075", :potentially_reachable, :unresolved_dynamic_dispatch},
+    # :hackney_url.make_url/3 is a public helper that hackney itself never calls.
+    {"rebar3_hackney", "EEF-CVE-2026-47075", :unreachable, :function_not_called},
     {"rebar3_hackney", "GHSA-vq52-99r9-h5pw", :potentially_reachable, :unresolved_dynamic_dispatch},
     {"rebar3_hackney", "GHSA-9fm9-hp7p-53mf", :potentially_reachable, :unresolved_dynamic_dispatch}
   ],
