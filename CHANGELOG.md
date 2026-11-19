@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `feeds import FILE` selects a bundle for later offline scans, and `feeds prune` removes stored bundle snapshots beyond the three most recently used ones and module caches of other schema versions. `feeds status` shows the imported snapshot and the snapshot offline scans read.
 - The JSON `feed` object, the SARIF run properties and a terminal `Feed:` line record the snapshot a scan read, the reason for the choice and its advisory count.
+- The real-world validation harness scores verdicts against ground-truth labels written from the dependency sources, fails on any `unreachable` verdict for a called routine and on a change of each project's noise-reduction floor, and runs in CI against a pinned advisory bundle. A sixth project combines Bandit, Plug, Tesla over Mint and an unused hackney. Against the labels, the 127 findings of the six projects have 74.0% precision and 100% recall; `docs/VALIDATION.md` lists the 27 false positives.
 
 ### Fixed
 

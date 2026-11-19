@@ -1,4 +1,6 @@
-# Opt-in real-world validation harness.
+# Real-world validation harness: builds the pinned projects, scans them and
+# scores the verdicts against `real_world_expected.exs` and the ground-truth
+# labels in `real_world_ground_truth.exs`.
 #
 #     MIX_ENV=prod mix escript.build
 #     mix run benchmarks/validate_real_world.exs --offline --bundle /tmp/bundle.tar.gz
@@ -14,7 +16,8 @@ defmodule VulnCheck.Bench.RealWorld do
     {"plug_cowboy_multipart", "mix.lock", :mix},
     {"tesla_mint_hackney", "mix.lock", :mix},
     {"umbrella_three_apps", "mix.lock", :mix},
-    {"rebar3_hackney", "rebar.lock", :rebar3}
+    {"rebar3_hackney", "rebar.lock", :rebar3},
+    {"bandit_tesla_gateway", "mix.lock", :mix}
   ]
 
   def main(argv) do
@@ -36,7 +39,16 @@ defmodule VulnCheck.Bench.RealWorld do
       Mix.raise("escript not found at #{escript}; run `MIX_ENV=prod mix escript.build` first")
     end
 
-    {expected, _} = Code.eval_file(Path.expand("real_world_expected.exs", __DIR__))
+    {recorded, _} = Code.eval_file(Path.expand("real_world_expected.exs", __DIR__))
+    {truth, _} = Code.eval_file(Path.expand("real_world_ground_truth.exs", __DIR__))
+
+    expected = %{
+      verdicts: recorded.verdicts,
+      packages: recorded.packages,
+      labels: ValidationComparator.labels(truth.labels),
+      noise_floors: truth.noise_floors
+    }
+
     fixtures_dir = Path.expand("real_world", __DIR__)
 
     root =
@@ -54,17 +66,24 @@ defmodule VulnCheck.Bench.RealWorld do
             run_project(name, lock_file, kind, fixtures_dir, root, escript, expected, opts)
           end)
 
-        summary = ValidationComparator.summarize(results, expected.verdicts)
+        summary = ValidationComparator.summarize(results, expected)
 
         if Keyword.get(opts, :markdown, false) do
           IO.puts(ValidationComparator.to_markdown(summary))
         else
           Enum.each(summary.projects, &print_text_row/1)
+          print_total(summary)
+        end
+
+        for r <- summary.projects, line <- ValidationComparator.failures(r) do
+          IO.puts(:stderr, "#{r.project}: #{line}")
         end
 
         summary.passed?
       after
-        unless Keyword.get(opts, :keep, false), do: File.rm_rf!(root)
+        if Keyword.get(opts, :keep, false),
+          do: IO.puts(:stderr, "kept project builds in #{root}"),
+          else: File.rm_rf!(root)
       end
 
     unless passed?, do: System.halt(1)
@@ -78,23 +97,23 @@ defmodule VulnCheck.Bench.RealWorld do
 
     with {:ok, build_cmd} <- build_command(kind),
          :ok <- run_build(name, dir, build_cmd),
-         {:ok, report} <- scan(escript, dir, opts) do
-      result = ValidationComparator.compare(name, report, expected.verdicts, expected.packages)
+         {:ok, report} <- scan(escript, dir, Path.join(root, "cache"), opts) do
+      result = ValidationComparator.compare(name, report, expected)
       Map.merge(result, %{lock_sha256: lock_sha256, feed: report["feed"], tool: report["tool"]})
     else
       {:skip, reason} ->
         if Keyword.get(opts, :allow_skip, false) do
           %{
-            ValidationComparator.failed_project(name, reason, expected.verdicts)
+            ValidationComparator.failed_project(name, reason, expected)
             | status: :skipped,
               passed?: true
           }
         else
-          ValidationComparator.failed_project(name, reason, expected.verdicts)
+          ValidationComparator.failed_project(name, reason, expected)
         end
 
       {:error, reason} ->
-        ValidationComparator.failed_project(name, reason, expected.verdicts)
+        ValidationComparator.failed_project(name, reason, expected)
     end
   end
 
@@ -123,9 +142,9 @@ defmodule VulnCheck.Bench.RealWorld do
     end
   end
 
-  defp scan(escript, dir, opts) do
+  defp scan(escript, dir, cache_dir, opts) do
     args =
-      ["--project-dir", dir, "--format", "json", "--quiet"] ++
+      ["--project-dir", dir, "--cache-dir", cache_dir, "--format", "json", "--quiet"] ++
         if(Keyword.get(opts, :offline, false), do: ["--offline"], else: []) ++
         if(bundle = Keyword.get(opts, :bundle), do: ["--bundle", bundle], else: [])
 
@@ -146,10 +165,24 @@ defmodule VulnCheck.Bench.RealWorld do
   end
 
   defp print_text_row(r) do
+    c = r.confusion
+
     IO.puts(
-      "#{r.project}: matched=#{r.matched}/#{r.total_expected} unexpected=#{length(r.unexpected)} " <>
-        "precision=#{r.precision_percent}% recall=#{r.recall_percent}% " <>
-        "noise_reduction=#{r.noise_reduction_percent}% lock_sha256=#{r[:lock_sha256]}"
+      "#{r.project}: verdicts=#{r.matched}/#{r.total_expected} tp=#{c.tp} fp=#{c.fp} fn=#{c.fn} " <>
+        "tn=#{c.tn} precision=#{r.precision_percent}% recall=#{r.recall_percent}% " <>
+        "noise_reduction=#{r.noise_reduction_percent}% floor=#{r.noise_floor_percent}% " <>
+        "lock_sha256=#{r[:lock_sha256]}"
+    )
+  end
+
+  defp print_total(summary) do
+    c = summary.confusion
+
+    IO.puts(
+      "total: verdicts=#{summary.matched}/#{summary.total_expected} tp=#{c.tp} fp=#{c.fp} " <>
+        "fn=#{c.fn} tn=#{c.tn} precision=#{summary.precision_percent}% " <>
+        "recall=#{summary.recall_percent}% noise_reduction=#{summary.noise_reduction_percent}% " <>
+        "#{if summary.passed?, do: "PASS", else: "FAIL"}"
     )
   end
 

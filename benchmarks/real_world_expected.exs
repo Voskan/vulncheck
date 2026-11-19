@@ -1,6 +1,7 @@
-# Expected verdicts and pre-graph package baselines for the 5 real-world validation projects.
-# Derived from scanning pinned lockfiles against the offline OSV + EEF CNA snapshot and
-# reviewed against docs/REACHABILITY_MODEL.md.
+# Recorded verdicts and package baselines of the real-world validation projects.
+# They pin VulnCheck's output for the pinned lockfiles and advisory bundle, so that every
+# verdict change is reviewed. Whether a verdict is right is decided by the independent
+# labels in real_world_ground_truth.exs, not by this file.
 %{
   verdicts: [
     # (a) phoenix_bandit: Plug API started via Bandit child spec with Plug.Parsers [:json]
@@ -103,7 +104,67 @@
     # :hackney_url.make_url/3 is a public helper that hackney itself never calls.
     {"rebar3_hackney", "EEF-CVE-2026-47075", :unreachable, :function_not_called},
     {"rebar3_hackney", "GHSA-vq52-99r9-h5pw", :potentially_reachable, :unresolved_dynamic_dispatch},
-    {"rebar3_hackney", "GHSA-9fm9-hp7p-53mf", :potentially_reachable, :unresolved_dynamic_dispatch}
+    {"rebar3_hackney", "GHSA-9fm9-hp7p-53mf", :potentially_reachable, :unresolved_dynamic_dispatch},
+
+    # (f) bandit_tesla_gateway: Bandit + Plug.Router ([:json]) calling Tesla over Mint,
+    # with hackney locked but unused
+    # bandit 1.5.0
+    {"bandit_tesla_gateway", "EEF-CVE-2026-105659", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-105660", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-108525", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-113436", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-115269", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-39804", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-39805", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-39807", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-42786", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-42788", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-74836", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-108529", :potentially_reachable, :active_network_daemon},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-109584", :potentially_reachable, :active_network_daemon},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-110314", :potentially_reachable, :active_network_daemon},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-110499", :potentially_reachable, :active_network_daemon},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-111101", :potentially_reachable, :active_network_daemon},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-116078", :potentially_reachable, :active_network_daemon},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-39803", :potentially_reachable, :active_network_daemon},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-75484", :potentially_reachable, :active_network_daemon},
+    # hackney 1.18.1
+    {"bandit_tesla_gateway", "GHSA-9fm9-hp7p-53mf", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"bandit_tesla_gateway", "GHSA-vq52-99r9-h5pw", :potentially_reachable,
+     :unresolved_dynamic_dispatch},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-47069", :unreachable, :function_not_called},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-47071", :unreachable, :function_not_called},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-47075", :unreachable, :function_not_called},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-47076", :unreachable, :function_not_called},
+    # hpax 0.1.2
+    {"bandit_tesla_gateway", "EEF-CVE-2026-58226", :reachable, :call_chain_proven},
+    # mint 1.5.2
+    {"bandit_tesla_gateway", "EEF-CVE-2026-48861", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-48862", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-49753", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-49754", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-56810", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-58229", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-59246", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-59249", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-82672", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-82728", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-91043", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-92103", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-94194", :reachable, :call_chain_proven},
+    # plug 1.15.2
+    {"bandit_tesla_gateway", "EEF-CVE-2026-54892", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-56813", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-120287", :unreachable, :function_not_called},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-56814", :unreachable, :function_not_called},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-8468", :unreachable, :function_not_called},
+    # tesla 1.8.0
+    {"bandit_tesla_gateway", "EEF-CVE-2026-48596", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-48597", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-48598", :reachable, :call_chain_proven},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-48594", :unreachable, :function_not_called},
+    {"bandit_tesla_gateway", "EEF-CVE-2026-48595", :unreachable, :function_not_called}
   ],
   packages: [
     {"phoenix_bandit", "plug", "1.15.2"},
@@ -114,6 +175,9 @@
     {"tesla_mint_hackney", "mint", "1.5.2"},
     {"tesla_mint_hackney", "hackney", "1.18.1"},
     {"umbrella_three_apps", "plug", "1.15.2"},
-    {"rebar3_hackney", "hackney", "1.18.1"}
+    {"rebar3_hackney", "hackney", "1.18.1"},
+    {"bandit_tesla_gateway", "bandit", "1.5.0"},
+    {"bandit_tesla_gateway", "tesla", "1.8.0"},
+    {"bandit_tesla_gateway", "hackney", "1.18.1"}
   ]
 }
