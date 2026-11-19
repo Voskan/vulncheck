@@ -7,7 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `feeds import FILE` selects a bundle for later offline scans, and `feeds prune` removes stored bundle snapshots beyond the three most recently used ones and module caches of other schema versions. `feeds status` shows the imported snapshot and the snapshot offline scans read.
+- The JSON `feed` object, the SARIF run properties and a terminal `Feed:` line record the snapshot a scan read, the reason for the choice and its advisory count.
+
 ### Fixed
+
+- `--bundle` no longer selects the bundle for every later offline scan. In 1.0.0, a single `--bundle` run made all later `--offline` scans read that bundle even after `feeds sync`, and `feeds status` did not show it. An offline scan now reads the more recent of the live cache and the snapshot selected by `feeds import`, and warns when its snapshot is older or holds noticeably fewer records. The selection left by 1.0.0 is ignored.
+- Imported bundles no longer accumulate: each import keeps three recent snapshots, and re-importing the same bundle reuses its directory.
+- The CI escript smoke test scans with a temporary cache directory, so running it locally leaves the user cache unchanged.
 
 - Calling a function value (`callback.()`, `fun.(conn, data)`) no longer keeps every advisory with a routine of the same arity open as `unresolved_dynamic_dispatch`. A function value is a capture or closure created by analyzed code, and both are already part of the call graph. On a project with Bandit, Plug, Tesla over Mint and hackney, nine `function_not_called` verdicts that 1.0.0 reported as `potentially_reachable` are unreachable again, and framework rules such as the `Plug.Parsers` parser selection apply to the whole module again.
 

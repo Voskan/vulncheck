@@ -570,6 +570,97 @@ defmodule VulnCheck.CLITest do
       assert err =~ "cannot import the advisory bundle"
     end
 
+    test "an imported bundle is read offline only while it is newer than the live cache" do
+      source = Tmp.mkdir!("cli-import-source")
+      ash = Feeds.zip([Feeds.osv_ash()])
+
+      :ok =
+        VulnCheck.Cache.publish_entry(
+          Path.join([source, "feeds", "osv_hex_all.zip"]),
+          ash,
+          %{
+            "sha256" => VulnCheck.Cache.sha256(ash),
+            "fetched_at_unix" => System.os_time(:second) - 7_200
+          }
+        )
+
+      work = Tmp.mkdir!("cli-import")
+      bundle = Path.join(work, "smoke.tar.gz")
+      assert {0, _, ""} = cli(["feeds", "bundle", "-o", bundle, "--cache-dir", source])
+
+      cache = Tmp.mkdir!("cli-import-cache")
+      assert {0, out, ""} = cli(["feeds", "import", bundle, "--cache-dir", cache])
+      assert out =~ "Imported #{bundle}: 1 files, 1 advisories"
+      assert out =~ "Offline scans read: imported snapshot; the live cache is empty"
+
+      root = Project.shop!()
+
+      scan = fn extra ->
+        cli(scan_args(root, cache, ["--format", "json", "--fail-on", "none"] ++ extra))
+      end
+
+      assert {0, json, ""} = scan.([])
+      report = JSON.decode!(json)
+      assert %{"snapshot" => "imported", "advisories" => 1} = report["feed"]
+      refute Enum.any?(report["findings"], &("CVE-2026-54892" in &1["aliases"]))
+
+      zip = Feeds.zip([Feeds.osv_ash(), Feeds.osv_plug()])
+
+      records = %{
+        "/cna/CVE-2026-101028.json" =>
+          Feeds.cve_record("CVE-2026-101028", "ash", ["'Elixir.Ash.Actions.Aggregate':run/4"]),
+        "/cna/CVE-2026-54892.json" =>
+          Feeds.cve_record("CVE-2026-54892", "plug", ["'Elixir.Plug.Conn.Query':decode/4"])
+      }
+
+      server =
+        HTTPServer.start!(fn
+          %{path: "/osv/all.zip"} -> {200, [], zip}
+          %{path: path} when is_map_key(records, path) -> {200, [], JSON.encode!(records[path])}
+          _ -> {404, [], ""}
+        end)
+
+      scan_opts = [osv_url: server.url <> "/osv/all.zip", cna_base_url: server.url <> "/cna"]
+      assert {0, _, ""} = cli(["feeds", "sync", "--cache-dir", cache], scan_opts: scan_opts)
+
+      assert {0, json, ""} = scan.([])
+      report = JSON.decode!(json)
+
+      assert %{
+               "snapshot" => "live",
+               "advisories" => 2,
+               "offline" => true,
+               "selection" => "live cache; it is at least as recent as the imported snapshot"
+             } = report["feed"]
+
+      assert Enum.any?(report["findings"], &("CVE-2026-54892" in &1["aliases"]))
+
+      assert {0, json, ""} = scan.(["--bundle", bundle])
+      report = JSON.decode!(json)
+      assert %{"snapshot" => "bundle", "selection" => "--bundle smoke.tar.gz"} = report["feed"]
+      assert Enum.any?(report["warnings"], &(&1 =~ "offline feed: the --bundle snapshot"))
+
+      assert {1, text, ""} = cli(scan_args(root, cache))
+      assert text =~ ~r/Feed: 2 advisories, fetched \d+ s ago \(offline, live cache\)/
+
+      assert {0, status, ""} = cli(["feeds", "status", "--cache-dir", cache])
+      assert status =~ "Imported snapshot: #{Path.join(cache, "feed-bundles")}/bundle-"
+      assert status =~ "  records: 1"
+      assert status =~ "Offline scans read: live cache; it is at least as recent"
+      assert status =~ "Stored snapshots: 1,"
+
+      assert {0, "Removed 0 feed snapshots (0 B) and 0 outdated module caches (0 B)\n", ""} =
+               cli(["feeds", "prune", "--cache-dir", cache])
+
+      assert {2, "", err} = cli(["feeds", "import", "--cache-dir", cache])
+      assert err =~ "feeds import requires exactly one bundle file"
+
+      assert {2, "", err} =
+               cli(["feeds", "import", Path.join(work, "missing.tar.gz"), "--cache-dir", cache])
+
+      assert err =~ "cannot import the advisory bundle"
+    end
+
     test "sync refreshes the archive and CVE records" do
       zip = Feeds.zip([Feeds.osv_ash(), Feeds.osv_plug()])
       ash = Feeds.cve_record("CVE-2026-101028", "ash", ["'Elixir.Ash.Actions.Aggregate':run/4"])
@@ -617,7 +708,7 @@ defmodule VulnCheck.CLITest do
 
       assert {2, "", err} = cli(["feeds", "sync", "--cache-dir", cache, "--offline"])
       assert err =~ "needs network access"
-      assert {2, "", _} = cli(["feeds", "prune"])
+      assert {2, "", _} = cli(["feeds", "unknown", "--cache-dir", cache])
     end
 
     test "status distinguishes a missing, empty and invalid advisory archive" do

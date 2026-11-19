@@ -2,6 +2,7 @@ defmodule VulnCheck.CacheTest do
   use ExUnit.Case, async: true
 
   alias VulnCheck.{Cache, Config}
+  alias VulnCheck.Cache.{Bundle, Snapshot}
   alias VulnCheck.Test.{Feeds, HTTPServer, Tmp}
 
   defp config(extra \\ []) do
@@ -265,19 +266,21 @@ defmodule VulnCheck.CacheTest do
     end
 
     test "a bundle publication error does not merge resources into the live cache" do
-      source = config()
+      bundle = bundle!([Feeds.osv_ash()], System.os_time(:second))
       target = config()
-      zip = Feeds.zip([Feeds.osv_ash()])
-      :ok = Cache.atomic_write(Path.join(Cache.feeds_dir(source), "osv_hex_all.zip"), zip)
-      bundle = Path.join(Tmp.mkdir!("bundle"), "feeds.tar.gz")
-      assert {:ok, _} = Cache.export_bundle(source, bundle)
-
       :ok = Cache.atomic_write(Path.join(Cache.feeds_dir(target), "old.txt"), "old live feed")
-      File.mkdir_p!(Path.join(target.cache_dir, "feeds-offline.current"))
-      assert {:error, {:bundle_write_failed, _}} = Cache.import_bundle(bundle, target)
+
+      File.mkdir_p!(target.cache_dir)
+      File.write!(Path.join(target.cache_dir, "feed-bundles"), "not a directory")
+      assert {:error, {:bundle_write_failed, _}} = Cache.import_bundle_snapshot(bundle, target)
       assert {:ok, "old live feed"} = Cache.read_feed(target, "old.txt")
       assert {:error, :enoent} = Cache.read_feed(target, "osv_hex_all.zip")
-      assert File.ls!(Path.join(target.cache_dir, "feed-bundles")) == []
+
+      File.rm!(Path.join(target.cache_dir, "feed-bundles"))
+      File.mkdir_p!(Bundle.pointer(target))
+      assert {:error, {:bundle_write_failed, _}} = Cache.import_bundle(bundle, target)
+      assert {:error, :enoent} = Cache.read_feed(target, "osv_hex_all.zip")
+      assert Cache.feeds_dir(%{target | offline: true}) == Cache.live_feeds_dir(target)
     end
 
     test "refuses to export an empty cache" do
@@ -400,6 +403,136 @@ defmodule VulnCheck.CacheTest do
       refute Cache.safe_name?("a//b")
       refute Cache.safe_name?("a/./b")
       refute Cache.safe_name?("")
+    end
+  end
+
+  defp bundle!(advisories, fetched_at) do
+    source = config()
+    zip = Feeds.zip(advisories)
+    publish_osv!(source, zip, fetched_at)
+    bundle = Path.join(Tmp.mkdir!("bundle"), "feeds.tar.gz")
+    {:ok, _} = Cache.export_bundle(source, bundle)
+    bundle
+  end
+
+  defp publish_osv!(config, zip, fetched_at) do
+    :ok =
+      Cache.publish_entry(
+        Path.join(Cache.live_feeds_dir(config), "osv_hex_all.zip"),
+        zip,
+        %{"sha256" => Cache.sha256(zip), "fetched_at_unix" => fetched_at}
+      )
+  end
+
+  describe "offline snapshot selection" do
+    test "--bundle reads the bundle for one run and leaves later runs alone" do
+      now = System.os_time(:second)
+      bundle = bundle!([Feeds.osv_ash()], now - 3_600)
+      target = config()
+      publish_osv!(target, Feeds.zip([Feeds.osv_ash(), Feeds.osv_plug()]), now)
+
+      assert {:ok, _manifest, scoped} = Cache.import_bundle_snapshot(bundle, target)
+      assert scoped.offline
+      assert scoped.feed_snapshot =~ "feed-bundles/bundle-"
+
+      assert %{snapshot: :bundle, reason: "--bundle feeds.tar.gz", warnings: warnings} =
+               scoped.feed_selection
+
+      assert Enum.any?(warnings, &(&1 =~ "--bundle snapshot (fetched 60 min ago) is older"))
+
+      assert Enum.any?(
+               warnings,
+               &(&1 =~ "--bundle snapshot has 1 OSV records; the live cache has 2")
+             )
+
+      assert Snapshot.imported_dir(target) == :none
+      assert Cache.feeds_dir(%{target | offline: true}) == Cache.live_feeds_dir(target)
+
+      assert {:ok, _manifest, again} = Cache.import_bundle_snapshot(bundle, target)
+      assert again.feed_snapshot == scoped.feed_snapshot
+      assert File.ls!(Bundle.root(target)) == [Path.basename(scoped.feed_snapshot)]
+    end
+
+    test "offline runs read the newest of the live cache and the imported snapshot" do
+      now = System.os_time(:second)
+      target = config(offline: true)
+      assert Snapshot.select(target).reason == "live cache; no snapshot was imported"
+
+      assert {:ok, _} = Cache.import_bundle(bundle!([Feeds.osv_ash()], now - 600), target)
+      assert {:ok, imported} = Snapshot.imported_dir(target)
+
+      assert %{snapshot: :imported, dir: ^imported, reason: reason} = Snapshot.select(target)
+      assert reason == "imported snapshot; the live cache is empty"
+
+      publish_osv!(target, Feeds.zip([Feeds.osv_ash(), Feeds.osv_plug()]), now - 3_600)
+      selection = Snapshot.select(target)
+      assert selection.snapshot == :imported
+      assert selection.reason == "imported snapshot; it is newer than the live cache"
+      assert selection.warnings == ["the imported snapshot has 1 OSV records; the live cache has 2"]
+
+      publish_osv!(target, Feeds.zip([Feeds.osv_ash(), Feeds.osv_plug()]), now)
+      pinned = Cache.pin_feeds(target)
+      assert pinned.feed_snapshot == Cache.live_feeds_dir(target)
+
+      assert pinned.feed_selection == %{
+               snapshot: :live,
+               reason: "live cache; it is at least as recent as the imported snapshot",
+               warnings: []
+             }
+
+      assert {:ok, _zip, %{"fetched_at_unix" => ^now}} =
+               Cache.read_feed_entry(pinned, "osv_hex_all.zip")
+
+      File.write!(Path.join(imported, "osv_hex_all.zip.entry"), "corrupt")
+      assert Snapshot.select(target).reason =~ "live cache; the imported snapshot is invalid"
+    end
+
+    test "the pointer of earlier releases is ignored and removed" do
+      target = config(offline: true)
+      publish_osv!(target, Feeds.zip([Feeds.osv_ash(), Feeds.osv_plug()]), 1_000)
+
+      assert {:ok, _manifest, scoped} =
+               Cache.import_bundle_snapshot(bundle!([Feeds.osv_ash()], 2_000), target)
+
+      File.write!(Bundle.legacy_pointer(target), Path.basename(scoped.feed_snapshot))
+      assert Cache.feeds_dir(target) == Cache.live_feeds_dir(target)
+
+      Cache.prune(target)
+      refute File.exists?(Bundle.legacy_pointer(target))
+    end
+
+    test "pruning keeps the selected snapshot and the most recently used ones" do
+      target = config()
+
+      dirs =
+        for i <- 1..5 do
+          bundle = bundle!([Feeds.osv_ash()], 1_000 + i)
+          assert {:ok, _manifest, scoped} = Cache.import_bundle_snapshot(bundle, target)
+          File.touch!(scoped.feed_snapshot, 10_000 + i)
+          scoped.feed_snapshot
+        end
+
+      assert length(File.ls!(Bundle.root(target))) == 3
+
+      selected = bundle!([Feeds.osv_plug()], 500)
+      assert {:ok, _} = Cache.import_bundle(selected, target)
+      assert {:ok, selected_dir} = Snapshot.imported_dir(target)
+      File.touch!(selected_dir, 1)
+
+      for {dir, i} <- Enum.with_index(dirs, 1), File.dir?(dir), do: File.touch!(dir, 10_000 + i)
+
+      old_beams = Path.join(target.cache_dir, "beam-v3")
+      File.mkdir_p!(old_beams)
+      File.write!(Path.join(old_beams, "x.etf"), "12345")
+      File.mkdir_p!(Cache.beam_dir(target))
+
+      assert %{snapshots: 0, module_caches: 1, module_cache_bytes: 5} = Cache.prune(target)
+
+      kept = File.ls!(Bundle.root(target)) |> Enum.map(&Path.join(Bundle.root(target), &1))
+      assert Enum.sort(kept) == Enum.sort([selected_dir | Enum.take(dirs, -2)])
+      refute File.exists?(old_beams)
+      assert File.dir?(Cache.beam_dir(target))
+      assert %{snapshots: 0, module_caches: 0} = Cache.prune(target)
     end
   end
 end

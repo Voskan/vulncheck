@@ -107,8 +107,10 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 | `mix vulncheck.init` | Generate `.vulncheck.exs` tailored to the detected project structure. |
 | `mix vulncheck.explain <ID>` | Show full CVE details, affected `programRoutines`, fixed versions, and local reachability status. |
 | `mix vulncheck.feeds sync` | Revalidate the OSV archive and refresh every referenced CVE record through EEF CNA or MITRE. Exit `2` signals incomplete refresh. |
-| `mix vulncheck.feeds status` | Print local cache location, ETag timestamps, and advisory counts. |
+| `mix vulncheck.feeds status` | Print local cache location, ETag timestamps, advisory counts, the imported snapshot and the snapshot offline scans read. |
 | `mix vulncheck.feeds bundle -o <path>` | Export self-contained `.tar.gz` advisory bundle for air-gapped CI runners. |
+| `mix vulncheck.feeds import <path>` | Validate a bundle and select it for later offline scans. |
+| `mix vulncheck.feeds prune` | Remove stored bundle snapshots beyond the three most recently used ones and module caches of other schema versions. |
 
 ### Flags (`mix vulncheck` and the `vulncheck` escript)
 
@@ -134,7 +136,7 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 | `--ignore-file FILE` | Suppression file (default: `.vulncheck.ignore`). |
 | `--otp-version VER` | OTP release the project runs on (default: the running VM's). |
 | `--offline` | Never use the network; use the cache or `--bundle`. |
-| `--bundle FILE` | Import an advisory bundle before scanning. |
+| `--bundle FILE` | Read an advisory bundle for this scan only. |
 | `--cache-dir DIR` | Feed and `.beam` summary cache directory. |
 | `--cache-ttl SECONDS` | Feed freshness (default: `3600`). |
 | `--max-feed-age SECONDS` | Maximum accepted age of the cached OSV archive. Use `0` for live validation on every scan. |
@@ -143,7 +145,21 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 
 `mix vulncheck.init` accepts `--project-dir` and `--force` (overwrite an existing file). `mix vulncheck.explain` accepts `--project-dir`, `--offline` and `--bundle`.
 
-`--bundle` selects an isolated offline snapshot for the scan. Absent records remain absent in that snapshot. The live cache remains available to online runs, and subsequent offline scans use the most recently imported snapshot. Bundle import validates the complete manifest, file digests and feed contents before selecting it. The manifest preserves source fetch times, including unknown age in older bundles.
+### Offline Feed Snapshots
+
+An offline scan reads one of these snapshots:
+
+| Snapshot | Selected by | Read by |
+| :--- | :--- | :--- |
+| Live cache | Online scans and `feeds sync` | Online scans; offline scans when it is at least as recent as the imported snapshot |
+| Imported snapshot | `feeds import FILE` | Offline scans while it is newer than the live cache |
+| `--bundle` snapshot | `--bundle FILE` | That scan only |
+
+Bundle import validates the complete manifest, file digests and feed contents before the snapshot is used. Absent records remain absent in that snapshot. The manifest preserves source fetch times, including unknown age in older bundles, and an imported snapshot of unknown age is older than any dated live cache.
+
+The JSON `feed` object and the SARIF run property `feed` record the snapshot (`live`, `imported` or `bundle`), the reason for the choice, the source, the age and the advisory count. The terminal report prints the same on its `Feed:` line. A scan warns when its snapshot is older than the other one or holds less than 90% of its OSV records.
+
+Bundle snapshots are stored under `feed-bundles/` in the cache directory and named after their manifest digest, so importing the same bundle again reuses its directory. Each import keeps the imported snapshot and the three most recently used ones and removes the rest. `feeds prune` applies the same limit on demand, and also removes module caches written by other cache schema versions (`beam-vN`) and the snapshot pointer of 1.0.0, which selected every `--bundle` for later offline scans. Up to three concurrent scans with different bundles may share one cache directory.
 
 An online scan can use a verified previous OSV archive after a failed refresh if it is within its configured age limit. A cold scan or one past the limit returns exit `2`. The native JSON `feed` object contains the source, status, age, refresh error and discarded record count. `feeds status` reports a missing archive, a validated archive or an invalid archive with exit `2`.
 

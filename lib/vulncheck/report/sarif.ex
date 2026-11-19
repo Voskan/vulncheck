@@ -49,9 +49,13 @@ defmodule VulnCheck.Report.SARIF do
           "columnKind" => "unicodeCodePoints",
           "results" => Enum.map(findings, &result(&1, index, report))
         }
+        |> put_feed(Map.get(report.stats, :feed))
       ]
     }
   end
+
+  defp put_feed(run, nil), do: run
+  defp put_feed(run, feed), do: Map.put(run, "properties", %{"feed" => feed})
 
   defp env(%ScanReport{workspace: %{env: env}}), do: env
   defp env(_report), do: "prod"

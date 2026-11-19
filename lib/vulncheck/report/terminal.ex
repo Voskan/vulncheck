@@ -9,6 +9,7 @@ defmodule VulnCheck.Report.Terminal do
 
   @behaviour VulnCheck.Report.Formatter
 
+  alias VulnCheck.Cache.Snapshot
   alias VulnCheck.Config
   alias VulnCheck.Report.Formatter
   alias VulnCheck.Types.{Finding, ScanReport, Summary, Workspace}
@@ -52,8 +53,19 @@ defmodule VulnCheck.Report.Terminal do
     title =
       paint.("VulnCheck #{report.tool_version} — BEAM Reachability Vulnerability Audit", [:bright])
 
-    Enum.join([title | target_lines(report)], "\n")
+    Enum.join([title | target_lines(report)] ++ feed_line(report), "\n")
   end
+
+  defp feed_line(%ScanReport{stats: %{feed: %{advisories: count} = feed}}) do
+    origin =
+      if feed.offline,
+        do: "offline, " <> Snapshot.label(feed.snapshot),
+        else: Atom.to_string(feed.status)
+
+    ["Feed: #{count} advisories, fetched #{Snapshot.age(feed.fetched_at_unix)} (#{origin})"]
+  end
+
+  defp feed_line(_report), do: []
 
   defp target_lines(%ScanReport{workspace: nil} = report),
     do: ["Scan time: #{scan_time(report)}"]

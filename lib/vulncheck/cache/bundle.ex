@@ -2,12 +2,27 @@ defmodule VulnCheck.Cache.Bundle do
   @moduledoc false
 
   alias VulnCheck.{Cache, Config}
+  alias VulnCheck.Cache.Snapshot
   alias VulnCheck.Feeds.{Archive, EefCna, HexRetired, OSV}
 
   @bundle_manifest "manifest.json"
 
   def root(config), do: Path.join(Cache.dir(config), "feed-bundles")
-  def pointer(config), do: Path.join(Cache.dir(config), "feeds-offline.current")
+  def pointer(config), do: Path.join(Cache.dir(config), "feeds-imported.current")
+
+  # Earlier releases selected every `--bundle` snapshot through this file
+  # for all later offline runs. It is ignored and removed by `prune/2`.
+  @doc false
+  def legacy_pointer(config), do: Path.join(Cache.dir(config), "feeds-offline.current")
+
+  @doc false
+  def snapshot_name?(name), do: name =~ ~r/\Abundle-[0-9a-f]{40}\z/
+
+  # Imported snapshots kept on disk besides the one selected by `feeds import`.
+  @kept_snapshots 3
+
+  @doc false
+  def kept_snapshots, do: @kept_snapshots
 
   @max_bundle_bytes 100 * 1024 * 1024
   @max_tar_bytes 256 * 1024 * 1024
@@ -103,16 +118,28 @@ defmodule VulnCheck.Cache.Bundle do
   end
 
   @doc """
-  Validates and atomically selects a bundle as the offline feed snapshot.
-  Online scans continue to use their separate live cache.
+  Validates a bundle and selects it for later offline runs. An offline run
+  without `--bundle` reads it while it is newer than the live cache.
   """
   @spec import_bundle(Path.t(), Config.t()) :: {:ok, map()} | {:error, term()}
   def import_bundle(bundle_path, %Config{} = config) do
-    with {:ok, manifest, _config} <- import_bundle_snapshot(bundle_path, config),
-         do: {:ok, manifest}
+    with {:ok, manifest, scoped} <- import_bundle_snapshot(bundle_path, config),
+         :ok <- select(config, scoped.feed_snapshot) do
+      {:ok, manifest}
+    end
   end
 
-  @doc false
+  defp select(config, root) do
+    case Cache.atomic_write(pointer(config), Path.basename(root)) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:bundle_write_failed, reason}}
+    end
+  end
+
+  @doc """
+  Validates a bundle and returns a configuration that reads it for one run.
+  Later runs are not affected.
+  """
   def import_bundle_snapshot(bundle_path, %Config{} = config) do
     path = Path.expand(bundle_path, Config.project_root(config))
 
@@ -124,9 +151,59 @@ defmodule VulnCheck.Cache.Bundle do
          {:ok, entries} <- verify_manifest(manifest, files),
          :ok <- validate_bundle_osv(entries),
          :ok <- validate_json_resources(entries),
-         {:ok, root} <- publish_bundle(config, entries) do
-      {:ok, manifest, %{config | feed_snapshot: root, offline: true}}
+         {:ok, root} <- publish_bundle(config, files[@bundle_manifest], entries) do
+      prune(config, keep: [root])
+      selection = Snapshot.for_bundle(config, root, path)
+
+      {:ok, manifest,
+       %{config | feed_snapshot: root, offline: true, feed_selection: Map.delete(selection, :dir)}}
     end
+  end
+
+  @doc """
+  Removes imported snapshots except the one selected by `feeds import`, the
+  directories in `:keep` and the #{@kept_snapshots} most recently used ones.
+  Returns the number of removed snapshots and their size in bytes.
+  """
+  @spec prune(Config.t(), keyword()) :: {non_neg_integer(), non_neg_integer()}
+  def prune(%Config{} = config, opts \\ []) do
+    root = root(config)
+
+    keep = Keyword.get(opts, :keep, [])
+
+    protected =
+      case Snapshot.imported_dir(config) do
+        {:ok, dir} -> Enum.uniq([dir | keep])
+        _ -> Enum.uniq(keep)
+      end
+
+    snapshots =
+      case File.ls(root) do
+        {:ok, names} ->
+          for name <- names,
+              snapshot_name?(name),
+              dir = Path.join(root, name),
+              {:ok, %File.Stat{type: :directory, mtime: mtime}} <- [File.stat(dir, time: :posix)],
+              do: {dir, mtime}
+
+        {:error, _} ->
+          []
+      end
+
+    File.rm(legacy_pointer(config))
+
+    snapshots
+    |> Enum.sort_by(fn {dir, mtime} -> {mtime, dir} end, :desc)
+    |> Enum.reject(fn {dir, _} -> dir in protected end)
+    |> Enum.drop(max(@kept_snapshots - length(protected), 0))
+    |> Enum.reduce({0, 0}, fn {dir, _}, {count, bytes} ->
+      size = Cache.disk_usage(dir)
+
+      case File.rm_rf(dir) do
+        {:ok, _} -> {count + 1, bytes + size}
+        {:error, _, _} -> {count, bytes}
+      end
+    end)
   end
 
   defp read_bundle(path) do
@@ -339,9 +416,12 @@ defmodule VulnCheck.Cache.Bundle do
     end)
   end
 
-  defp publish_bundle(config, entries) do
-    name = "bundle-" <> Base.encode16(:crypto.strong_rand_bytes(20), case: :lower)
+  # Snapshots are named after the manifest digest, so importing the same
+  # bundle again reuses its directory instead of adding another copy.
+  defp publish_bundle(config, manifest_data, entries) do
+    name = "bundle-" <> binary_part(Cache.sha256(manifest_data), 0, 40)
     root = Path.join(root(config), name)
+    existed = File.dir?(root)
 
     results =
       Enum.reduce_while(entries, :ok, fn {rel, data, meta}, :ok ->
@@ -351,11 +431,13 @@ defmodule VulnCheck.Cache.Bundle do
         end
       end)
 
-    with :ok <- results, :ok <- Cache.atomic_write(pointer(config), name) do
-      {:ok, root}
-    else
+    case results do
+      :ok ->
+        File.touch(root)
+        {:ok, root}
+
       {:error, reason} ->
-        File.rm_rf(root)
+        unless existed, do: File.rm_rf(root)
         {:error, {:bundle_write_failed, reason}}
     end
   end

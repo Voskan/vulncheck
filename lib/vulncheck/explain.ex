@@ -8,7 +8,7 @@ defmodule VulnCheck.Explain do
   """
 
   alias VulnCheck.{Cache, Config, Semver}
-  alias VulnCheck.Feeds.{EefCna, OSV}
+  alias VulnCheck.Feeds.{EefCna, OSV, Store}
   alias VulnCheck.Report.Formatter
   alias VulnCheck.Solver.RoutineScope
   alias VulnCheck.Types.{Advisory, Finding, MFA, ScanReport, VersionRange, Workspace}
@@ -38,21 +38,26 @@ defmodule VulnCheck.Explain do
   """
   @spec run(String.t(), Config.t(), keyword()) :: {:ok, result()} | {:error, term()}
   def run(id, %Config{} = config, opts \\ []) do
-    with :ok <- import_bundle(config),
+    with {:ok, config} <- select_feeds(config),
          {:ok, advisories} <- load(config, opts),
          {:ok, matches} <- find(advisories, id) do
       {enriched, warnings} = enrich(matches, config, opts)
 
       {:ok,
-       %{query: id, advisories: enriched, local: local(config, opts, matches), warnings: warnings}}
+       %{
+         query: id,
+         advisories: enriched,
+         local: local(config, opts, matches),
+         warnings: Store.selection_warnings(config) ++ warnings
+       }}
     end
   end
 
-  defp import_bundle(%Config{bundle: nil}), do: :ok
+  defp select_feeds(%Config{bundle: nil} = config), do: {:ok, Cache.pin_feeds(config)}
 
-  defp import_bundle(%Config{bundle: bundle} = config) do
-    case Cache.import_bundle(bundle, config) do
-      {:ok, _manifest} -> :ok
+  defp select_feeds(%Config{bundle: bundle} = config) do
+    case Cache.import_bundle_snapshot(bundle, config) do
+      {:ok, _manifest, scoped} -> {:ok, %{scoped | bundle: nil}}
       {:error, reason} -> {:error, {:feeds, {:bundle, reason}}}
     end
   end

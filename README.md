@@ -137,6 +137,8 @@ mix vulncheck --diff origin/main --forbid-new-suppressions
 # Export an air-gapped advisory bundle for isolated build networks
 mix vulncheck.feeds bundle --output vulncheck-feeds.tar.gz
 mix vulncheck --offline --bundle vulncheck-feeds.tar.gz
+# Or select it for every later offline scan while it is newer than the cache
+mix vulncheck.feeds import vulncheck-feeds.tar.gz
 ```
 
 ### GitHub Actions Integration
