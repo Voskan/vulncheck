@@ -7,12 +7,15 @@ defmodule VulnCheck.CLI do
       vulncheck explain <ID> [flags]    describe an advisory and its local status
       vulncheck feeds sync|status       refresh or inspect the advisory cache
       vulncheck feeds bundle -o FILE    export the cache for offline runners
+      vulncheck feeds import FILE       select a bundle for later offline runs
+      vulncheck feeds prune             remove unused snapshots and module caches
 
   Exit codes: `0` clean, `1` policy violation (actionable findings, retired
   releases, expired or forbidden suppressions), `2` execution error.
   """
 
   alias VulnCheck.{Cache, Config, Explain}
+  alias VulnCheck.Cache.{Bundle, Snapshot}
   alias VulnCheck.Entrypoints.Adapters
   alias VulnCheck.Feeds.{EefCna, OSV}
   alias VulnCheck.Report
@@ -393,14 +396,17 @@ defmodule VulnCheck.CLI do
 
   defp feeds(argv, ctx) do
     case argv do
-      [sub | rest] when sub in ["sync", "status", "bundle"] ->
+      [sub | rest] when sub in ["sync", "status", "bundle", "import", "prune"] ->
         if help?(rest), do: feeds_usage(ctx), else: feeds(sub, rest, ctx)
 
       [flag | _] when flag in ["--help", "-h"] ->
         feeds_usage(ctx)
 
       _ ->
-        fail(ctx, "usage: vulncheck feeds sync | status | bundle --output FILE")
+        fail(
+          ctx,
+          "usage: vulncheck feeds sync | status | bundle --output FILE | import FILE | prune"
+        )
     end
   end
 
@@ -408,14 +414,16 @@ defmodule VulnCheck.CLI do
     out(ctx, """
     usage: vulncheck feeds sync                  refresh the OSV archive and CVE 5.1 records
            vulncheck feeds status                show the cache location, age and contents
-           vulncheck feeds bundle --output FILE  export the cache for --offline --bundle runs\
+           vulncheck feeds bundle --output FILE  export the cache for --offline --bundle runs
+           vulncheck feeds import FILE           select a bundle for later --offline runs
+           vulncheck feeds prune                 remove unused snapshots and module caches\
     """)
 
     0
   end
 
   defp feeds(sub, argv, ctx) do
-    case Config.from_cli_and_file(argv, cwd: ctx.cwd) do
+    case Config.from_cli_and_file(argv, cwd: ctx.cwd, allow_args: sub == "import") do
       {:ok, config} -> feeds_command(sub, config, ctx)
       {:error, reason} -> fail(ctx, describe_error(reason))
     end
@@ -490,11 +498,42 @@ defmodule VulnCheck.CLI do
 
     retired = Enum.count(files, &String.starts_with?(&1, "hex/packages/"))
     out(ctx, "Hex package records: #{retired} cached")
+    offline_status(config, ctx)
 
     case archive do
       {:error, reason} when reason != :enoent -> fail(ctx, "cached OSV archive failed validation")
       _ -> 0
     end
+  end
+
+  defp feeds_command("import", config, ctx) do
+    with {:ok, file} <- single_arg(config.args, "feeds import requires exactly one bundle file"),
+         {:ok, manifest} <- Cache.import_bundle(file, %{config | args: []}) do
+      out(
+        ctx,
+        "Imported #{file}: #{length(manifest["files"])} files, " <>
+          "#{manifest["advisory_count"]} advisories"
+      )
+
+      out(ctx, "Offline scans read: #{Snapshot.select(config).reason}")
+      0
+    else
+      {:error, message} when is_binary(message) -> fail(ctx, message)
+      {:error, reason} -> fail(ctx, describe_error({:feeds, {:bundle, reason}}))
+    end
+  end
+
+  defp feeds_command("prune", config, ctx) do
+    result = Cache.prune(config)
+
+    out(
+      ctx,
+      "Removed #{result.snapshots} feed snapshots (#{format_bytes(result.snapshot_bytes)}) " <>
+        "and #{result.module_caches} outdated module caches " <>
+        "(#{format_bytes(result.module_cache_bytes)})"
+    )
+
+    0
   end
 
   defp feeds_command("bundle", %Config{output: nil}, ctx),
@@ -517,6 +556,45 @@ defmodule VulnCheck.CLI do
       {:error, reason} ->
         fail(ctx, describe_error({:bundle_export, reason}))
     end
+  end
+
+  defp offline_status(config, ctx) do
+    case Snapshot.imported_dir(config) do
+      {:ok, dir} ->
+        info = Snapshot.inspect_dir(config, :imported, dir)
+        out(ctx, "Imported snapshot: #{dir}")
+
+        case info.status do
+          :ok ->
+            out(ctx, "  fetched: #{format_age(info.fetched_at_unix)}")
+            out(ctx, "  records: #{info.records}")
+
+          {:error, reason} ->
+            out(ctx, "  invalid: #{reason_text(reason)}")
+        end
+
+      :none ->
+        out(ctx, "Imported snapshot: none (`vulncheck feeds import FILE` selects one)")
+
+      {:error, reason} ->
+        out(ctx, "Imported snapshot: unusable (#{reason})")
+    end
+
+    out(ctx, "Offline scans read: #{Snapshot.select(config).reason}")
+
+    root = Bundle.root(config)
+
+    snapshots =
+      case File.ls(root) do
+        {:ok, names} -> Enum.filter(names, &Bundle.snapshot_name?/1)
+        {:error, _} -> []
+      end
+
+    out(
+      ctx,
+      "Stored snapshots: #{length(snapshots)}, #{format_bytes(Cache.disk_usage(root))} " <>
+        "(`vulncheck feeds prune` keeps #{Bundle.kept_snapshots()})"
+    )
   end
 
   defp sync_records(advisories, config, opts) do

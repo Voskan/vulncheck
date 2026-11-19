@@ -15,7 +15,7 @@ defmodule VulnCheck.Cache do
   """
 
   alias VulnCheck.Config
-  alias VulnCheck.Cache.{BeamCodec, Bundle}
+  alias VulnCheck.Cache.{BeamCodec, Bundle, Snapshot}
   alias VulnCheck.Types.ModuleSummary
 
   @beam_cache_version 4
@@ -32,31 +32,27 @@ defmodule VulnCheck.Cache do
   def dir(%Config{cache_dir: dir} = config), do: Path.expand(dir, Config.project_root(config))
   def dir(opts) when is_list(opts), do: Keyword.get_lazy(opts, :cache_dir, &default_dir/0)
 
-  @doc "Directory holding feed data."
+  @doc """
+  Directory holding feed data. Offline runs read the most recent valid
+  snapshot: the live cache or the snapshot selected by `feeds import`.
+  """
   @spec feeds_dir(Config.t()) :: String.t()
   def feeds_dir(%Config{feed_snapshot: root}) when is_binary(root), do: root
-
-  def feeds_dir(%Config{offline: true} = config) do
-    case read_limited(Bundle.pointer(config), 96) do
-      {:ok, name} ->
-        if name =~ ~r/\Abundle-[0-9a-f]{40}\z/,
-          do: Path.join(Bundle.root(config), name),
-          else: Path.join(Bundle.root(config), "invalid")
-
-      {:error, :enoent} ->
-        live_feeds_dir(config)
-
-      {:error, _} ->
-        Path.join(Bundle.root(config), "invalid")
-    end
-  end
-
+  def feeds_dir(%Config{offline: true} = config), do: Snapshot.select(config).dir
   def feeds_dir(config), do: live_feeds_dir(config)
 
   @doc false
-  def pin_feeds(%Config{} = config), do: %{config | feed_snapshot: feeds_dir(config)}
+  def pin_feeds(%Config{feed_snapshot: root} = config) when is_binary(root), do: config
 
-  defp live_feeds_dir(config), do: Path.join(dir(config), "feeds")
+  def pin_feeds(%Config{offline: true} = config) do
+    selection = Snapshot.select(config)
+    %{config | feed_snapshot: selection.dir, feed_selection: Map.delete(selection, :dir)}
+  end
+
+  def pin_feeds(%Config{} = config), do: %{config | feed_snapshot: live_feeds_dir(config)}
+
+  @doc false
+  def live_feeds_dir(config), do: Path.join(dir(config), "feeds")
 
   @doc "Directory holding cached `.beam` summaries."
   @spec beam_dir(Config.t()) :: String.t()
@@ -437,13 +433,75 @@ defmodule VulnCheck.Cache do
     ArgumentError -> :invalid
   end
 
+  # -- pruning -----------------------------------------------------------------
+
+  @doc """
+  Removes imported feed snapshots beyond the most recently used ones (the
+  snapshot selected by `feeds import` is kept) and module caches written by
+  other cache schema versions.
+  """
+  @spec prune(Config.t()) :: %{
+          snapshots: non_neg_integer(),
+          snapshot_bytes: non_neg_integer(),
+          module_caches: non_neg_integer(),
+          module_cache_bytes: non_neg_integer()
+        }
+  def prune(%Config{} = config) do
+    {snapshots, snapshot_bytes} = Bundle.prune(config)
+    {module_caches, module_cache_bytes} = prune_module_caches(config)
+
+    %{
+      snapshots: snapshots,
+      snapshot_bytes: snapshot_bytes,
+      module_caches: module_caches,
+      module_cache_bytes: module_cache_bytes
+    }
+  end
+
+  defp prune_module_caches(config) do
+    root = dir(config)
+    current = Path.basename(beam_dir(config))
+
+    case File.ls(root) do
+      {:ok, names} ->
+        names
+        |> Enum.filter(&(&1 =~ ~r/\Abeam-v[0-9]+\z/ and &1 != current))
+        |> Enum.map(&Path.join(root, &1))
+        |> Enum.filter(&File.dir?/1)
+        |> Enum.reduce({0, 0}, fn path, {count, bytes} ->
+          size = disk_usage(path)
+
+          case File.rm_rf(path) do
+            {:ok, _} -> {count + 1, bytes + size}
+            {:error, _, _} -> {count, bytes}
+          end
+        end)
+
+      {:error, _} ->
+        {0, 0}
+    end
+  end
+
+  @doc false
+  def disk_usage(path) do
+    path
+    |> Path.join("**")
+    |> Path.wildcard(match_dot: true)
+    |> Enum.reduce(0, fn file, total ->
+      case File.lstat(file) do
+        {:ok, %File.Stat{type: :regular, size: size}} -> total + size
+        _ -> total
+      end
+    end)
+  end
+
   # -- air-gapped bundles ------------------------------------------------------
 
   @doc "Exports a verified snapshot of cached feeds."
   @spec export_bundle(Config.t(), Path.t()) :: {:ok, map()} | {:error, term()}
   defdelegate export_bundle(config, path), to: Bundle
 
-  @doc "Validates and atomically selects a bundle for offline scans."
+  @doc "Validates a bundle and selects it for later offline scans."
   @spec import_bundle(Path.t(), Config.t()) :: {:ok, map()} | {:error, term()}
   defdelegate import_bundle(path, config), to: Bundle
 

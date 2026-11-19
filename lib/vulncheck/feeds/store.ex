@@ -65,13 +65,18 @@ defmodule VulnCheck.Feeds.Store do
        %{
          advisories: advisories ++ retired,
          warnings:
-           stale_warning(feed_status, meta) ++
+           selection_warnings(config) ++
+             stale_warning(feed_status, meta) ++
              enrich_warnings ++
              git_warnings(advisories, workspace) ++
              retired_warnings ++ HexRetired.hygiene(workspace),
          stats: %{
            feed_status: feed_status,
-           feed: Map.put(feed_info(feed_status, meta, config), :sources, source_counts(workspace)),
+           feed:
+             feed_status
+             |> feed_info(meta, config)
+             |> Map.put(:advisories, all |> Enum.uniq_by(& &1.id) |> length())
+             |> Map.put(:sources, source_counts(workspace)),
            feed_advisories: length(all),
            matched_advisories: length(matched) + length(cna_git),
            enriched_advisories: Enum.count(advisories, & &1.enriched),
@@ -100,9 +105,20 @@ defmodule VulnCheck.Feeds.Store do
       fetched_at_unix: at,
       rejected_records: rejected,
       offline: config.offline,
+      snapshot: snapshot(config),
+      selection: config.feed_selection && config.feed_selection.reason,
       refresh_error: if(reason, do: inspect(reason, limit: 10, printable_limit: 200))
     }
   end
+
+  defp snapshot(%Config{feed_selection: %{snapshot: kind}}), do: kind
+  defp snapshot(_config), do: :live
+
+  @doc false
+  def selection_warnings(%Config{feed_selection: %{warnings: warnings}}),
+    do: Enum.map(warnings, &"offline feed: #{&1}")
+
+  def selection_warnings(_config), do: []
 
   defp stale_warning(:stale, meta) do
     reason = inspect(meta["refresh_error"], limit: 10, printable_limit: 200)

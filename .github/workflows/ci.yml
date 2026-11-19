@@ -134,7 +134,7 @@ jobs:
             )
             {:ok, _} = VulnCheck.Cache.Bundle.export_bundle(cfg, "/tmp/vulncheck-smoke-bundle.tar.gz")
           '
-          ./vulncheck --project-dir benchmarks/real_world/umbrella_three_apps --offline --bundle /tmp/vulncheck-smoke-bundle.tar.gz --format json --fail-on none > /tmp/vulncheck-smoke.json
+          ./vulncheck --project-dir benchmarks/real_world/umbrella_three_apps --offline --bundle /tmp/vulncheck-smoke-bundle.tar.gz --cache-dir "$RUNNER_TEMP/vulncheck-smoke-cache" --format json --fail-on none > /tmp/vulncheck-smoke.json
           elixir -e '
             data = File.read!("/tmp/vulncheck-smoke.json") |> JSON.decode!()
             findings = Map.fetch!(data, "findings")

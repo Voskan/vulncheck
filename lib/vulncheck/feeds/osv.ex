@@ -90,6 +90,14 @@ defmodule VulnCheck.Feeds.OSV do
 
   def parse_archive(_zip), do: {:error, {:archive_too_large, :compressed}}
 
+  @doc false
+  # Number of advisory records in an archive, read from its directory only.
+  def record_count(zip) when is_binary(zip) and byte_size(zip) <= @max_compressed do
+    with {:ok, records} <- archive_directory(zip), do: {:ok, length(records)}
+  end
+
+  def record_count(_zip), do: {:error, {:archive_too_large, :compressed}}
+
   defp valid_record?(%{"id" => id, "withdrawn" => time})
        when is_binary(id) and id != "" and is_binary(time) do
     true
