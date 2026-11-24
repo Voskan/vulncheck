@@ -123,7 +123,7 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
   },
   "tool": {
     "name": "vulncheck",
-    "version": "1.0.1"
+    "version": "1.0.2"
   },
   "warnings": []
 }
@@ -149,8 +149,8 @@ Within an OSV record, valid ratings for the installed package and version take p
 Designed for **GitHub Code Scanning** (`github/codeql-action/upload-sarif`):
 
 - Each unique advisory maps to a `reportingDescriptor` in `tool.driver.rules` with `security-severity` populated from CVSS so GitHub displays accurate `Critical` / `High` / `Medium` / `Low` badges.
-- The primary location is the **first trace hop in the project's own code**, including the activation site when present. Paths are normalized relative to the project root. An entirely external trace points to the package's entry in `mix.lock`, `rebar.lock` or `manifest.toml`. GitHub workflow annotations and GitLab Code Quality use the same rule. SARIF includes the remaining project hops in `relatedLocations`.
-- `codeFlows[].threadFlows[].locations` encodes the complete multi-hop call trace from entrypoint to vulnerable dependency routine. An activation hop has `executionOrder: 0` and `kinds: ["daemon_activation"]` or `["config_activation"]`; the entrypoint has `executionOrder: 1` and `kinds: ["enter"]`.
+- The primary location is the **first trace hop in the project's own code**, including the activation site when present. Paths are normalized relative to the repository root (when `--project-dir` points to a monorepo subdirectory, paths are prefixed relative to `GITHUB_WORKSPACE`, `CI_PROJECT_DIR`, or the surrounding `.git` root). An entirely external trace points to the package's entry in `mix.lock`, `rebar.lock` or `manifest.toml`. GitHub workflow annotations and GitLab Code Quality use the same rule. SARIF includes the remaining project hops in `relatedLocations`.
+- `codeFlows[].threadFlows[].locations` encodes the complete multi-hop call trace from entrypoint to vulnerable dependency routine using 1-based SARIF 2.1.0 `executionOrder` values (`1, 2, ...`). When an activation hop is present, it has `executionOrder: 1`, `kinds: ["daemon_activation"]` or `["config_activation"]`, and a `"0. ..."` message label, followed by the entrypoint at `executionOrder: 2` (`kinds: ["enter"]`, `"1. ..."`). Relative paths in `codeFlows` include the same monorepo prefix relative to `%SRCROOT%`.
 - `properties.contextRoutines` lists routines named by the advisory that live outside the vulnerable package (see `context_routines` below); they are never targets.
 - `UNREACHABLE` advisories are omitted by default (or emitted with `level: "none"` when `--show-unreachable` is passed).
 - `partialFingerprints.primaryLocationLineHash` carries the finding fingerprint (stable across runs), so Code Scanning tracks alerts across commits instead of reopening them.

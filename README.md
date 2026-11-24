@@ -91,8 +91,10 @@ vulncheck --project-dir /path/to/service
 
 ## Example Terminal Output
 
+> Illustrative output for a Phoenix/Ash application. For measured precision, recall, and noise-reduction figures across six real-world BEAM projects, see [`docs/VALIDATION.md`](docs/VALIDATION.md).
+
 ```text
-VulnCheck 1.0.1 — BEAM Reachability Vulnerability Audit
+VulnCheck 1.0.2 — BEAM Reachability Vulnerability Audit
 Target: my_fintech_api (mix, Elixir 1.18.2 / OTP 27.2, env: prod)
 Lockfile: 74 prod packages (19 dev/test excluded) · Scan time: 142 ms (cached)
 
@@ -165,7 +167,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18.2"
-      - uses: Voskan/vulncheck@v1.0.1
+      - uses: Voskan/vulncheck@v1.0.2
         with:
           fail-on: potentially_reachable
           upload-sarif: true

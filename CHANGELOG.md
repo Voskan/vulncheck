@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-24
+
+### Fixed
+
+#### Soundness
+- Preserve Erlang and Gleam module atoms in tuple heads and map keys (`AbstractWalker`), so Erlang supervision child specs (`{:my_erl_worker, arg}`) and dynamic `apply(mod, fun, args)` targets are no longer dropped from `module_refs`. Salted the `.beam` summary cache key (`walker-v3`) so stale `1.0.1` cache entries automatically recompute.
+- Extract explicit function captures (`&Mod.fun/arity`, `&:erl_mod.fun/arity`), shorthand captures (`&Mod.fun(&1, ...)`), closure/remote calls (`fn x -> Mod.fun(x, :opt) end`), literal MFA 3-tuples, and Erlang module atoms (including 2nd-argument module keys in `config :app, :erl_mod, opts`) from `config/*.exs` into entrypoint roots (`Adapters`, `Entrypoints`), and track unparseable configs or dynamic fun creation (`Function.capture`, `:erlang.make_fun`, `:erlang.binary_to_term`, `Code.eval_*`, `:erl_eval`) via `EntrypointModel.untracked_fun_sources`.
+- Treat `:erlang.binary_to_term/1,2`, `Plug.Crypto.non_executable_binary_to_term/1,2`, `Code.eval_string/1..3`, `Code.eval_quoted/1..3`, `:file.consult/1`, `:erl_eval.exprs/2..4`, and `:erl_eval.expr/2..5` as module builders in `Solver`, emit unconstrained dynamic call sites for `Code.eval_*` and `:erl_eval` in `AbstractWalker`, and include reachable `:function_value` call sites in dynamic escapes whenever `untracked_fun_sources` is true or an executable fun constructor (`:erlang.binary_to_term/1,2`, `Code.eval_*`, `:erl_eval`) is reachable (while keeping `Plug.Crypto.non_executable_binary_to_term/1,2` excluded from fun escapes).
+- Run `.beam` call-graph analysis in `Scanner` when `:build_only` (`runtime: false`) dependencies have advisories, so direct runtime calls from production code into a `runtime: false` dependency are reported as `REACHABLE` instead of skipped as `:non_prod_dependency`.
+- Recognize custom `Plug.Parsers` modules (implementing `@behaviour Plug.Parsers` or exporting `parse/5`) in compiled `Plug.Parsers.call/2` options and fallback `:all` parser discovery, while preserving `:dynamic_candidate` attribution.
+- Wire `:gen_statem` / `GenStatem` exported arity 3 and 4 state functions (`state_functions` callback mode) and `:cowboy_rest` exported arity 2 callbacks/media-type handlers (plus `terminate/3`) as behaviour callbacks.
+
+#### Precision & Static Parsers
+- Resolve proven `Phoenix.Router` -> `Phoenix.Controller` action dispatch across direct `Controller.call(conn, :action)`, `Plug.Builder` `Controller.call(conn, Controller.init(:action))`, and Phoenix 1.7+ `__match_route__/4` `{Controller, :action}` route tuples (scoped to router match functions and 4-tuple route structures), emitting proven `:behaviour_callback` edges to routed actions while falling back soundly when custom `action/2` hooks, dynamic options, or external `apply(Controller, :call, ...)` calls are present; resolve `Phoenix.Router` plug dispatch to reachable plugs.
+- Overhaul `MixProject` static `mix.exs` parsing to support multi-clause `defp deps(:prod)` / `defp deps(_)` helpers, delegated `project/0` helpers, `++`, `|>`, `Keyword.merge/2`, `List.flatten/1`, `~w(...)a` atom sigils, module attributes (`@project`, `@version`), multi-statement blocks, boolean `if`/`unless`/`case`/`cond` expressions (`==`, `!=`, `in`, `not`, `or`/`||`, `and`/`&&`) on `Mix.env()`, and 3-tuple deps with `@version` without descending into keyword options; track `Workspace.direct_deps_known` so `CycloneDX` only falls back to lockfile roots when direct dependencies are unknown.
+- Make `ErlTerm.parse/1` total on malformed inputs (invalid integer bases outside `2..36`, malformed floats like `1.2e+.`, invalid UTF-8 bytes inside quoted atoms, escapes, and character literals, and terms exceeding `@max_depth 128` return `{:error, _}` instead of raising).
+- Fix `Toml.parse/1` boolean prefix splitting (`true_val`), quoted dotted key paths (`"a.b".c`, `[ "x.y".z ]`), `[table.sub]` subtables under `[[array_of_tables]]`, and reject empty table headers (`[]`, `[[]]`) and empty key segments (`[a..b]`).
+
+#### Security, Compliance & CI
+- Harden `Cache.get_beam_packed/2` and `BeamCodec.valid?/2` against poisoned `.etf` files: reject compressed ETF payloads declaring uncompressed sizes above `@max_beam_unpacked_bytes` before calling `:erlang.binary_to_term/2`, handle non-tuple entries and improper lists in all validators, and validate `attributes` values and `init_literals` arguments with a depth-bounded literal check.
+- Emit 1-based SARIF 2.1.0 `executionOrder` values (`>= 1` per §3.38.6) in `codeFlows` while preserving `0.` activation labels in `location.message.text`.
+- Route rejected `.vulncheck.ignore` entries into `policy_violations` in `Ignore.step/1` so malformed, missing-reason, or missing/invalid-expiry rules fail with exit code `1`.
+- Isolate non-GitHub hosts, strip `.git` suffixes case-insensitively, and preserve nested GitLab subgroups in `GitUrl.normalize_repo/1` (`gitlab.com/group/subgroup/repo`, `git.corp.internal/owner/repo`), plus support `pkg:gitlab/` and `pkg:bitbucket/` PURLs in `EefCna`.
+- Prefix monorepo `--project-dir` paths relative to the Git repository root (`GITHUB_WORKSPACE`, `CI_PROJECT_DIR`, or nearest `.git` ancestor) in `GitHub`, `GitLab`, and `SARIF` (`locations`, `relatedLocations`, and `codeFlows`).
+- Block HTTPS-to-HTTP scheme downgrades and SSRF redirects from external origins to IPv4/IPv6 loopback, unspecified (`0.0.0.0`, `::`), IPv4-mapped IPv6, `*.localhost`, link-local/cloud-metadata (`169.254.0.0/16`, `fe80::/10`), CGNAT, and RFC 1918 / RFC 4193 private addresses in `HTTP` (`{:error, {:insecure_url, target}}`).
+- Reconcile `VulnCheck.Config.adapter_families/0` with `VulnCheck.Entrypoints.Adapters` by removing unimplemented `:finch` and `:req` family keys.
+- Use a UTC daily cache key (`vulncheck-feeds-<os>-<YYYY-MM-DD>`) instead of `github.run_id` in `action.yml` and `.github/workflows/ci.yml`, and populate GitHub Releases directly from the matching `CHANGELOG.md` section in `.github/workflows/release.yml`.
+- Sync `vulncheck --help` (`feeds import`, `feeds prune`, `--bundle`, `--max-feed-age` alignment), `Mix.Tasks.Vulncheck` docs, `README.md`, and `docs/*.md`.
+
 ## [1.0.1] - 2026-11-19
 
 ### Added
@@ -40,6 +69,7 @@ First stable release.
 - `mix vulncheck`, `mix vulncheck.init`, `mix vulncheck.explain` and `mix vulncheck.feeds`, a standalone escript, a composite GitHub Action (single-scan SARIF + `workflow_dispatch` release dry-run), pre-commit hooks (`vulncheck`), and a container image.
 - Reproducible benchmarks (including `umbrella` profile), validation harness (`docs/VALIDATION.md`), and atom-table guarantees: external data never creates atoms and warm scans never re-read unchanged `.beam` files.
 
-[Unreleased]: https://github.com/Voskan/vulncheck/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/Voskan/vulncheck/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/Voskan/vulncheck/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Voskan/vulncheck/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Voskan/vulncheck/releases/tag/v1.0.0

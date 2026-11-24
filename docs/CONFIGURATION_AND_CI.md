@@ -44,6 +44,7 @@
 | `env` | `:prod` \| `:dev` \| `:test` | `:prod` | Environment whose dependency closure and build directory are analyzed. |
 | `format` | atom | `:terminal` | `:terminal`, `:json`, `:markdown`, `:sarif`, `:github`, `:gitlab`, `:cyclonedx` or `:openvex`. |
 | `output` | string \| `nil` | `nil` | Write the report to this file instead of standard output. |
+| `sarif` | string \| `nil` | `nil` | Also write a SARIF 2.1.0 report to this file. |
 | `sbom` | string \| `nil` | `nil` | Also write a CycloneDX 1.6 SBOM to this file. |
 | `vex` | string \| `nil` | `nil` | Also write an OpenVEX v0.2.0 document to this file. |
 | `fail_on` | atom | `:potentially_reachable` | `:reachable`, `:potentially_reachable`, `:any` (also unreachable) or `:none`. |
@@ -59,11 +60,11 @@
 | `max_beam_files` | positive integer | `20000` | Maximum number of `.beam` files analyzed in a workspace. |
 | `max_beam_bytes` | positive integer | `67108864` | Maximum `.beam` file size in bytes (64 MiB). |
 | `max_beam_heap_bytes` | positive integer | `134217728` | Per-worker heap limit in bytes for `.beam` analysis (128 MiB). |
-| `configured_adapters` | keyword list | `[]` | Adapter modules per family: `tesla`, `swoosh`, `ecto`, `phoenix_pubsub`, `finch`, `req`. A family may list several modules. |
+| `configured_adapters` | keyword list | `[]` | Adapter modules per family: `tesla`, `swoosh`, `ecto`, `phoenix_pubsub`. A family may list several modules. |
 | `extra_entrypoints` | list of `{Module, :function, arity}` | `[]` | Functions treated as roots in addition to the detected ones. |
 | `ignore_file` | string | `".vulncheck.ignore"` | Suppression file, relative to the project. |
-| `require_ignore_reason` | boolean | `true` | Suppressions without a `reason` are rejected. |
-| `require_ignore_expiry` | boolean | `false` | Suppressions without an `expires` date are rejected. |
+| `require_ignore_reason` | boolean | `true` | Every rule in `.vulncheck.ignore` must declare a non-empty `reason`; rejected rules are policy violations. |
+| `require_ignore_expiry` | boolean | `false` | Every rule in `.vulncheck.ignore` must declare a valid ISO-8601 `expires` date; rejected rules are policy violations. |
 | `forbid_new_suppressions` | boolean | `false` | Fail when the ignore file gains or extends suppressions compared with `diff`. |
 | `diff` | string \| `nil` | `nil` | Git ref. Keep findings related to changed packages or files and retain active findings whose prior state is unknown. |
 | `baseline` | string \| `nil` | `nil` | JSON baseline whose findings are hidden. |
@@ -200,7 +201,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18"
-      - uses: Voskan/vulncheck@v1.0.1
+      - uses: Voskan/vulncheck@v1.0.2
         with:
           fail-on: potentially_reachable
           upload-sarif: true
@@ -227,7 +228,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18"
-      - uses: Voskan/vulncheck@v1.0.1
+      - uses: Voskan/vulncheck@v1.0.2
         with:
           fail-on: potentially_reachable
           diff: origin/${{ github.base_ref }}
@@ -269,7 +270,7 @@ The image runs the escript as an unprivileged user on an Erlang runtime with `gi
 ```yaml
 repos:
   - repo: https://github.com/Voskan/vulncheck
-    rev: v1.0.1
+    rev: v1.0.2
     hooks:
       - id: vulncheck
 ```
