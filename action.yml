@@ -61,12 +61,18 @@ runs:
         mix escript.build
         echo "VULNCHECK_BIN=$PWD/vulncheck" >> "$GITHUB_ENV"
 
+    - name: Compute daily cache key
+      id: cache-date
+      shell: bash
+      run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
     - name: Cache advisory feeds
       uses: actions/cache@v4
       with:
         path: ~/.cache/vulncheck/feeds
-        key: vulncheck-feeds-${{ github.run_id }}
-        restore-keys: vulncheck-feeds-
+        key: vulncheck-feeds-${{ runner.os }}-${{ steps.cache-date.outputs.day }}
+        restore-keys: |
+          vulncheck-feeds-${{ runner.os }}-
 
     - name: Compile project
       if: inputs.compile == 'true'

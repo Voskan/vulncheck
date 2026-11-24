@@ -271,14 +271,19 @@ defmodule VulnCheck.Feeds.EefCna do
     extra_repos =
       products
       |> Enum.flat_map(fn entry ->
-        [entry["repo"], entry["packageName"], entry["collectionURL"]]
-        |> Enum.map(&GitUrl.repo_slug/1)
-        |> Enum.reject(&is_nil/1)
+        ([entry["repo"], entry["packageName"], entry["collectionURL"]]
+         |> Enum.map(&GitUrl.repo_slug/1)) ++
+          [purl_repo_slug(entry["packageURL"])]
       end)
+      |> Enum.reject(&is_nil/1)
 
     git_ranges =
       Enum.flat_map(products, fn entry ->
-        repo = GitUrl.repo_slug(entry["repo"]) || GitUrl.repo_slug(entry["packageName"])
+        repo =
+          GitUrl.repo_slug(entry["repo"]) ||
+            purl_repo_slug(entry["packageURL"]) ||
+            GitUrl.repo_slug(entry["packageName"])
+
         entry |> Semver.from_cve_git_versions() |> Enum.map(&%{&1 | repo: repo})
       end)
 
@@ -349,6 +354,14 @@ defmodule VulnCheck.Feeds.EefCna do
         [owner_repo | _] = String.split(path, ~r/[@?#]/, parts: 2)
         (owner_repo |> URI.decode() |> String.downcase()) in normalized
 
+      "pkg:gitlab/" <> path ->
+        [repo_path | _] = String.split(path, ~r/[@?#]/, parts: 2)
+        ("gitlab.com/" <> (repo_path |> URI.decode() |> String.downcase())) in normalized
+
+      "pkg:bitbucket/" <> path ->
+        [repo_path | _] = String.split(path, ~r/[@?#]/, parts: 2)
+        ("bitbucket.org/" <> (repo_path |> URI.decode() |> String.downcase())) in normalized
+
       "pkg:" <> _other ->
         false
 
@@ -363,6 +376,23 @@ defmodule VulnCheck.Feeds.EefCna do
   end
 
   defp matches_targets?(_entry, _targets), do: false
+
+  defp purl_repo_slug("pkg:github/" <> path) do
+    [owner_repo | _] = String.split(path, ~r/[@?#]/, parts: 2)
+    GitUrl.repo_slug(URI.decode(owner_repo))
+  end
+
+  defp purl_repo_slug("pkg:gitlab/" <> path) do
+    [repo_path | _] = String.split(path, ~r/[@?#]/, parts: 2)
+    GitUrl.repo_slug("https://gitlab.com/" <> URI.decode(repo_path))
+  end
+
+  defp purl_repo_slug("pkg:bitbucket/" <> path) do
+    [repo_path | _] = String.split(path, ~r/[@?#]/, parts: 2)
+    GitUrl.repo_slug("https://bitbucket.org/" <> URI.decode(repo_path))
+  end
+
+  defp purl_repo_slug(_), do: nil
 
   defp metrics(cna, source) do
     entries =

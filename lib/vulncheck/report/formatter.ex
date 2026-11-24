@@ -138,6 +138,79 @@ defmodule VulnCheck.Report.Formatter do
   def project_file?(_file), do: false
 
   @doc """
+  Relative directory prefix of `workspace.root_dir` inside the surrounding Git
+  repository (or CI workspace `GITHUB_WORKSPACE` / `CI_PROJECT_DIR`), or `""`
+  when the project is already at the repository root or no repository ancestor
+  exists. Used by repository-level CI and SARIF reporters (`--project-dir` in
+  monorepos).
+  """
+  @spec repo_prefix(Workspace.t() | nil) :: String.t()
+  def repo_prefix(nil), do: ""
+
+  def repo_prefix(%Workspace{root_dir: root_dir}) when is_binary(root_dir) do
+    project_root = Path.expand(root_dir)
+
+    env_repo_prefix(project_root) ||
+      if File.dir?(project_root) do
+        git_repo_prefix(project_root)
+      else
+        ""
+      end
+  end
+
+  def repo_prefix(_workspace), do: ""
+
+  @doc """
+  Prepends `prefix` to a relative path `file`. Absolute paths, `nil` and empty
+  prefixes are returned unchanged.
+  """
+  @spec prefix_path(String.t() | nil, String.t()) :: String.t() | nil
+  def prefix_path(nil, _prefix), do: nil
+  def prefix_path(file, ""), do: file
+
+  def prefix_path(file, prefix) when is_binary(file) and is_binary(prefix) do
+    if Path.type(file) == :relative, do: Path.join(prefix, file), else: file
+  end
+
+  defp env_repo_prefix(project_root) do
+    ["GITHUB_WORKSPACE", "CI_PROJECT_DIR"]
+    |> Enum.find_value(fn var ->
+      case System.get_env(var) do
+        base when is_binary(base) and base != "" ->
+          expanded = Path.expand(base)
+
+          if ancestor_dir?(expanded, project_root),
+            do: Path.relative_to(project_root, expanded)
+
+        _ ->
+          nil
+      end
+    end)
+  end
+
+  defp git_repo_prefix(project_root) do
+    case find_git_root(project_root) do
+      nil -> ""
+      ^project_root -> ""
+      git_root -> Path.relative_to(project_root, git_root)
+    end
+  end
+
+  defp find_git_root(dir) do
+    if File.exists?(Path.join(dir, ".git")) do
+      dir
+    else
+      parent = Path.dirname(dir)
+      if parent == dir, do: nil, else: find_git_root(parent)
+    end
+  end
+
+  defp ancestor_dir?(base, target) do
+    normalized = String.trim_trailing(base, "/")
+    target != base and String.starts_with?(target, normalized <> "/")
+  end
+
+  @doc """
   Location used to annotate a finding. Chooses the first trace hop in the
   project source tree, or the package entry in the lockfile.
   """
@@ -153,12 +226,17 @@ defmodule VulnCheck.Report.Formatter do
   @spec project_locations([TraceHop.t()], Workspace.t() | nil) :: [TraceHop.t()]
   def project_locations(hops, workspace) do
     root = if workspace, do: Path.expand(workspace.root_dir), else: "/vulncheck-project"
+    prefix = repo_prefix(workspace)
 
     for %TraceHop{file: file, line: line} = hop <- hops,
         is_binary(file) and file != "" and String.valid?(file),
         path = Path.relative_to(Path.expand(file, root), root),
         project_file?(path),
-        do: %{hop | file: path, line: if(is_integer(line) and line > 0, do: line, else: 1)}
+        do: %{
+          hop
+          | file: prefix_path(path, prefix),
+            line: if(is_integer(line) and line > 0, do: line, else: 1)
+        }
   end
 
   defp lock_location(_finding, nil), do: {"mix.lock", 1}
@@ -170,7 +248,7 @@ defmodule VulnCheck.Report.Formatter do
         _ -> 1
       end
 
-    {manifest(ws), line}
+    {prefix_path(manifest(ws), repo_prefix(ws)), line}
   end
 
   defp manifest(%Workspace{lockfile: lockfile, root_dir: root}) when is_binary(lockfile),

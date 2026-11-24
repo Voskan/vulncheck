@@ -280,7 +280,8 @@ defmodule VulnCheck.CLI do
       extra_entrypoints: [
     #{entrypoint_lines(entrypoints)}  ],
 
-      # Governed suppressions: every entry needs a reason and an expiry date.
+      # Governed suppressions: every rule in .vulncheck.ignore must declare a
+      # reason and a valid ISO-8601 expires date (rejected rules fail policy).
       ignore_file: ".vulncheck.ignore",
       require_ignore_reason: true,
       require_ignore_expiry: true,
@@ -732,6 +733,8 @@ defmodule VulnCheck.CLI do
       vulncheck feeds sync              refresh the OSV archive and CVE 5.1 records
       vulncheck feeds status            show cache location, age and contents
       vulncheck feeds bundle -o FILE    export the feed cache for offline runners
+      vulncheck feeds import FILE       validate and select a bundle for offline scans
+      vulncheck feeds prune             remove old bundle snapshots and module caches
       vulncheck --version | --help
 
     Flags:
@@ -755,10 +758,10 @@ defmodule VulnCheck.CLI do
       --ignore-file FILE          suppression file (default: .vulncheck.ignore)
       --otp-version VER           OTP release the project runs on
       --offline                   never use the network
-      --bundle FILE               import an advisory bundle before scanning
+      --bundle FILE               read an advisory bundle for this scan (does not import into cache)
       --cache-dir DIR             feed and .beam summary cache directory
       --cache-ttl SECONDS         feed freshness (default: 3600)
-      --max-feed-age SECONDS     maximum age of the cached advisory archive
+      --max-feed-age SECONDS      maximum age of the cached advisory archive
       --no-color                  disable ANSI colors (also NO_COLOR=1)
       -q, --quiet                 hide warnings
 

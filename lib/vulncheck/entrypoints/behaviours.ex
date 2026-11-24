@@ -42,6 +42,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     "gen_event" => ~w(init/1 handle_event/2 handle_call/2 handle_info/2 terminate/2),
     "Elixir.Task" => ~w(start_link/1),
     "Elixir.Plug" => ~w(init/1 call/2),
+    "Elixir.Plug.Parsers" => ~w(init/1 parse/5),
     "Elixir.Phoenix.Endpoint" => ~w(init/1 call/2 start_link/1 config_change/2),
     "Elixir.Phoenix.Router" => ~w(init/1 call/2),
     "Elixir.Phoenix.Controller" => ~w(init/1 call/2 action/2),
@@ -60,7 +61,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     "cowboy_handler" => ~w(init/2 terminate/3),
     "cowboy_websocket" =>
       ~w(init/2 websocket_init/1 websocket_handle/2 websocket_info/2 terminate/3),
-    "cowboy_rest" => ~w(init/2),
+    "cowboy_rest" => ~w(init/2 terminate/3),
     "cowboy_stream" => ~w(init/3 data/4 info/3 terminate/3 early_error/5),
     "ranch_protocol" => ~w(start_link/3 start_link/4),
     "Elixir.ThousandIsland.Handler" =>
@@ -87,6 +88,7 @@ defmodule VulnCheck.Entrypoints.Behaviours do
 
   @default_json_decoders ["Elixir.Jason", "Elixir.JSON", "Elixir.Poison"]
   @protocol_internal ~w(__protocol__/1 impl_for/1 impl_for!/1 __info__/1 module_info/0 module_info/1 behaviour_info/1)
+  @internal_exports ~w(module_info __info__ behaviour_info)
 
   @type result :: %{
           edges: [CallEdge.t()],
@@ -126,25 +128,36 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     configured = Keyword.get(opts, :configured_modules, [])
     named = named_modules(sorted, reachable, configured)
 
+    {controller_edges, controller_resolved_calls, controller_state} =
+      phoenix_controllers(sorted, exports, reachable)
+
     dispatch =
       parser_dispatch ++
         behaviour_dispatch(sorted, exports) ++
-        tesla_stack(sorted, modules, exports, named, configured)
+        tesla_stack(sorted, modules, exports, named, configured) ++
+        phoenix_router_dispatch(modules, exports, named)
 
-    resolved_calls = MapSet.new(dispatch, &elem(&1, 0))
+    resolved_calls =
+      dispatch
+      |> MapSet.new(&elem(&1, 0))
+      |> MapSet.union(controller_resolved_calls)
+
+    plug_parsers_loaded? = Map.has_key?(modules, "Elixir.Plug.Parsers")
 
     edges =
-      Enum.flat_map(sorted, &intra_module_edges(&1, defined)) ++
-        Enum.flat_map(sorted, &reference_edges(&1, modules, defined)) ++
+      Enum.flat_map(sorted, &intra_module_edges(&1, defined, plug_parsers_loaded?)) ++
+        Enum.flat_map(sorted, &reference_edges(&1, modules, defined, plug_parsers_loaded?)) ++
         Enum.flat_map(sorted, &dynamic_edges(&1, exports, resolved, resolved_calls)) ++
-        protocol_edges ++ parser_edges ++ dispatch_edges(dispatch)
+        protocol_edges ++ parser_edges ++ controller_edges ++ dispatch_edges(dispatch)
 
     %{
       edges: edges,
       resolved_dynamic_modules: resolved,
       resolved_dynamic_calls: resolved_calls,
       active_plug_parsers: parsers,
-      state: {parsers, Enum.sort(Enum.map(dispatch, fn {call, targets} -> {call, targets} end))}
+      state:
+        {parsers, Enum.sort(Enum.map(dispatch, fn {call, targets} -> {call, targets} end)),
+         Enum.sort(controller_state)}
     }
   end
 
@@ -161,8 +174,11 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     |> Enum.flat_map(&to_mfa(summary.module, &1, defined))
   end
 
-  defp intra_module_edges(%ModuleSummary{} = summary, defined) do
-    callbacks = callback_names(summary)
+  defp intra_module_edges(%ModuleSummary{} = summary, defined, plug_parsers_loaded?) do
+    callbacks =
+      summary
+      |> callback_names()
+      |> filter_managed_parser_callbacks(summary, plug_parsers_loaded?)
 
     if callbacks == [] do
       []
@@ -183,12 +199,17 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     end
   end
 
-  defp reference_edges(%ModuleSummary{module_refs: refs}, modules, _defined) do
+  defp reference_edges(%ModuleSummary{module_refs: refs}, modules, _defined, plug_parsers_loaded?) do
     refs
     |> Enum.flat_map(fn {caller, ref, file, line} ->
       case Map.fetch(modules, ref) do
         {:ok, target} ->
-          for to <- entry_functions(target), to != caller do
+          entries =
+            target
+            |> entry_functions()
+            |> filter_managed_parser_entries(target, plug_parsers_loaded?)
+
+          for to <- entries, to != caller do
             %CallEdge{from: caller, to: to, file: file, line: line, kind: :supervisor_child}
           end
 
@@ -197,6 +218,25 @@ defmodule VulnCheck.Entrypoints.Behaviours do
       end
     end)
   end
+
+  # When `Plug.Parsers` is loaded, `plug_parsers/3` owns dispatching `parse/5`
+  # exclusively to configured parsers (preserving both parser filtering and
+  # `:dynamic_candidate` attribution).
+  defp filter_managed_parser_callbacks(callbacks, %ModuleSummary{behaviours: behaviours}, true) do
+    if "Elixir.Plug.Parsers" in behaviours,
+      do: Enum.reject(callbacks, &(&1 == "parse/5")),
+      else: callbacks
+  end
+
+  defp filter_managed_parser_callbacks(callbacks, _summary, false), do: callbacks
+
+  defp filter_managed_parser_entries(entries, %ModuleSummary{behaviours: behaviours}, true) do
+    if "Elixir.Plug.Parsers" in behaviours,
+      do: Enum.reject(entries, &(&1.function == "parse" and &1.arity == 5)),
+      else: entries
+  end
+
+  defp filter_managed_parser_entries(entries, _summary, false), do: entries
 
   defp dynamic_edges(
          %ModuleSummary{module: module, dynamic_dispatches: calls},
@@ -282,6 +322,151 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     candidates
     |> matching(exports, call, "call")
     |> Enum.filter(&(&1.arity == 3 or MapSet.member?(adapters, &1.module)))
+  end
+
+  # `Phoenix.Router.__call__/5` dispatches to the plug/controller matched by
+  # the router; only plugs named in reachable code or configuration can run.
+  defp phoenix_router_dispatch(modules, exports, named) do
+    case Map.fetch(modules, "Elixir.Phoenix.Router") do
+      {:ok, %ModuleSummary{dynamic_dispatches: calls}} ->
+        plugs =
+          named
+          |> Enum.filter(fn mod ->
+            MapSet.member?(Map.get(exports, mod, MapSet.new()), {"call", 2})
+          end)
+          |> Enum.uniq()
+          |> Enum.sort()
+
+        for %DynamicCall{known_module: nil, kind: :module_function, known_function: fun} = call <-
+              calls,
+            (fun == "call" and DynamicCall.arity_compatible?(call, 2)) or
+              (fun == "init" and DynamicCall.arity_compatible?(call, 1)),
+            do: {call, matching(plugs, exports, call, fun)}
+
+      :error ->
+        []
+    end
+  end
+
+  # `use Phoenix.Controller` implements `action/2` as
+  # `apply(__MODULE__, action_name(conn), [conn, conn.params])`. When every
+  # reachable router/plug site targeting `ctrl` passes a literal exported
+  # action atom, emit proven `:behaviour_callback` edges to those actions and
+  # resolve `action/2`'s dynamic call. If no sites are known or any site is
+  # dynamic, leave `action/2` unresolved so `dynamic_edges/4` falls back
+  # soundly to `:dynamic_candidate` across all `/2` exports.
+  defp phoenix_controllers(sorted, exports, reachable) do
+    in_scope? = fn caller -> reachable == :all or MapSet.member?(reachable, caller) end
+
+    controller_sites =
+      for %ModuleSummary{init_literals: literals} <- sorted,
+          {caller, %MFA{module: ctrl, function: fun, arity: 2}, args, file, line} <- literals,
+          fun in ["call", "__plug_tuple__"],
+          in_scope?.(caller),
+          reduce: %{} do
+        acc ->
+          opt =
+            case {fun, args} do
+              {"call", [_conn, opt]} -> opt
+              {"__plug_tuple__", [opt]} -> opt
+              _ -> :dynamic
+            end
+
+          Map.update(acc, ctrl, [{opt, file, line}], &[{opt, file, line} | &1])
+      end
+
+    Enum.reduce(sorted, {[], MapSet.new(), []}, fn
+      %ModuleSummary{module: ctrl, behaviours: behaviours, dynamic_dispatches: calls},
+      {edges_acc, resolved_acc, state_acc} ->
+        if "Elixir.Phoenix.Controller" in behaviours do
+          sites = controller_sites |> Map.get(ctrl, []) |> Enum.reverse()
+          ctrl_exports = Map.get(exports, ctrl, MapSet.new())
+          action_mfa = %MFA{module: ctrl, function: "action", arity: 2}
+
+          static_sites =
+            Enum.filter(sites, fn
+              {{:atom, action}, _file, _line} ->
+                action not in ["call", "init", "action"] and
+                  MapSet.member?(ctrl_exports, {action, 2})
+
+              _ ->
+                false
+            end)
+
+          new_edges =
+            static_sites
+            |> Enum.uniq_by(fn {{:atom, action}, _, _} -> action end)
+            |> Enum.map(fn {{:atom, action}, file, line} ->
+              %CallEdge{
+                from: action_mfa,
+                to: %MFA{module: ctrl, function: action, arity: 2},
+                file: file,
+                line: line,
+                kind: :behaviour_callback
+              }
+            end)
+
+          all_static_actions? = sites != [] and length(static_sites) == length(sites)
+
+          resolved_calls_for_ctrl =
+            with true <- all_static_actions?,
+                 false <- dynamically_entered?(ctrl, sorted, in_scope?, action_mfa),
+                 [
+                   %DynamicCall{
+                     kind: :module_function,
+                     known_module: ^ctrl,
+                     known_function: nil,
+                     arity: 2
+                   } = single_call
+                 ] <- Enum.filter(calls, &(&1.caller == action_mfa)) do
+              [single_call]
+            else
+              _ -> []
+            end
+
+          resolved_acc = Enum.reduce(resolved_calls_for_ctrl, resolved_acc, &MapSet.put(&2, &1))
+
+          actions =
+            static_sites
+            |> Enum.map(fn {{:atom, a}, _, _} -> a end)
+            |> Enum.uniq()
+            |> Enum.sort()
+
+          state_acc =
+            if actions != [] or resolved_calls_for_ctrl != [],
+              do: [{ctrl, actions, resolved_calls_for_ctrl != []} | state_acc],
+              else: state_acc
+
+          {new_edges ++ edges_acc, resolved_acc, state_acc}
+        else
+          {edges_acc, resolved_acc, state_acc}
+        end
+    end)
+  end
+
+  defp dynamically_entered?(ctrl, sorted, in_scope?, action_mfa) do
+    Enum.any?(sorted, fn %ModuleSummary{edges: edges, mfa_refs: refs, dynamic_dispatches: dcalls} ->
+      Enum.any?(edges ++ refs, fn
+        %CallEdge{
+          from: from,
+          to: %MFA{module: ^ctrl, function: fun, arity: 2},
+          kind: :dynamic_apply
+        } ->
+          fun in ["call", "action"] and in_scope?.(from)
+
+        _ ->
+          false
+      end) or
+        Enum.any?(dcalls, fn
+          %DynamicCall{caller: caller, known_module: ^ctrl, kind: :module_function} = dc ->
+            caller != action_mfa and in_scope?.(caller) and
+              dc.known_function in [nil, "call", "action"] and
+              DynamicCall.arity_compatible?(dc, 2)
+
+          _ ->
+            false
+        end)
+    end)
   end
 
   defp matching(modules, exports, call, fun) do
@@ -392,7 +577,8 @@ defmodule VulnCheck.Entrypoints.Behaviours do
           {merge(parsers, init_parsers(opts)), decoders ++ init_decoders(opts)}
 
         {"call", [_conn, opts]}, {parsers, decoders} ->
-          {merge(parsers, compiled_parsers(opts)), decoders ++ compiled_decoders(opts)}
+          {merge(parsers, compiled_parsers(opts, modules, exports)),
+           decoders ++ compiled_decoders(opts)}
 
         _site, {_parsers, decoders} ->
           {:all, decoders}
@@ -410,9 +596,12 @@ defmodule VulnCheck.Entrypoints.Behaviours do
       case parsers do
         :all ->
           modules
-          |> Map.keys()
-          |> Enum.filter(&String.starts_with?(&1, "Elixir.Plug.Parsers."))
-          |> Enum.filter(&MapSet.member?(Map.get(exports, &1, MapSet.new()), {"parse", 5}))
+          |> Enum.filter(fn {mod, %ModuleSummary{behaviours: behaviours}} ->
+            MapSet.member?(Map.get(exports, mod, MapSet.new()), {"parse", 5}) and
+              (String.starts_with?(mod, "Elixir.Plug.Parsers.") or
+                 "Elixir.Plug.Parsers" in behaviours)
+          end)
+          |> Enum.map(&elem(&1, 0))
 
         list ->
           list
@@ -552,16 +741,28 @@ defmodule VulnCheck.Entrypoints.Behaviours do
   end
 
   # A runtime-computed options term is covered by the `init/1` sites.
-  defp compiled_parsers(:dynamic), do: []
+  defp compiled_parsers(:dynamic, _modules, _exports), do: []
 
-  defp compiled_parsers(opts) do
-    atoms = literal_atoms(opts)
-
+  defp compiled_parsers(opts, modules, exports) do
     if dynamic?(opts) do
       :all
     else
-      Enum.filter(atoms, &String.starts_with?(&1, "Elixir.Plug.Parsers."))
+      opts
+      |> literal_atoms()
+      |> Enum.filter(&plug_parser_module?(&1, modules, exports))
     end
+  end
+
+  defp plug_parser_module?(mod, modules, exports) do
+    String.starts_with?(mod, "Elixir.Plug.Parsers.") or
+      case Map.fetch(modules, mod) do
+        {:ok, %ModuleSummary{behaviours: behaviours}} ->
+          "Elixir.Plug.Parsers" in behaviours or
+            MapSet.member?(Map.get(exports, mod, MapSet.new()), {"parse", 5})
+
+        :error ->
+          false
+      end
   end
 
   defp compiled_decoders(opts) do
@@ -595,8 +796,27 @@ defmodule VulnCheck.Entrypoints.Behaviours do
   defp dynamic?(list) when is_list(list), do: Enum.any?(list, &dynamic?/1)
   defp dynamic?(_), do: false
 
-  defp callback_names(%ModuleSummary{behaviours: behaviours}) do
-    behaviours |> Enum.flat_map(&callbacks/1) |> Enum.uniq()
+  defp callback_names(%ModuleSummary{behaviours: behaviours, exports: exports}) do
+    static = Enum.flat_map(behaviours, &callbacks/1)
+
+    dynamic =
+      Enum.flat_map(behaviours, fn
+        b when b in ["gen_statem", "Elixir.GenStatem"] ->
+          for {fun, arity} <- exports,
+              arity in [3, 4],
+              fun not in @internal_exports,
+              do: "#{fun}/#{arity}"
+
+        "cowboy_rest" ->
+          for {fun, 2} <- exports,
+              fun not in @internal_exports,
+              do: "#{fun}/2"
+
+        _ ->
+          []
+      end)
+
+    Enum.uniq(static ++ dynamic)
   end
 
   defp extra_activation(%ModuleSummary{behaviours: behaviours}) do

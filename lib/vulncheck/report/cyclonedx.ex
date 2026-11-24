@@ -226,7 +226,10 @@ defmodule VulnCheck.Report.CycloneDX do
   defp dependencies(nil, _packages, root, _refs), do: [%{"ref" => root, "dependsOn" => []}]
 
   defp dependencies(%Workspace{} = ws, packages, root, refs) do
-    direct = if ws.direct_deps == [], do: sources(packages), else: ws.direct_deps
+    direct =
+      if ws.direct_deps == [] and not ws.direct_deps_known,
+        do: sources(packages),
+        else: ws.direct_deps
 
     entries =
       [{root, direct} | Enum.map(packages, &{refs[&1.name], &1.deps})]

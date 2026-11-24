@@ -124,6 +124,7 @@ defmodule VulnCheck.Entrypoints do
       client_roots: client_roots(workspace, graph),
       active_plug_parsers: synthetic.active_plug_parsers,
       boot_tree_known: otp.boot_tree_known,
+      untracked_fun_sources: adapters.untracked_fun_sources,
       artifact_issues:
         for(
           {package, app} <- otp.missing_packages,
@@ -147,9 +148,17 @@ defmodule VulnCheck.Entrypoints do
   @refined_modules ["Elixir.Plug.Parsers", "Elixir.Tesla"]
 
   defp synthesize(graph, roots, configured) do
-    if Enum.any?(@refined_modules, &CallGraph.module?(graph, &1)),
+    if needs_refinement?(graph),
       do: grow(graph, roots, configured, MapSet.new(), nil, @refine_rounds),
       else: Behaviours.synthesize(graph, configured_modules: configured)
+  end
+
+  defp needs_refinement?(%CallGraph{modules: modules} = graph) do
+    Enum.any?(@refined_modules, &CallGraph.module?(graph, &1)) or
+      CallGraph.module?(graph, "Elixir.Phoenix.Router") or
+      Enum.any?(modules, fn {_name, %ModuleSummary{behaviours: behaviours}} ->
+        "Elixir.Phoenix.Controller" in behaviours
+      end)
   end
 
   defp grow(graph, _roots, configured, _reachable, _previous, 0),
@@ -193,12 +202,24 @@ defmodule VulnCheck.Entrypoints do
   end
 
   defp config_roots(adapters, graph) do
-    for ref <- Enum.uniq(adapters.config_refs),
-        {:ok, summary} <- [Map.fetch(graph.modules, ref)],
-        activation = config_activation(summary, Map.get(adapters.config_sites, ref)),
-        mfa <- Behaviours.entry_functions(summary) do
-      %Entrypoint{mfa: mfa, kind: :entrypoint, source: "config", activation: activation}
-    end
+    module_roots =
+      for ref <- Enum.uniq(adapters.config_refs),
+          {:ok, summary} <- [Map.fetch(graph.modules, ref)],
+          mfa <- Behaviours.entry_functions(summary) do
+        activation = config_activation(summary, Map.get(adapters.config_sites, ref))
+        %Entrypoint{mfa: mfa, kind: :entrypoint, source: "config", activation: activation}
+      end
+
+    mfa_roots =
+      for {%MFA{} = mfa, file, line} <- adapters.config_mfas,
+          {:ok, summary} <- [Map.fetch(graph.modules, mfa.module)],
+          fa = {mfa.function, mfa.arity},
+          fa in summary.functions or fa in summary.exports do
+        activation = config_activation_for_mfa(summary, mfa, {file, line})
+        %Entrypoint{mfa: mfa, kind: :entrypoint, source: "config", activation: activation}
+      end
+
+    module_roots ++ mfa_roots
   end
 
   defp config_activation(%ModuleSummary{package: nil}, _site), do: nil
@@ -212,6 +233,18 @@ defmodule VulnCheck.Entrypoints do
       line: line,
       kind: :config_activation,
       note: "the configuration names #{MFA.display_module(module)}"
+    }
+  end
+
+  defp config_activation_for_mfa(%ModuleSummary{package: nil}, _mfa, _site), do: nil
+
+  defp config_activation_for_mfa(%ModuleSummary{}, %MFA{} = mfa, {file, line}) do
+    %TraceHop{
+      mfa: nil,
+      file: file,
+      line: line,
+      kind: :config_activation,
+      note: "the configuration names #{MFA.format(mfa)}"
     }
   end
 

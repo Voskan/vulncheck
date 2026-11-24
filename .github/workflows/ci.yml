@@ -181,13 +181,17 @@ jobs:
           elixir-version: ${{ env.ELIXIR_VERSION }}
           otp-version: ${{ env.OTP_VERSION }}
 
+      - name: Compute daily cache key
+        id: cache-date
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Restore advisory feeds
         uses: actions/cache@v4
         with:
           path: ~/.cache/vulncheck/feeds
-          key: vulncheck-feeds-${{ github.run_id }}
+          key: vulncheck-feeds-${{ runner.os }}-${{ steps.cache-date.outputs.day }}
           restore-keys: |
-            vulncheck-feeds-
+            vulncheck-feeds-${{ runner.os }}-
 
       - run: mix deps.get
 

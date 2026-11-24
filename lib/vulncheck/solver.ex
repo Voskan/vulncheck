@@ -58,14 +58,53 @@ defmodule VulnCheck.Solver do
     Workspace
   }
 
-  # Functions that build module names from other atoms or strings. Outside
-  # modules whose dynamic calls a rule resolves (such as `Plug.Parsers`),
-  # their result may reach any dynamic call of the program.
+  # Functions that build module names or arbitrary terms from other atoms or
+  # strings. Outside modules whose dynamic calls a rule resolves (such as
+  # `Plug.Parsers`), their result may reach any dynamic call of the program.
   @module_builders [
     {"Elixir.Module", "concat", 1},
     {"Elixir.Module", "concat", 2},
     {"Elixir.Module", "safe_concat", 1},
-    {"Elixir.Module", "safe_concat", 2}
+    {"Elixir.Module", "safe_concat", 2},
+    {"erlang", "binary_to_term", 1},
+    {"erlang", "binary_to_term", 2},
+    {"Elixir.Plug.Crypto", "non_executable_binary_to_term", 1},
+    {"Elixir.Plug.Crypto", "non_executable_binary_to_term", 2},
+    {"Elixir.Code", "eval_string", 1},
+    {"Elixir.Code", "eval_string", 2},
+    {"Elixir.Code", "eval_string", 3},
+    {"Elixir.Code", "eval_quoted", 1},
+    {"Elixir.Code", "eval_quoted", 2},
+    {"Elixir.Code", "eval_quoted", 3},
+    {"file", "consult", 1},
+    {"erl_eval", "exprs", 2},
+    {"erl_eval", "exprs", 3},
+    {"erl_eval", "exprs", 4},
+    {"erl_eval", "expr", 2},
+    {"erl_eval", "expr", 3},
+    {"erl_eval", "expr", 4},
+    {"erl_eval", "expr", 5}
+  ]
+
+  # Functions that can construct or deserialize executable function values
+  # outside the static call graph (excludes `Plug.Crypto.non_executable_binary_to_term`,
+  # which forbids executable funs at runtime).
+  @fun_constructors [
+    {"erlang", "binary_to_term", 1},
+    {"erlang", "binary_to_term", 2},
+    {"Elixir.Code", "eval_string", 1},
+    {"Elixir.Code", "eval_string", 2},
+    {"Elixir.Code", "eval_string", 3},
+    {"Elixir.Code", "eval_quoted", 1},
+    {"Elixir.Code", "eval_quoted", 2},
+    {"Elixir.Code", "eval_quoted", 3},
+    {"erl_eval", "exprs", 2},
+    {"erl_eval", "exprs", 3},
+    {"erl_eval", "exprs", 4},
+    {"erl_eval", "expr", 2},
+    {"erl_eval", "expr", 3},
+    {"erl_eval", "expr", 4},
+    {"erl_eval", "expr", 5}
   ]
 
   # Functions that turn data into atoms. Their result is taken to feed the
@@ -151,18 +190,22 @@ defmodule VulnCheck.Solver do
       end)
       |> MapSet.new()
 
-    # A function value is a closure or a capture created by analyzed code:
-    # captures are edges of the function that takes them, closure bodies
-    # are part of the function that defines them, captures built from atoms
-    # (`:erlang.make_fun/3`, `Function.capture/3`) are dynamic calls of
-    # their own, and code without debug info is an artifact issue. Calling
-    # a function value therefore reaches nothing the graph does not already
-    # reach, and only module-function calls can escape.
+    # A function value is ordinarily a closure or capture created by analyzed
+    # code (captures are edges of the function that takes them, closure bodies
+    # are part of the function that defines them, and `make_fun/3` /
+    # `Function.capture/3` are dynamic calls of their own). However, when
+    # external funs may enter via unparseable/dynamic `config/*.exs` or
+    # reachable `:erlang.binary_to_term`/`Code.eval_*`/`:erl_eval` calls,
+    # reachable `:function_value` call sites must also be treated as escapes.
+    untracked_funs? =
+      model.untracked_fun_sources or
+        any_target_called?(graph, model, reachable, @fun_constructors)
+
     escapes =
       for {_name, %ModuleSummary{} = summary} <- graph.modules,
           not Map.has_key?(model.resolved_dynamic_modules, summary.module),
-          %DynamicCall{known_module: nil, kind: :module_function} = call <-
-            summary.dynamic_dispatches,
+          %DynamicCall{known_module: nil} = call <- summary.dynamic_dispatches,
+          call.kind == :module_function or (untracked_funs? and call.kind == :function_value),
           not MapSet.member?(model.resolved_dynamic_calls, call),
           MapSet.member?(reachable, call.caller),
           do: call
@@ -627,18 +670,28 @@ defmodule VulnCheck.Solver do
 
       Enum.find(index.escapes, fn %DynamicCall{} = call ->
         Enum.any?(targets, fn %MFA{} = target ->
-          call.known_function in [nil, target.function] and
-            DynamicCall.arity_compatible?(call, target.arity) and
-            (index.atoms_constructed or
-               MapSet.member?(index.atom_modules, call.caller.module) or
-               MapSet.member?(index.named_modules, target.module))
+          case call.kind do
+            :function_value ->
+              DynamicCall.arity_compatible?(call, target.arity)
+
+            :module_function ->
+              call.known_function in [nil, target.function] and
+                DynamicCall.arity_compatible?(call, target.arity) and
+                (index.atoms_constructed or
+                   MapSet.member?(index.atom_modules, call.caller.module) or
+                   MapSet.member?(index.named_modules, target.module))
+          end
         end)
       end)
     end
   end
 
   defp module_builder_reachable?(graph, model, reachable) do
-    Enum.any?(@module_builders, fn {m, f, a} ->
+    any_target_called?(graph, model, reachable, @module_builders)
+  end
+
+  defp any_target_called?(graph, model, reachable, targets) do
+    Enum.any?(targets, fn {m, f, a} ->
       graph
       |> CallGraph.callers(%MFA{module: m, function: f, arity: a})
       |> Enum.any?(fn %CallEdge{from: from} ->

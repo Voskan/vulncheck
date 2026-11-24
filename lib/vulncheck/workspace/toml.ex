@@ -41,51 +41,64 @@ defmodule VulnCheck.Workspace.Toml do
         doc
 
       String.starts_with?(rest, "[[") ->
-        {header, rest} = read_header(binary_part(rest, 2, byte_size(rest) - 2), "]]")
-        keys = split_key(header)
+        {keys, rest} = read_header_path(binary_part(rest, 2, byte_size(rest) - 2), "]]")
         doc = append_table(doc, keys)
         parse_lines(rest, doc, {:array, keys})
 
       String.starts_with?(rest, "[") ->
-        {header, rest} = read_header(binary_part(rest, 1, byte_size(rest) - 1), "]")
-        keys = split_key(header)
+        {keys, rest} = read_header_path(binary_part(rest, 1, byte_size(rest) - 1), "]")
         doc = ensure_table(doc, keys)
         parse_lines(rest, doc, {:table, keys})
 
       true ->
-        {key, rest} = read_key(rest)
+        {keys, rest} = read_key_path(rest)
         rest = expect(skip_inline_ws(rest), "=")
         {value, rest} = parse_value(skip_inline_ws(rest))
-        doc = put_value(doc, path, split_key(key), value)
+        doc = put_value(doc, path, keys, value)
         parse_lines(rest, doc, path)
     end
   end
 
-  defp read_header(source, close) do
-    case :binary.split(source, close) do
-      [header, rest] -> {String.trim(header), rest}
-      _ -> fail("unterminated table header")
+  defp read_header_path(source, close) do
+    rest = skip_inline_ws(source)
+
+    if String.starts_with?(rest, close) do
+      fail("empty table header")
+    end
+
+    {keys, rest} = read_key_path(rest)
+    rest = skip_inline_ws(rest)
+    rest = expect(rest, close)
+    {keys, rest}
+  end
+
+  defp read_key_path(source) do
+    {first, rest} = read_key_segment(skip_inline_ws(source))
+    read_key_path_rest(rest, [first])
+  end
+
+  defp read_key_path_rest(source, acc) do
+    case skip_inline_ws(source) do
+      "." <> rest ->
+        {segment, rest} = read_key_segment(skip_inline_ws(rest))
+        read_key_path_rest(rest, [segment | acc])
+
+      rest ->
+        {Enum.reverse(acc), rest}
     end
   end
 
-  defp read_key(source) do
-    case source do
-      "\"" <> rest ->
-        {key, rest} = read_basic_string(rest, [])
-        {key, rest}
+  defp read_key_segment("\"" <> rest), do: read_basic_string(rest, [])
+  defp read_key_segment("'" <> rest), do: read_literal_string(rest)
 
-      _ ->
-        {key, rest} =
-          take_while(source, fn c ->
-            c in ?a..?z or c in ?A..?Z or c in ?0..?9 or c in [?_, ?-, ?.]
-          end)
+  defp read_key_segment(source) do
+    {key, rest} =
+      take_while(source, fn c ->
+        c in ?a..?z or c in ?A..?Z or c in ?0..?9 or c in [?_, ?-]
+      end)
 
-        if key == "", do: fail("expected key"), else: {key, rest}
-    end
+    if key == "", do: fail("expected key"), else: {key, rest}
   end
-
-  defp split_key(key),
-    do: key |> String.split(".") |> Enum.map(&(&1 |> String.trim() |> String.trim("\"")))
 
   defp parse_value(source) do
     case source do
@@ -95,8 +108,6 @@ defmodule VulnCheck.Workspace.Toml do
       "'" <> rest -> read_literal_string(rest)
       "[" <> rest -> read_array(rest, [])
       "{" <> rest -> read_inline_table(rest, %{})
-      "true" <> rest -> {true, rest}
-      "false" <> rest -> {false, rest}
       _ -> read_scalar(source)
     end
   end
@@ -163,10 +174,10 @@ defmodule VulnCheck.Workspace.Toml do
         {acc, rest}
 
       _ ->
-        {key, rest} = read_key(rest)
+        {keys, rest} = read_key_path(rest)
         rest = expect(skip_inline_ws(rest), "=")
         {value, rest} = parse_value(skip_inline_ws(rest))
-        acc = deep_put(acc, split_key(key), value)
+        acc = deep_put(acc, keys, value)
 
         case skip_inline_ws(rest) do
           "," <> rest -> read_inline_table(rest, acc)
@@ -182,6 +193,12 @@ defmodule VulnCheck.Workspace.Toml do
 
     value =
       cond do
+        token == "true" ->
+          true
+
+        token == "false" ->
+          false
+
         Regex.match?(~r/\A[+-]?\d[\d_]*\z/, token) ->
           token |> String.replace("_", "") |> String.to_integer()
 
@@ -200,7 +217,14 @@ defmodule VulnCheck.Workspace.Toml do
   end
 
   defp put_value(doc, [], keys, value), do: deep_put(doc, keys, value)
-  defp put_value(doc, {:table, path}, keys, value), do: deep_put(doc, path ++ keys, value)
+
+  defp put_value(doc, {:table, path}, keys, value) do
+    update_in_path(doc, path, fn
+      nil -> deep_put(%{}, keys, value)
+      map when is_map(map) -> deep_put(map, keys, value)
+      _ -> fail("key #{Enum.join(path, ".")} is not a table")
+    end)
+  end
 
   defp put_value(doc, {:array, path}, keys, value) do
     update_in_path(doc, path, fn

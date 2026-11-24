@@ -29,15 +29,23 @@ defmodule Mix.Tasks.Vulncheck do
     * `--fail-on TIER` — `reachable`, `potentially_reachable` (default),
       `any` or `none`
     * `--min-severity SEV` — `low` (default), `medium`, `high`, `critical`
+    * `--[no-]fail-on-retired` — fail on retired Hex releases (default: on)
+    * `--no-retired` — skip the Hex retirement check
     * `--show-unreachable` — detail unreachable advisories
     * `--diff REF` — show changes since `REF` and retain active findings without baseline evidence
     * `--baseline FILE` / `--write-baseline FILE` — compare with or record
       a JSON baseline
     * `--forbid-new-suppressions` — fail when `.vulncheck.ignore` gains
-      entries compared with the `--diff` base
+      or extends entries compared with the `--diff` base
+    * `--ignore-file FILE` — suppression file (default: `.vulncheck.ignore`;
+      enforce `require_ignore_reason` and `require_ignore_expiry` in `.vulncheck.exs`)
     * `--otp-version VER` — OTP release the project runs on
-    * `--offline` / `--bundle FILE` — air-gapped operation
-    * `--no-color`, `--quiet`
+    * `--offline` — never use the network
+    * `--bundle FILE` — read an advisory bundle for this scan (does not import into cache)
+    * `--cache-dir DIR` — feed and `.beam` summary cache directory
+    * `--cache-ttl SECONDS` — feed freshness (default: `3600`)
+    * `--max-feed-age SECONDS` — maximum accepted age of the cached advisory archive
+    * `--no-color`, `--quiet` / `-q`
 
   ## Exit codes
 

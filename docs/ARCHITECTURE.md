@@ -78,7 +78,7 @@ Before running graph reachability, `vulncheck` constructs synthetic edges repres
    - These rules depend on what is reachable, so they are computed as a least fixpoint: starting from nothing, they are recomputed from the functions the graph reaches until nothing new is reached.
    - Links `Plug` pipelines (`init/1` and `call/2` of every plug), `Phoenix.Endpoint`, `Phoenix.Router`, `Phoenix.LiveView` (`mount/3`, `handle_params/3`, `handle_event/3`, `handle_info/2`), `GenServer`, `GenStage`, `Broadway`, and `Oban.Worker` (`perform/1`).
    - Resolves consolidated Elixir protocols (`impl_for/1` dispatch targets across loaded structs).
-5. **Configured Adapter Resolution:** Reads `config/config.exs`, `config/<env>.exs` and `config/runtime.exs` as quoted literals (never evaluated), the `configured_adapters` option and adapter literals in the project's compiled modules to tell active adapters of `Tesla`, `Swoosh`, `Ecto`, `Phoenix.PubSub`, `Finch` and `Req` apart from dormant transitive dependencies.
+5. **Configured Adapter Resolution:** Reads `config/config.exs`, `config/<env>.exs` and `config/runtime.exs` as quoted literals (never evaluated), the `configured_adapters` option and adapter literals in the project's compiled modules to tell active adapters of `Tesla`, `Swoosh`, `Ecto` and `Phoenix.PubSub` apart from dormant transitive dependencies.
 
 ---
 

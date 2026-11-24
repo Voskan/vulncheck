@@ -109,7 +109,7 @@ defmodule VulnCheck.Cache.BeamCodec do
         valid_function_lines?(function_lines, n) and
         valid_fa_list?(exports, n) and
         valid_idx_list?(behaviours, n) and
-        is_map(attributes) and Enum.all?(attributes, fn {k, _v} -> idx?(k, n) end) and
+        valid_attributes?(attributes, n) and
         valid_edges?(edges, n) and
         valid_dynamic_dispatches?(dynamic_dispatches, n) and
         valid_module_refs?(module_refs, n) and
@@ -261,15 +261,25 @@ defmodule VulnCheck.Cache.BeamCodec do
 
   # -- validation helpers ------------------------------------------------------
 
+  @max_literal_depth 16
+
   defp idx?(i, n), do: is_integer(i) and i >= 0 and i < n
   defp opt_idx?(nil, _n), do: true
   defp opt_idx?(i, n), do: idx?(i, n)
 
+  defp proper_all?([], _fun), do: true
+  defp proper_all?([head | tail], fun), do: fun.(head) and proper_all?(tail, fun)
+  defp proper_all?(_improper, _fun), do: false
+
   defp valid_mfa?({mid, fid, a}, n), do: idx?(mid, n) and idx?(fid, n) and is_integer(a) and a >= 0
   defp valid_mfa?(_, _n), do: false
 
-  defp valid_fa_list?(list, n) when is_list(list),
-    do: Enum.all?(list, fn {fid, a} -> idx?(fid, n) and is_integer(a) and a >= 0 end)
+  defp valid_fa_list?(list, n) when is_list(list) do
+    proper_all?(list, fn
+      {fid, a} -> idx?(fid, n) and is_integer(a) and a >= 0
+      _ -> false
+    end)
+  end
 
   defp valid_fa_list?(_, _n), do: false
 
@@ -285,11 +295,17 @@ defmodule VulnCheck.Cache.BeamCodec do
 
   defp valid_function_lines?(_, _n), do: false
 
-  defp valid_idx_list?(list, n) when is_list(list), do: Enum.all?(list, &idx?(&1, n))
+  defp valid_idx_list?(list, n) when is_list(list), do: proper_all?(list, &idx?(&1, n))
   defp valid_idx_list?(_, _n), do: false
 
+  defp valid_attributes?(map, n) when is_map(map) do
+    Enum.all?(map, fn {k, v} -> idx?(k, n) and valid_literal_list?(v, 0) end)
+  end
+
+  defp valid_attributes?(_, _n), do: false
+
   defp valid_edges?(list, n) when is_list(list) do
-    Enum.all?(list, fn
+    proper_all?(list, fn
       {from, to, file_id, line, kind} ->
         valid_mfa?(from, n) and valid_mfa?(to, n) and opt_idx?(file_id, n) and
           (is_nil(line) or (is_integer(line) and line >= 0)) and kind in @edge_kinds
@@ -302,7 +318,7 @@ defmodule VulnCheck.Cache.BeamCodec do
   defp valid_edges?(_, _n), do: false
 
   defp valid_dynamic_dispatches?(list, n) when is_list(list) do
-    Enum.all?(list, fn
+    proper_all?(list, fn
       {caller, km_id, kf_id, arity, min_arity, file_id, line, kind} ->
         valid_mfa?(caller, n) and opt_idx?(km_id, n) and opt_idx?(kf_id, n) and
           (is_nil(arity) or (is_integer(arity) and arity >= 0)) and
@@ -318,7 +334,7 @@ defmodule VulnCheck.Cache.BeamCodec do
   defp valid_dynamic_dispatches?(_, _n), do: false
 
   defp valid_module_refs?(list, n) when is_list(list) do
-    Enum.all?(list, fn
+    proper_all?(list, fn
       {caller, mod_id, file_id, line} ->
         valid_mfa?(caller, n) and idx?(mod_id, n) and opt_idx?(file_id, n) and
           (is_nil(line) or (is_integer(line) and line >= 0))
@@ -331,9 +347,9 @@ defmodule VulnCheck.Cache.BeamCodec do
   defp valid_module_refs?(_, _n), do: false
 
   defp valid_init_literals?(list, n) when is_list(list) do
-    Enum.all?(list, fn
+    proper_all?(list, fn
       {caller, target, args, file_id, line} ->
-        valid_mfa?(caller, n) and valid_mfa?(target, n) and is_list(args) and
+        valid_mfa?(caller, n) and valid_mfa?(target, n) and valid_literal_list?(args, 0) and
           opt_idx?(file_id, n) and (is_nil(line) or (is_integer(line) and line >= 0))
 
       _ ->
@@ -344,11 +360,36 @@ defmodule VulnCheck.Cache.BeamCodec do
   defp valid_init_literals?(_, _n), do: false
 
   defp valid_imports?(list, n) when is_list(list) do
-    Enum.all?(list, fn
+    proper_all?(list, fn
       {mid, fid, a} -> idx?(mid, n) and idx?(fid, n) and is_integer(a) and a >= 0
       _ -> false
     end)
   end
 
   defp valid_imports?(_, _n), do: false
+
+  defp valid_literal_list?(list, depth) when is_list(list) and depth <= @max_literal_depth do
+    proper_all?(list, &valid_literal?(&1, depth + 1))
+  end
+
+  defp valid_literal_list?(_, _depth), do: false
+
+  defp valid_literal?(_term, depth) when depth > @max_literal_depth, do: false
+  defp valid_literal?(:dynamic, _depth), do: true
+  defp valid_literal?(value, _depth) when is_binary(value) or is_number(value), do: true
+  defp valid_literal?({:atom, name}, _depth) when is_binary(name), do: true
+  defp valid_literal?({:fun, name}, _depth) when is_binary(name), do: true
+
+  defp valid_literal?({:tuple, items}, depth) when is_list(items),
+    do: valid_literal_list?(items, depth)
+
+  defp valid_literal?({:map, pairs}, depth) when is_list(pairs) do
+    proper_all?(pairs, fn
+      {k, v} -> valid_literal?(k, depth + 1) and valid_literal?(v, depth + 1)
+      _ -> false
+    end)
+  end
+
+  defp valid_literal?(list, depth) when is_list(list), do: valid_literal_list?(list, depth)
+  defp valid_literal?(_other, _depth), do: false
 end

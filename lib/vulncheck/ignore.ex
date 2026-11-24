@@ -16,9 +16,9 @@ defmodule VulnCheck.Ignore do
 
   A rule matches a finding by advisory id or any alias, optionally limited
   to one package. Rules without a reason (when `require_ignore_reason`) or
-  without a valid expiry (when `require_ignore_expiry`) are rejected with a
-  warning. Expired rules do not suppress: the finding is flagged with
-  `suppression_expired` and the scan reports a policy violation.
+  without a valid expiry (when `require_ignore_expiry`) are rejected as
+  policy violations. Expired rules do not suppress: the finding is flagged
+  with `suppression_expired` and the scan reports a policy violation.
   """
 
   alias VulnCheck.{Config, Git, Literal}
@@ -149,10 +149,10 @@ defmodule VulnCheck.Ignore do
       today = Keyword.get_lazy(opts, :today, &Date.utc_today/0)
 
       case load(config) do
-        {:ok, rules, warnings} ->
+        {:ok, rules, rejected} ->
           {findings, violations, more} = apply_rules(findings, rules, today)
           guard = if config.forbid_new_suppressions, do: new_suppressions(config, rules), else: []
-          {findings, violations ++ guard, warnings ++ more}
+          {findings, violations ++ rejected ++ guard, more}
 
         {:error, message} ->
           {findings, ["cannot read suppressions: #{message}"], []}

@@ -36,6 +36,22 @@ defmodule VulnCheck.Beam.AbstractWalker do
                   {"Elixir.Application", "put_env", 4}
                 ])
 
+  @eval_calls MapSet.new([
+                {"Elixir.Code", "eval_string", 1},
+                {"Elixir.Code", "eval_string", 2},
+                {"Elixir.Code", "eval_string", 3},
+                {"Elixir.Code", "eval_quoted", 1},
+                {"Elixir.Code", "eval_quoted", 2},
+                {"Elixir.Code", "eval_quoted", 3},
+                {"erl_eval", "exprs", 2},
+                {"erl_eval", "exprs", 3},
+                {"erl_eval", "exprs", 4},
+                {"erl_eval", "expr", 2},
+                {"erl_eval", "expr", 3},
+                {"erl_eval", "expr", 4},
+                {"erl_eval", "expr", 5}
+              ])
+
   @boring_atoms MapSet.new(~w(true false nil ok error undefined ignore infinity noreply reply
                              stop normal shutdown default all none __struct__ __exception__))
   @kept_attributes ~w(__impl__ __protocol__ behaviour behavior deprecated)
@@ -252,19 +268,38 @@ defmodule VulnCheck.Beam.AbstractWalker do
   defp walk({gen, _anno, _pattern, expr}, ctx, facts) when gen in @generators,
     do: walk(expr, ctx, facts)
 
-  # Tags (`{:ok, _}`, keyword keys) and map keys are only references when
-  # they are Elixir aliases (`{MyWorker, arg}`).
-  defp walk({:tuple, _anno, [{:atom, _, tag} | rest]} = node, ctx, facts) do
-    if elixir_alias?(tag),
-      do: walk_children(facts, node, ctx),
-      else: walk_list(facts, rest, ctx)
+  # Phoenix 1.7+ `__match_route__/4` returns `{metadata, prepare, pipe, {Controller, :action}}`.
+  # Scope `"__plug_tuple__"` recording to 4-tuple route structures or router match functions
+  # so arbitrary `{Controller, val}` tuples elsewhere (e.g. ETS keys, Logger metadata)
+  # do not inject `:dynamic` into controller dispatch, while walking all children so
+  # Erlang/Gleam module atoms in tuple heads remain in `module_refs`.
+  defp walk(
+         {:tuple, _anno,
+          [e1, e2, e3, {:tuple, inner_anno, [{:atom, _, mod_atom}, opt_expr]} = inner]},
+         ctx,
+         facts
+       ) do
+    facts =
+      if elixir_alias?(mod_atom) do
+        record_plug_tuple(facts, ctx, mod_atom, opt_expr, inner_anno)
+      else
+        facts
+      end
+
+    facts
+    |> walk_list([e1, e2, e3], ctx)
+    |> walk_children(inner, ctx)
   end
 
-  defp walk({assoc, _anno, {:atom, _, key}, value} = node, ctx, facts)
-       when assoc in [:map_field_assoc, :map_field_exact] do
-    if elixir_alias?(key),
-      do: walk_children(facts, node, ctx),
-      else: walk(value, ctx, facts)
+  defp walk({:tuple, anno, [{:atom, _, mod_atom}, opt_expr]} = node, ctx, facts) do
+    facts =
+      if elixir_alias?(mod_atom) and ctx.caller.function in ["__match_route__", "match"] do
+        record_plug_tuple(facts, ctx, mod_atom, opt_expr, anno)
+      else
+        facts
+      end
+
+    walk_children(facts, node, ctx)
   end
 
   defp walk({:atom, anno, atom}, ctx, facts) do
@@ -327,8 +362,27 @@ defmodule VulnCheck.Beam.AbstractWalker do
       end
 
     facts =
-      if MapSet.member?(@init_targets, {mod, fun, arity}) do
-        literals = Enum.map(args, &literal(&1, ctx.env, 0))
+      if MapSet.member?(@eval_calls, {mod, fun, arity}) do
+        eval_call = %DynamicCall{
+          caller: ctx.caller,
+          known_module: nil,
+          known_function: nil,
+          arity: nil,
+          min_arity: 0,
+          file: ctx.file,
+          line: line(anno),
+          kind: :module_function
+        }
+
+        %{facts | dynamic: [eval_call | facts.dynamic]}
+      else
+        facts
+      end
+
+    facts =
+      if MapSet.member?(@init_targets, {mod, fun, arity}) or
+           (fun == "call" and arity == 2 and String.starts_with?(mod, "Elixir.")) do
+        literals = init_call_literals(mod, fun, args, ctx.env)
         entry = {ctx.caller, mfa(mod, fun, arity), literals, ctx.file, line(anno)}
         %{facts | init: [entry | facts.init]}
       else
@@ -336,6 +390,24 @@ defmodule VulnCheck.Beam.AbstractWalker do
       end
 
     walk_list(facts, args, ctx)
+  end
+
+  defp init_call_literals(mod, "call", [conn_expr, opts_expr], env)
+       when mod != "Elixir.Plug.Parsers" do
+    opts_literal =
+      case bound_value(opts_expr, env, 0) do
+        {:call, _, {:remote, _, {:atom, _, m2}, {:atom, _, :init}}, [inner_opt]} ->
+          if name(m2) == mod, do: literal(inner_opt, env, 0), else: literal(opts_expr, env, 0)
+
+        _ ->
+          literal(opts_expr, env, 0)
+      end
+
+    [literal(conn_expr, env, 0), opts_literal]
+  end
+
+  defp init_call_literals(_mod, _fun, args, env) do
+    Enum.map(args, &literal(&1, env, 0))
   end
 
   # -- dynamic dispatch ------------------------------------------------------------
@@ -734,6 +806,14 @@ defmodule VulnCheck.Beam.AbstractWalker do
         line = line(anno),
         into: %{},
         do: {{Atom.to_string(fun), arity}, line}
+  end
+
+  defp record_plug_tuple(facts, ctx, mod_atom, opt_expr, anno) do
+    entry =
+      {ctx.caller, mfa(name(mod_atom), "__plug_tuple__", 2), [literal(opt_expr, ctx.env, 0)],
+       ctx.file, line(anno)}
+
+    %{facts | init: [entry | facts.init]}
   end
 
   defp elixir_alias?(atom), do: match?("Elixir." <> _, Atom.to_string(atom))

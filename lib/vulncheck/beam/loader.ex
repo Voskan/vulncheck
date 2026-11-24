@@ -313,7 +313,7 @@ defmodule VulnCheck.Beam.Loader do
     sha = Cache.sha256(bytes)
     root = Keyword.get(opts, :root_dir)
     cache = Keyword.get(opts, :cache, false)
-    key = Cache.sha256([sha, 0, to_string(root)])
+    key = Cache.sha256(["walker-v3", 0, sha, 0, to_string(root)])
 
     case cache && Cache.get_beam_packed(cache, key) do
       {:ok, pair} ->

@@ -30,11 +30,12 @@ defmodule VulnCheck.HTTP do
 
   @behaviour __MODULE__
 
+  import Bitwise
+
   @default_timeout 15_000
   @default_connect_timeout 5_000
   @default_max_body 50 * 1024 * 1024
   @transient_statuses [502, 503, 504]
-  @loopback_hosts ["127.0.0.1", "localhost", "::1", "[::1]"]
   @max_redirects 3
 
   @doc "The `User-Agent` header value sent with every request."
@@ -69,11 +70,8 @@ defmodule VulnCheck.HTTP do
       %URI{scheme: "https", host: host} when is_binary(host) and host != "" ->
         :ok
 
-      %URI{scheme: "http", host: host} when host in @loopback_hosts ->
-        :ok
-
-      %URI{scheme: "http"} ->
-        {:error, {:insecure_url, url}}
+      %URI{scheme: "http", host: host} ->
+        if loopback_host?(host), do: :ok, else: {:error, {:insecure_url, url}}
 
       _ ->
         {:error, {:invalid_url, url}}
@@ -140,12 +138,100 @@ defmodule VulnCheck.HTTP do
       location ->
         target = url |> URI.merge(location) |> URI.to_string()
 
-        with :ok <- validate_url(target) do
+        with :ok <- validate_url(target),
+             :ok <- validate_redirect(url, target) do
           retries = Keyword.get(opts, :retries, 2)
           do_get(target, headers, opts, retries, 0, redirects_left - 1)
         end
     end
   end
+
+  @doc false
+  @spec validate_redirect(String.t(), String.t()) :: :ok | {:error, term()}
+  def validate_redirect(source, target) do
+    source_uri = URI.parse(source)
+    target_uri = URI.parse(target)
+
+    cond do
+      source_uri.scheme == "https" and target_uri.scheme != "https" ->
+        {:error, {:insecure_url, target}}
+
+      not internal_host?(source_uri.host) and internal_host?(target_uri.host) ->
+        {:error, {:insecure_url, target}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp normalize_host(host) when is_binary(host) do
+    host
+    |> String.downcase()
+    |> String.trim_leading("[")
+    |> String.trim_trailing("]")
+    |> String.trim_trailing(".")
+  end
+
+  defp normalize_host(_), do: nil
+
+  # Plain `http://` is permitted only on explicit loopback hosts (local test servers).
+  defp loopback_host?(host) do
+    case normalize_host(host) do
+      "localhost" ->
+        true
+
+      normalized when is_binary(normalized) and normalized != "" ->
+        case :inet.parse_address(String.to_charlist(normalized)) do
+          {:ok, {127, _, _, _}} -> true
+          {:ok, {0, 0, 0, 0, 0, 0, 0, 1}} -> true
+          _ -> false
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  # Redirect targets from non-internal origins must not point to loopback,
+  # unspecified, link-local/cloud-metadata, CGNAT or private addresses.
+  defp internal_host?(host) do
+    case normalize_host(host) do
+      "localhost" ->
+        true
+
+      normalized when is_binary(normalized) and normalized != "" ->
+        String.ends_with?(normalized, ".localhost") or
+          case :inet.parse_address(String.to_charlist(normalized)) do
+            {:ok, ip} -> restricted_ip?(ip)
+            {:error, _} -> false
+          end
+
+      _ ->
+        false
+    end
+  end
+
+  defp restricted_ip?({127, _, _, _}), do: true
+  defp restricted_ip?({0, _, _, _}), do: true
+  defp restricted_ip?({10, _, _, _}), do: true
+  defp restricted_ip?({172, b, _, _}) when b in 16..31, do: true
+  defp restricted_ip?({192, 168, _, _}), do: true
+  defp restricted_ip?({100, b, _, _}) when b in 64..127, do: true
+  defp restricted_ip?({169, 254, _, _}), do: true
+  defp restricted_ip?({_, _, _, _}), do: false
+
+  defp restricted_ip?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp restricted_ip?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
+
+  defp restricted_ip?({0, 0, 0, 0, 0, 0xFFFF, hi, lo}) do
+    restricted_ip?({hi >>> 8, hi &&& 0xFF, lo >>> 8, lo &&& 0xFF})
+  end
+
+  defp restricted_ip?({first, _, _, _, _, _, _, _})
+       when (first &&& 0xFFC0) == 0xFE80 or (first &&& 0xFE00) == 0xFC00,
+       do: true
+
+  defp restricted_ip?({_, _, _, _, _, _, _, _}), do: false
 
   defp transient?(:timeout), do: true
   defp transient?({:failed_connect, _}), do: true

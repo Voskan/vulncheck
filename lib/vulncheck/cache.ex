@@ -427,6 +427,13 @@ defmodule VulnCheck.Cache do
   defp beam_root(%Config{} = config), do: beam_dir(config)
   defp beam_root(opts) when is_list(opts), do: Path.join(dir(opts), "beam-v4")
 
+  # Reject compressed ETF payloads declaring an uncompressed size above the
+  # cap before `:erlang.binary_to_term/2` inflates them in C heap.
+  defp safe_decode(<<131, 80, uncompressed_size::unsigned-big-32, _::binary>>)
+       when uncompressed_size > @max_beam_unpacked_bytes do
+    :invalid
+  end
+
   defp safe_decode(data) do
     :erlang.binary_to_term(data, [:safe])
   rescue

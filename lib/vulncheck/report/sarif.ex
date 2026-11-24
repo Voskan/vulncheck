@@ -135,7 +135,7 @@ defmodule VulnCheck.Report.SARIF do
         |> put_context(f.context_routines)
     }
     |> put_related_locations(f, report.workspace)
-    |> put_code_flows(f)
+    |> put_code_flows(f, report.workspace)
   end
 
   defp put_related_locations(result, finding, workspace) do
@@ -175,19 +175,23 @@ defmodule VulnCheck.Report.SARIF do
       "(#{Formatter.reason_label(f.reason)}).#{detail}#{fix}"
   end
 
-  defp put_code_flows(result, %Finding{trace: []}), do: result
+  defp put_code_flows(result, %Finding{trace: []}, _workspace), do: result
 
-  defp put_code_flows(result, %Finding{trace: hops}) do
+  defp put_code_flows(result, %Finding{trace: hops}, workspace) do
+    prefix = Formatter.repo_prefix(workspace)
+
     locations =
       hops
       |> Formatter.numbered()
-      |> Enum.map(fn {%TraceHop{} = hop, step} ->
+      |> Enum.with_index(1)
+      |> Enum.map(fn {{%TraceHop{} = hop, step}, order} ->
         text = "#{step}. #{Formatter.hop(hop)}"
+        file = Formatter.prefix_path(hop.file, prefix)
 
         %{
-          "executionOrder" => step,
+          "executionOrder" => order,
           "kinds" => [kind(hop.kind)],
-          "location" => location(hop.file, hop.line, text)
+          "location" => location(file, hop.line, text)
         }
       end)
 

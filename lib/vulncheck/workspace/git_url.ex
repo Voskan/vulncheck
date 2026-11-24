@@ -1,12 +1,21 @@
 defmodule VulnCheck.Workspace.GitUrl do
   @moduledoc """
-  Normalizes Git dependency URLs into canonical `owner/repo` slugs without
+  Normalizes Git dependency URLs into canonical repository slugs without
   creating atoms.
+
+  GitHub URLs (and bare `owner/repo` strings) normalize to `"owner/repo"`.
+  Non-GitHub hosts (GitLab, Bitbucket, self-hosted Git servers) retain their
+  lowercased hostname and full path segments (e.g.
+  `"gitlab.com/group/subgroup/repo"`, `"git.corp.internal/owner/repo"`) so
+  they never collide with GitHub advisories or truncate GitLab subgroups.
   """
 
+  @github_hosts ["github.com", "www.github.com"]
+
   @doc """
-  Extracts a lowercased `"owner/repo"` slug from HTTPS, SSH, `git://` or
-  `owner/repo` strings. Returns `:error` for unrecognized or local URLs.
+  Extracts a lowercased repository slug from HTTPS, SSH, `git://`, SCP-style
+  `user@host:path` or bare `owner/repo` strings. Returns `:error` for
+  unrecognized, local (`file://`), single-segment or malformed URLs.
   """
   @spec normalize_repo(String.t() | nil) :: {:ok, String.t()} | :error
   def normalize_repo(url) when is_binary(url) do
@@ -18,20 +27,26 @@ defmodule VulnCheck.Workspace.GitUrl do
 
       String.contains?(url, "://") ->
         case URI.parse(url) do
-          %URI{host: host, path: path}
-          when is_binary(host) and host != "" and is_binary(path) ->
-            extract_slug(path)
+          %URI{scheme: scheme, host: host, path: path}
+          when scheme != "file" and is_binary(host) and host != "" and is_binary(path) ->
+            format_slug(String.downcase(host), path)
 
           _ ->
             :error
         end
 
       Regex.match?(~r/\A[^@\s]+@[^:\s]+:[^\s]+\z/, url) ->
-        [_user_host, path] = String.split(url, ":", parts: 2)
-        extract_slug(path)
+        [user_host, path] = String.split(url, ":", parts: 2)
+        [_user, host] = String.split(user_host, "@", parts: 2)
 
-      Regex.match?(~r/\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\z/, url) ->
-        extract_slug(url)
+        if host == "" do
+          :error
+        else
+          format_slug(String.downcase(host), path)
+        end
+
+      Regex.match?(~r/\A[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+(?:\.git)?\z/i, url) ->
+        format_slug(nil, url)
 
       true ->
         :error
@@ -40,7 +55,7 @@ defmodule VulnCheck.Workspace.GitUrl do
 
   def normalize_repo(_), do: :error
 
-  @doc "Returns the normalized `owner/repo` slug or `nil`."
+  @doc "Returns the normalized repository slug or `nil`."
   @spec repo_slug(String.t() | nil) :: String.t() | nil
   def repo_slug(url) do
     case normalize_repo(url) do
@@ -49,20 +64,25 @@ defmodule VulnCheck.Workspace.GitUrl do
     end
   end
 
-  defp extract_slug(path) do
-    parts =
+  defp format_slug(host, path) do
+    trimmed =
       path
       |> String.trim_leading("/")
       |> String.trim_trailing("/")
-      |> String.trim_trailing(".git")
-      |> String.split("/", trim: true)
+      |> then(&Regex.replace(~r/\.git\z/i, &1, ""))
 
-    case parts do
-      [owner, repo | _] when owner != "" and repo != "" ->
-        {:ok, String.downcase("#{owner}/#{repo}")}
+    parts = String.split(trimmed, "/", trim: false)
 
-      _ ->
-        :error
+    if length(parts) >= 2 and Enum.all?(parts, &(&1 != "" and &1 not in [".", ".."])) do
+      full_path = parts |> Enum.join("/") |> String.downcase()
+
+      if host in [nil | @github_hosts] do
+        {:ok, full_path}
+      else
+        {:ok, "#{host}/#{full_path}"}
+      end
+    else
+      :error
     end
   end
 end

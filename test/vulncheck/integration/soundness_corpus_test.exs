@@ -440,9 +440,9 @@ defmodule VulnCheck.Integration.SoundnessCorpusTest do
           do: flow
 
     [first, second | _] = hd(flow["threadFlows"])["locations"]
-    assert {first["executionOrder"], first["kinds"]} == {0, ["daemon_activation"]}
+    assert {first["executionOrder"], first["kinds"]} == {1, ["daemon_activation"]}
     assert first["location"]["message"]["text"] == "0. Relay.Application.start/2 starts Bandit"
-    assert {second["executionOrder"], second["kinds"]} == {1, ["enter"]}
+    assert {second["executionOrder"], second["kinds"]} == {2, ["enter"]}
 
     markdown = Markdown.render(report, config)
 

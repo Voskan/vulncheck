@@ -29,7 +29,7 @@ defmodule VulnCheck.Config do
   @fail_on [:reachable, :potentially_reachable, :any, :none]
   @severities [:low, :medium, :high, :critical]
   @envs [:prod, :dev, :test]
-  @adapter_families [:tesla, :swoosh, :ecto, :phoenix_pubsub, :finch, :req]
+  @adapter_families [:tesla, :swoosh, :ecto, :phoenix_pubsub]
 
   defstruct project_dir: ".",
             config_file: nil,
