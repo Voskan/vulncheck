@@ -107,6 +107,7 @@ defmodule VulnCheck.ErlTerm do
       "'" <> rest -> parse_quoted_atom(rest, [])
       "$" <> rest -> parse_char(rest)
       "-" <> rest -> parse_negative(rest, depth + 1)
+      "+" <> rest -> parse_positive(rest, depth + 1)
       <<c, _::binary>> = rest when c in ?0..?9 -> parse_number(rest)
       <<c, _::binary>> = rest when c in ?a..?z -> parse_atom(rest)
       "" -> fail("unexpected end of input")
@@ -233,9 +234,30 @@ defmodule VulnCheck.ErlTerm do
     end
   end
 
-  defp skip_segment_type("/utf8" <> rest), do: rest
-  defp skip_segment_type("/binary" <> rest), do: rest
-  defp skip_segment_type(rest), do: rest
+  defp skip_segment_type(rest) do
+    rest =
+      case rest do
+        ":" <> after_colon ->
+          {size, rem} = take_while(skip_ws(after_colon), &(&1 in ?0..?9 or &1 == ?_))
+          if size == "", do: fail("expected binary segment size"), else: skip_ws(rem)
+
+        other ->
+          other
+      end
+
+    case rest do
+      "/" <> after_slash ->
+        {spec, rem} =
+          take_while(after_slash, fn c ->
+            c in ?a..?z or c in ?A..?Z or c in ?0..?9 or c in [?-, ?_, ?:]
+          end)
+
+        if spec == "", do: fail("expected binary segment type"), else: rem
+
+      other ->
+        other
+    end
+  end
 
   defp parse_string(<<"\"", rest::binary>>, acc) do
     {acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
@@ -272,10 +294,55 @@ defmodule VulnCheck.ErlTerm do
   defp parse_escape(<<"r", rest::binary>>), do: {"\r", rest}
   defp parse_escape(<<"s", rest::binary>>), do: {" ", rest}
   defp parse_escape(<<"e", rest::binary>>), do: {<<27>>, rest}
-  defp parse_escape(<<"0", rest::binary>>), do: {<<0>>, rest}
+  defp parse_escape(<<"b", rest::binary>>), do: {<<8>>, rest}
+  defp parse_escape(<<"d", rest::binary>>), do: {<<127>>, rest}
+  defp parse_escape(<<"f", rest::binary>>), do: {<<12>>, rest}
+  defp parse_escape(<<"v", rest::binary>>), do: {<<11>>, rest}
+
+  defp parse_escape(<<"x{", rest::binary>>) do
+    {hex, after_hex} = take_while(rest, &hex_digit?/1)
+
+    case after_hex do
+      "}" <> rem when hex != "" ->
+        {decode_codepoint!(hex, 16), rem}
+
+      _ ->
+        fail("invalid hex escape")
+    end
+  end
+
+  defp parse_escape(<<"x", a, b, rest::binary>>) do
+    if hex_digit?(a) and hex_digit?(b) do
+      {decode_codepoint!(<<a, b>>, 16), rest}
+    else
+      fail("invalid hex escape")
+    end
+  end
+
+  defp parse_escape(<<"x", _::binary>>), do: fail("invalid hex escape")
+
+  defp parse_escape(<<c, _::binary>> = rest) when c in ?0..?7 do
+    {oct, rem} = take_octal(rest, 3, [])
+    {decode_codepoint!(oct, 8), rem}
+  end
+
   defp parse_escape(<<c::utf8, rest::binary>>), do: {<<c::utf8>>, rest}
   defp parse_escape(<<_invalid, _rest::binary>>), do: fail("invalid utf-8 in escape sequence")
   defp parse_escape(""), do: fail("unterminated escape")
+
+  defp hex_digit?(c), do: c in ?0..?9 or c in ?a..?f or c in ?A..?F
+
+  defp take_octal(<<c, rest::binary>>, max, acc) when max > 0 and c in ?0..?7,
+    do: take_octal(rest, max - 1, [c | acc])
+
+  defp take_octal(rest, _max, acc), do: {acc |> Enum.reverse() |> List.to_string(), rest}
+
+  defp decode_codepoint!(digits, base) do
+    case Integer.parse(digits, base) do
+      {cp, ""} when cp in 0..0x10FFFF and cp not in 0xD800..0xDFFF -> <<cp::utf8>>
+      _ -> fail("invalid character codepoint")
+    end
+  end
 
   defp parse_char(<<"\\", rest::binary>>) do
     case parse_escape(rest) do
@@ -295,6 +362,13 @@ defmodule VulnCheck.ErlTerm do
     end
   end
 
+  defp parse_positive(source, depth) do
+    case parse_value(source, depth) do
+      {n, rest} when is_number(n) -> {n, rest}
+      _ -> fail("unexpected '+'")
+    end
+  end
+
   defp parse_number(source) do
     {digits, rest} = take_while(source, &(&1 in ?0..?9 or &1 == ?_))
     digits = String.replace(digits, "_", "")
@@ -311,7 +385,10 @@ defmodule VulnCheck.ErlTerm do
             fail("invalid integer base")
           end
 
-        {chars, rest} = take_while(rest, &(&1 in ?0..?9 or &1 in ?a..?z or &1 in ?A..?Z))
+        {chars, rest} =
+          take_while(rest, &(&1 in ?0..?9 or &1 in ?a..?z or &1 in ?A..?Z or &1 == ?_))
+
+        chars = String.replace(chars, "_", "")
 
         case Integer.parse(chars, base) do
           {int, ""} -> {int, rest}
@@ -320,7 +397,11 @@ defmodule VulnCheck.ErlTerm do
 
       <<".", d, _::binary>> when d in ?0..?9 ->
         <<".", rest::binary>> = rest
-        {frac, rest} = take_while(rest, &(&1 in ?0..?9 or &1 in [?e, ?E, ?-, ?+]))
+
+        {frac, rest} =
+          take_while(rest, &(&1 in ?0..?9 or &1 in [?e, ?E, ?-, ?+, ?_]))
+
+        frac = String.replace(frac, "_", "")
 
         case Float.parse(digits <> "." <> frac) do
           {float, ""} -> {float, rest}

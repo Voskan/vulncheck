@@ -231,15 +231,23 @@ defmodule VulnCheck.Beam.AbstractWalker do
   defp walk({:fun, anno, {:function, fun, arity}}, ctx, facts)
        when is_atom(fun) and is_integer(arity) do
     target = local_module(ctx, fun, arity)
+    fun_name = Atom.to_string(fun)
 
-    add_edge(facts, ctx, mfa(target, Atom.to_string(fun), arity), anno, :static_call)
+    facts
+    |> add_edge(ctx, mfa(target, fun_name, arity), anno, :static_call)
+    |> record_plug_capture(ctx, target, fun_name, arity, anno)
   end
 
   # Remote capture `&Mod.fun/2` (possibly with computed parts).
   defp walk({:fun, anno, {:function, mod_expr, fun_expr, arity_expr}}, ctx, facts) do
     case {mod_expr, fun_expr, arity_expr} do
       {{:atom, _, mod}, {:atom, _, fun}, {:integer, _, arity}} ->
-        add_edge(facts, ctx, mfa(name(mod), Atom.to_string(fun), arity), anno, :static_call)
+        mod_name = name(mod)
+        fun_name = Atom.to_string(fun)
+
+        facts
+        |> add_edge(ctx, mfa(mod_name, fun_name, arity), anno, :static_call)
+        |> record_plug_capture(ctx, mod_name, fun_name, arity, anno)
 
       _ ->
         dynamic_site(facts, ctx, anno, mod_expr, fun_expr, integer(arity_expr, ctx.env))
@@ -269,37 +277,39 @@ defmodule VulnCheck.Beam.AbstractWalker do
     do: walk(expr, ctx, facts)
 
   # Phoenix 1.7+ `__match_route__/4` returns `{metadata, prepare, pipe, {Controller, :action}}`.
-  # Scope `"__plug_tuple__"` recording to 4-tuple route structures or router match functions
-  # so arbitrary `{Controller, val}` tuples elsewhere (e.g. ETS keys, Logger metadata)
-  # do not inject `:dynamic` into controller dispatch, while walking all children so
-  # Erlang/Gleam module atoms in tuple heads remain in `module_refs`.
+  # Restrict `"__plug_tuple__"` recording strictly to router match functions (`__match_route__`,
+  # `match`) so arbitrary tuples in user functions do not mask unattributed controller refs.
+  # Walk route metadata skipping only the matching `plug: Controller` entry, and flag any other
+  # `Elixir.*` module atom appearing outside the recognized plug-tuple slot in `__match_route__`
+  # / `match` as a `:dynamic` `"__plug_tuple__"` site so mixed static+dynamic refs stay sound.
   defp walk(
          {:tuple, _anno,
           [e1, e2, e3, {:tuple, inner_anno, [{:atom, _, mod_atom}, opt_expr]} = inner]},
          ctx,
          facts
        ) do
-    facts =
-      if elixir_alias?(mod_atom) do
-        record_plug_tuple(facts, ctx, mod_atom, opt_expr, inner_anno)
-      else
-        facts
-      end
-
-    facts
-    |> walk_list([e1, e2, e3], ctx)
-    |> walk_children(inner, ctx)
+    if elixir_alias?(mod_atom) and ctx.caller.function in ["__match_route__", "match"] do
+      facts
+      |> record_plug_tuple(ctx, mod_atom, opt_expr, inner_anno)
+      |> add_module_ref(ctx, mod_atom, inner_anno)
+      |> walk_route_metadata(e1, mod_atom, ctx)
+      |> walk_list([e2, e3, opt_expr], ctx)
+    else
+      facts
+      |> walk_list([e1, e2, e3], ctx)
+      |> walk_children(inner, ctx)
+    end
   end
 
   defp walk({:tuple, anno, [{:atom, _, mod_atom}, opt_expr]} = node, ctx, facts) do
-    facts =
-      if elixir_alias?(mod_atom) and ctx.caller.function in ["__match_route__", "match"] do
-        record_plug_tuple(facts, ctx, mod_atom, opt_expr, anno)
-      else
-        facts
-      end
-
-    walk_children(facts, node, ctx)
+    if elixir_alias?(mod_atom) and ctx.caller.function in ["__match_route__", "match"] do
+      facts
+      |> record_plug_tuple(ctx, mod_atom, opt_expr, anno)
+      |> add_module_ref(ctx, mod_atom, anno)
+      |> walk_list([opt_expr], ctx)
+    else
+      walk_children(facts, node, ctx)
+    end
   end
 
   defp walk({:atom, anno, atom}, ctx, facts) do
@@ -308,7 +318,14 @@ defmodule VulnCheck.Beam.AbstractWalker do
     if MapSet.member?(@boring_atoms, value) do
       facts
     else
-      %{facts | refs: [{ctx.caller, value, ctx.file, line(anno)} | facts.refs]}
+      facts = %{facts | refs: [{ctx.caller, value, ctx.file, line(anno)} | facts.refs]}
+
+      if ctx.caller.function in ["__match_route__", "match"] and elixir_alias?(atom) do
+        entry = {ctx.caller, mfa(value, "__plug_tuple__", 2), [:dynamic], ctx.file, line(anno)}
+        %{facts | init: [entry | facts.init]}
+      else
+        facts
+      end
     end
   end
 
@@ -808,6 +825,22 @@ defmodule VulnCheck.Beam.AbstractWalker do
         do: {{Atom.to_string(fun), arity}, line}
   end
 
+  defp add_module_ref(facts, ctx, mod_atom, anno) do
+    %{facts | refs: [{ctx.caller, name(mod_atom), ctx.file, line(anno)} | facts.refs]}
+  end
+
+  defp walk_route_metadata(facts, {:map, _anno, assocs}, mod_atom, ctx) when is_list(assocs) do
+    Enum.reduce(assocs, facts, fn
+      {:map_field_assoc, _, {:atom, _, :plug}, {:atom, _, ^mod_atom}}, acc ->
+        acc
+
+      assoc, acc ->
+        walk(assoc, ctx, acc)
+    end)
+  end
+
+  defp walk_route_metadata(facts, expr, _mod_atom, ctx), do: walk(expr, ctx, facts)
+
   defp record_plug_tuple(facts, ctx, mod_atom, opt_expr, anno) do
     entry =
       {ctx.caller, mfa(name(mod_atom), "__plug_tuple__", 2), [literal(opt_expr, ctx.env, 0)],
@@ -815,6 +848,20 @@ defmodule VulnCheck.Beam.AbstractWalker do
 
     %{facts | init: [entry | facts.init]}
   end
+
+  defp record_plug_capture(facts, ctx, mod_name, fun_name, 2, anno)
+       when fun_name in ["call", "action"] do
+    if String.starts_with?(mod_name, "Elixir.") do
+      entry =
+        {ctx.caller, mfa(mod_name, "call", 2), [:dynamic, :dynamic], ctx.file, line(anno)}
+
+      %{facts | init: [entry | facts.init]}
+    else
+      facts
+    end
+  end
+
+  defp record_plug_capture(facts, _ctx, _mod_name, _fun_name, _arity, _anno), do: facts
 
   defp elixir_alias?(atom), do: match?("Elixir." <> _, Atom.to_string(atom))
 

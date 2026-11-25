@@ -496,7 +496,12 @@ defmodule VulnCheck.Config do
         {:ok, Map.put(config, String.to_existing_atom(key), nil)}
 
       is_binary(value) and value != "" ->
-        {:ok, Map.put(config, String.to_existing_atom(key), value)}
+        resolved =
+          if key in ~w(output sarif sbom vex bundle cache_dir baseline),
+            do: Path.expand(value, project_root(config)),
+            else: value
+
+        {:ok, Map.put(config, String.to_existing_atom(key), resolved)}
 
       true ->
         {:error, "#{key} must be a non-empty string"}
@@ -527,11 +532,14 @@ defmodule VulnCheck.Config do
     end
   end
 
+  defp file_option(config, "max_feed_age_seconds", nil),
+    do: {:ok, %{config | max_feed_age_seconds: nil}}
+
   defp file_option(config, "max_feed_age_seconds", value) do
     if is_integer(value) and value >= 0 do
       {:ok, %{config | max_feed_age_seconds: value}}
     else
-      {:error, "max_feed_age_seconds must be a non-negative integer"}
+      {:error, "max_feed_age_seconds must be a non-negative integer or nil"}
     end
   end
 

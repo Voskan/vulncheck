@@ -589,16 +589,31 @@ defmodule VulnCheck.Semver do
   defp normalize_op(">="), do: :>=
   defp normalize_op("~>"), do: :~>
 
+  defp check(:~>, release, segments) do
+    upper = pessimistic_upper(segments)
+    check(:>=, release, segments) and check(:<, release, upper)
+  end
+
   defp check(op, release, segments) do
     precision = min(length(release), length(segments))
     result = compare_numbers(Enum.take(release, precision), Enum.take(segments, precision))
 
     if result == :eq and precision < length(segments),
       do: true,
-      else: compare_otp(op, result, hd(release) == hd(segments))
+      else: compare_otp(op, result)
   end
 
-  defp compare_otp(op, result, same_major) do
+  # Elixir/Hex pessimistic upper bound:
+  # `~> 25` -> `< 26`, `~> 25.3` -> `< 26`, `~> 25.3.2` -> `< 25.4`.
+  defp pessimistic_upper([major]), do: [major + 1]
+
+  defp pessimistic_upper(segments) do
+    segments
+    |> Enum.drop(-1)
+    |> List.update_at(-1, &(&1 + 1))
+  end
+
+  defp compare_otp(op, result) do
     case op do
       :== -> result == :eq
       :!= -> result != :eq
@@ -606,7 +621,6 @@ defmodule VulnCheck.Semver do
       :<= -> result != :gt
       :> -> result == :gt
       :>= -> result != :lt
-      :~> -> result != :lt and same_major
     end
   end
 end

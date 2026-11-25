@@ -213,6 +213,7 @@ defmodule VulnCheck.Types.EntrypointModel do
             active_plug_parsers: [],
             boot_tree_known: true,
             untracked_fun_sources: false,
+            config_atoms_constructed: false,
             artifact_issues: [],
             notes: []
 
@@ -229,6 +230,7 @@ defmodule VulnCheck.Types.EntrypointModel do
           active_plug_parsers: [String.t()] | :all,
           boot_tree_known: boolean(),
           untracked_fun_sources: boolean(),
+          config_atoms_constructed: boolean(),
           artifact_issues: [{String.t() | nil, String.t()}],
           notes: [String.t()]
         }

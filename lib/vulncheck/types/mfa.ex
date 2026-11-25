@@ -56,13 +56,21 @@ defmodule VulnCheck.Types.MFA do
       iex> VulnCheck.Types.MFA.parse_routine("Ash.read")
       :error
   """
+  @operators MapSet.new(~w(
+    + - * / ++ -- <> |> ~>> <<~ ~> <~ <~> <|>
+    == != === !== =~ < > <= >=
+    && || ! &&& ||| ^^^ ~~~ <<< >>>
+    .. ..// // \\\\
+    and or not in
+  ))
+
   @spec parse_routine(binary()) :: {:ok, t()} | :error
   def parse_routine(routine) when is_binary(routine) do
     routine = routine |> String.trim() |> String.trim("`")
 
     with {:ok, head, arity} <- split_arity(routine),
-         {:ok, module, function} <- split_module_function(head),
-         true <- valid_module?(module) and valid_function?(function) do
+         {:ok, module, function, quoted?} <- split_module_function(head),
+         true <- valid_module?(module) and valid_function?(function, quoted?) do
       {:ok, %__MODULE__{module: normalize_module(module), function: function, arity: arity}}
     else
       _ -> :error
@@ -168,15 +176,23 @@ defmodule VulnCheck.Types.MFA do
   # Elixir notation: Mod.Sub.fun, :erl_mod.fun
   defp split_module_function("'" <> _ = head) do
     case Regex.run(~r/\A'([^']+)':(.+)\z/, head) do
-      [_, module, function] -> {:ok, module, unquote_name(function)}
-      _ -> :error
+      [_, module, raw_fun] ->
+        {function, quoted?} = unwrap_quoted(raw_fun)
+        {:ok, module, function, quoted?}
+
+      _ ->
+        :error
     end
   end
 
   defp split_module_function(":" <> rest) do
     case Regex.run(~r/\A([a-z][A-Za-z0-9_@]*)\.(.+)\z/, rest) do
-      [_, module, function] -> {:ok, module, unquote_name(function)}
-      _ -> erlang_colon_split(":" <> rest)
+      [_, module, raw_fun] ->
+        {function, quoted?} = unwrap_quoted(raw_fun)
+        {:ok, module, function, quoted?}
+
+      _ ->
+        erlang_colon_split(":" <> rest)
     end
   end
 
@@ -190,8 +206,9 @@ defmodule VulnCheck.Types.MFA do
 
   defp erlang_colon_split(head) do
     case String.split(head, ":", parts: 2) do
-      [module, function] when module != "" and function != "" ->
-        {:ok, unquote_name(module), unquote_name(function)}
+      [module, raw_fun] when module != "" and raw_fun != "" ->
+        {function, quoted?} = unwrap_quoted(raw_fun)
+        {:ok, unquote_name(module), function, quoted?}
 
       _ ->
         :error
@@ -199,35 +216,65 @@ defmodule VulnCheck.Types.MFA do
   end
 
   defp elixir_dot_split(head) do
-    parts = String.split(head, ".")
-    {module_parts, [function]} = Enum.split(parts, -1)
+    # Handle operator functions that contain dots (e.g. `Kernel.../2`, `Kernel...///3`).
+    case Regex.run(~r/\A((?:[A-Z][A-Za-z0-9_]*)(?:\.[A-Z][A-Za-z0-9_]*)*)\.(\.\.(?:\/\/)?)\z/, head) do
+      [_, module, op] ->
+        {:ok, module, op, false}
 
-    if module_parts == [] or function == "" do
-      :error
-    else
-      {:ok, Enum.join(module_parts, "."), function}
+      _ ->
+        parts = String.split(head, ".")
+        {module_parts, [raw_fun]} = Enum.split(parts, -1)
+
+        if module_parts == [] or raw_fun == "" do
+          :error
+        else
+          {function, quoted?} = unwrap_quoted(raw_fun)
+          {:ok, Enum.join(module_parts, "."), function, quoted?}
+        end
     end
   end
 
-  defp unquote_name("'" <> rest) do
+  defp unwrap_quoted("'" <> rest) do
     if String.ends_with?(rest, "'") and byte_size(rest) > 1 do
-      binary_part(rest, 0, byte_size(rest) - 1)
+      {binary_part(rest, 0, byte_size(rest) - 1), true}
     else
-      "'" <> rest
+      {"'" <> rest, false}
     end
   end
 
-  defp unquote_name(name), do: name
+  defp unwrap_quoted(name), do: {name, false}
+
+  defp unquote_name(name), do: name |> unwrap_quoted() |> elem(0)
 
   defp elixir_alias?(<<first, _::binary>>) when first in ?A..?Z, do: true
   defp elixir_alias?(_), do: false
 
   defp valid_module?(module) do
     name = normalize_module(module)
-    name != "" and Regex.match?(~r/\A[A-Za-z0-9_.@]+\z/, name)
+
+    name != "" and
+      not String.starts_with?(name, ".") and
+      not String.ends_with?(name, ".") and
+      not String.contains?(name, "..") and
+      Regex.match?(~r/\A[A-Za-z0-9_.@]+\z/, name)
   end
 
-  defp valid_function?(function) do
-    function != "" and Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_@]*[?!]?\z/u, function)
+  defp valid_function?(function, quoted?) do
+    cond do
+      function == "" ->
+        false
+
+      MapSet.member?(@operators, function) ->
+        true
+
+      Regex.match?(~r/\A(?:MACRO-)?[A-Za-z_][A-Za-z0-9_@]*[?!]?\z/u, function) ->
+        true
+
+      quoted? ->
+        String.valid?(function) and not Regex.match?(~r/[\x00-\x1F\x7F]/, function)
+
+      true ->
+        false
+    end
   end
 end

@@ -19,6 +19,7 @@ defmodule VulnCheck.Report.CycloneDX do
   alias VulnCheck.{Cache, Config}
   alias VulnCheck.Report.{Formatter, JSON}
   alias VulnCheck.Types.{Finding, Package, ScanReport, Workspace}
+  alias VulnCheck.Workspace.GitUrl
 
   @not_in_execute_path [
     :function_not_called,
@@ -150,9 +151,9 @@ defmodule VulnCheck.Report.CycloneDX do
   def purl(%Package{source: :git} = pkg) do
     ref = pkg.git_ref || pkg.version
 
-    case github_repo(pkg.git_url) do
+    case GitUrl.github_repo(pkg.git_url) do
       {owner, repo} ->
-        "pkg:github/#{encode_segment(String.downcase(owner))}/#{encode_segment(String.downcase(repo))}@#{encode_segment(ref)}"
+        "pkg:github/#{encode_segment(owner)}/#{encode_segment(repo)}@#{encode_segment(ref)}"
 
       nil ->
         base = "pkg:generic/#{encode_segment(pkg.name)}@#{encode_segment(ref)}"
@@ -162,15 +163,6 @@ defmodule VulnCheck.Report.CycloneDX do
 
   def purl(%Package{} = pkg),
     do: "pkg:generic/#{encode_segment(pkg.name)}@#{encode_segment(pkg.version)}"
-
-  defp github_repo(url) when is_binary(url) do
-    case Regex.run(~r{github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$}, url) do
-      [_, owner, repo] -> {owner, repo}
-      _ -> nil
-    end
-  end
-
-  defp github_repo(_url), do: nil
 
   defp encode_segment(text), do: URI.encode(text, &URI.char_unreserved?/1)
 

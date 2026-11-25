@@ -66,9 +66,13 @@ defmodule VulnCheck.CLI do
     dispatch(argv, ctx)
   end
 
-  defp dispatch([flag | _], ctx) when flag in ["--version", "-v", "version"] do
+  defp dispatch([flag], ctx) when flag in ["--version", "-v", "version"] do
     out(ctx, "vulncheck #{VulnCheck.version()}")
     0
+  end
+
+  defp dispatch([flag | rest], ctx) when flag in ["--version", "-v", "version"] do
+    fail(ctx, "unexpected argument(s) for #{flag}: #{Enum.join(rest, " ")}")
   end
 
   defp dispatch([flag | _], ctx) when flag in ["--help", "-h", "help"] do
@@ -144,14 +148,33 @@ defmodule VulnCheck.CLI do
       |> Enum.filter(& &1)
 
     with :ok <- check_empty_vex(vex, config, ctx),
-         :ok <- write_all(artifacts) do
-      case {primary, config.output} do
-        {"", _} -> :ok
-        {content, nil} -> IO.write(ctx.stdout, content)
-        {content, path} -> write_file(path, content)
-      end
+         :ok <- write_all(artifacts),
+         :ok <- write_primary(primary, config.output, ctx) do
+      maybe_write_github_summary(report, config, ctx)
+      :ok
     end
   end
+
+  defp write_primary("", _output, _ctx), do: :ok
+  defp write_primary(content, nil, ctx), do: IO.write(ctx.stdout, content)
+  defp write_primary(content, path, _ctx), do: write_file(path, content)
+
+  defp maybe_write_github_summary(report, %Config{format: :github} = config, ctx) do
+    case Report.GitHub.write_step_summary(report, config) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        IO.puts(
+          ctx.stderr,
+          "warning: could not write GITHUB_STEP_SUMMARY: #{:file.format_error(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  defp maybe_write_github_summary(_report, _config, _ctx), do: :ok
 
   defp check_empty_vex("", config, ctx) do
     primary_path = if config.format == :openvex, do: config.output
@@ -317,8 +340,15 @@ defmodule VulnCheck.CLI do
 
   defp adapter_lines({configured, families}, packages) do
     configured_lines =
-      for {family, [module | _]} <- Enum.sort(configured),
-          do: "    #{family}: #{module_literal(module)},\n"
+      for {family, modules} <- Enum.sort(configured), modules != [] do
+        value =
+          case modules do
+            [module] -> module_literal(module)
+            many -> "[" <> Enum.map_join(many, ", ", &module_literal/1) <> "]"
+          end
+
+        "    #{family}: #{value},\n"
+      end
 
     hints =
       for family <- families, not Map.has_key?(configured, family) do
@@ -424,10 +454,127 @@ defmodule VulnCheck.CLI do
   end
 
   defp feeds(sub, argv, ctx) do
-    case Config.from_cli_and_file(argv, cwd: ctx.cwd, allow_args: sub == "import") do
+    case feeds_config(sub, argv, ctx) do
       {:ok, config} -> feeds_command(sub, config, ctx)
       {:error, reason} -> fail(ctx, describe_error(reason))
     end
+  end
+
+  # Cache-management subcommands (`feeds sync|status|bundle|import|prune`) must
+  # never inherit scan-specific `output` or `offline` settings from an ambient
+  # `.vulncheck.exs` in the working directory; only explicit CLI flags apply
+  # (with `cache_dir` / `cache_ttl_seconds` / `max_feed_age_seconds` honored
+  # from `--config` or `.vulncheck.exs` when valid).
+  defp feeds_config(sub, argv, ctx) do
+    case OptionParser.parse(argv, strict: Config.switches(), aliases: Config.aliases()) do
+      {parsed, args, []} ->
+        with :ok <- check_feeds_args(sub, args),
+             {:ok, base} <- feeds_base_config(parsed, ctx.cwd) do
+          apply_feeds_cli(base, parsed, ctx.cwd, args)
+        end
+
+      {_parsed, _args, invalid} ->
+        {:error, "invalid option(s): " <> format_invalid_opts(invalid)}
+    end
+  end
+
+  defp check_feeds_args("import", _args), do: :ok
+  defp check_feeds_args(_sub, []), do: :ok
+
+  defp check_feeds_args(_sub, args),
+    do: {:error, "unexpected argument(s): " <> Enum.join(args, " ")}
+
+  defp feeds_base_config(parsed, cwd) do
+    case Keyword.fetch(parsed, :config) do
+      {:ok, explicit} ->
+        project_dir = Path.expand(Keyword.get(parsed, :project_dir, "."), cwd)
+        base = %Config{project_dir: project_dir, config_file: Path.expand(explicit, cwd)}
+
+        with {:ok, loaded} <- Config.load_file(base) do
+          {:ok,
+           %Config{
+             project_dir: project_dir,
+             config_file: loaded.config_file,
+             cache_dir: loaded.cache_dir,
+             cache_ttl_seconds: loaded.cache_ttl_seconds,
+             max_feed_age_seconds: loaded.max_feed_age_seconds
+           }}
+        end
+
+      :error ->
+        project_dir = Path.expand(Keyword.get(parsed, :project_dir, "."), cwd)
+        base = %Config{project_dir: project_dir}
+
+        case Config.load_file(base) do
+          {:ok, loaded} ->
+            {:ok,
+             %Config{
+               project_dir: project_dir,
+               cache_dir: loaded.cache_dir,
+               cache_ttl_seconds: loaded.cache_ttl_seconds,
+               max_feed_age_seconds: loaded.max_feed_age_seconds
+             }}
+
+          {:error, _} ->
+            {:ok, base}
+        end
+    end
+  end
+
+  defp apply_feeds_cli(base, parsed, cwd, args) do
+    expanded =
+      Enum.map(parsed, fn
+        {key, value} when key in [:output, :cache_dir] and value != "" ->
+          {key, Path.expand(value, cwd)}
+
+        other ->
+          other
+      end)
+
+    Enum.reduce_while(expanded, {:ok, %{base | args: args}}, fn
+      {:output, ""}, _ ->
+        {:halt, {:error, "--output requires a non-empty value"}}
+
+      {:output, value}, {:ok, acc} ->
+        {:cont, {:ok, %{acc | output: value}}}
+
+      {:cache_dir, ""}, _ ->
+        {:halt, {:error, "--cache-dir requires a non-empty value"}}
+
+      {:cache_dir, value}, {:ok, acc} ->
+        {:cont, {:ok, %{acc | cache_dir: value}}}
+
+      {:cache_ttl, value}, {:ok, acc} when value >= 0 ->
+        {:cont, {:ok, %{acc | cache_ttl_seconds: value}}}
+
+      {:cache_ttl, _}, _ ->
+        {:halt, {:error, "--cache-ttl must be a non-negative integer"}}
+
+      {:max_feed_age, value}, {:ok, acc} when value >= 0 ->
+        {:cont, {:ok, %{acc | max_feed_age_seconds: value}}}
+
+      {:max_feed_age, _}, _ ->
+        {:halt, {:error, "--max-feed-age must be a non-negative integer"}}
+
+      {:offline, value}, {:ok, acc} ->
+        {:cont, {:ok, %{acc | offline: value}}}
+
+      {:quiet, value}, {:ok, acc} ->
+        {:cont, {:ok, %{acc | quiet: value}}}
+
+      {:color, value}, {:ok, acc} ->
+        {:cont, {:ok, %{acc | color: value}}}
+
+      {_other, _value}, {:ok, acc} ->
+        {:cont, {:ok, acc}}
+    end)
+  end
+
+  defp format_invalid_opts(invalid) do
+    Enum.map_join(invalid, ", ", fn
+      {option, nil} -> option
+      {option, value} -> "#{option} #{value}"
+    end)
   end
 
   defp feeds_command("sync", %Config{offline: true}, ctx),
@@ -509,7 +656,8 @@ defmodule VulnCheck.CLI do
 
   defp feeds_command("import", config, ctx) do
     with {:ok, file} <- single_arg(config.args, "feeds import requires exactly one bundle file"),
-         {:ok, manifest} <- Cache.import_bundle(file, %{config | args: []}) do
+         path = Path.expand(file, ctx.cwd),
+         {:ok, manifest} <- Cache.import_bundle(path, %{config | args: []}) do
       out(
         ctx,
         "Imported #{file}: #{length(manifest["files"])} files, " <>
@@ -664,7 +812,30 @@ defmodule VulnCheck.CLI do
 
   # -- helpers -----------------------------------------------------------------
 
-  defp help?(argv), do: Enum.any?(argv, &(&1 in ["--help", "-h"]))
+  @value_flags (
+                 long =
+                   for {key, type} <- Config.switches(), type in [:string, :integer] do
+                     "--" <> String.replace(Atom.to_string(key), "_", "-")
+                   end
+
+                 short =
+                   for {alias_key, target} <- Config.aliases(),
+                       Keyword.get(Config.switches(), target) in [:string, :integer] do
+                     "-" <> Atom.to_string(alias_key)
+                   end
+
+                 MapSet.new(long ++ short)
+               )
+
+  defp help?([]), do: false
+  defp help?(["--" | _]), do: false
+  defp help?([flag | _]) when flag in ["--help", "-h"], do: true
+
+  defp help?([flag, value | rest]) do
+    if MapSet.member?(@value_flags, flag), do: help?(rest), else: help?([value | rest])
+  end
+
+  defp help?([_other | rest]), do: help?(rest)
 
   defp out(ctx, text), do: IO.puts(ctx.stdout, text)
 

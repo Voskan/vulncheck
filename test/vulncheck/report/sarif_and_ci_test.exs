@@ -279,16 +279,21 @@ defmodule VulnCheck.Report.SarifAndCiTest do
       {:ok, dir: dir}
     end
 
-    test "prints annotations and appends the job summary", %{dir: dir} do
+    test "prints annotations cleanly without side effects and write_step_summary appends the job summary",
+         %{dir: dir} do
       summary = Path.join(dir, "summary.md")
       File.write!(summary, "# Earlier step\n")
       System.put_env("GITHUB_STEP_SUMMARY", summary)
 
-      output =
-        GitHub.render(
-          %{report() | policy_violations: ["new suppression of X added since main"]},
-          %Config{}
-        )
+      report_with_violation = %{
+        report()
+        | policy_violations: ["new suppression of X added since main"]
+      }
+
+      output = GitHub.render(report_with_violation, %Config{})
+
+      # render/2 must be pure and not touch GITHUB_STEP_SUMMARY
+      assert File.read!(summary) == "# Earlier step\n"
 
       lines = String.split(output, "\n", trim: true)
 
@@ -312,6 +317,7 @@ defmodule VulnCheck.Report.SarifAndCiTest do
       assert notice =~
                "::notice title=VulnCheck::1 reachable, 1 potentially reachable, 1 unreachable, 0 retired"
 
+      assert :ok == GitHub.write_step_summary(report_with_violation, %Config{})
       written = File.read!(summary)
       assert String.starts_with?(written, "# Earlier step\n## VulnCheck report")
       assert written =~ "| Reachable | 1 |"

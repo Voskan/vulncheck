@@ -116,16 +116,16 @@ defmodule VulnCheck.Workspace.RebarLock do
         ]
 
       {:tuple, [{:atom, "git"}, url, ref]} when is_binary(url) ->
-        sha = git_ref(ref)
+        {version, git_ref} = git_version_and_ref(ref)
 
         [
           %Package{
             name: name,
-            version: String.slice(sha || "0.0.0", 0, 12),
+            version: version,
             source: :git,
             scope: :prod,
             git_url: url,
-            git_ref: sha,
+            git_ref: git_ref,
             otp_app: name,
             lock_level: lock_level
           }
@@ -138,11 +138,17 @@ defmodule VulnCheck.Workspace.RebarLock do
 
   defp entry(_), do: []
 
-  defp git_ref({:tuple, [{:atom, kind}, value]})
-       when kind in ["ref", "tag", "branch"] and is_binary(value),
-       do: value
+  defp git_version_and_ref({:tuple, [{:atom, "tag"}, value]}) when is_binary(value) do
+    trimmed = String.trim_leading(value, "v")
+    {if(trimmed == "", do: "0.0.0", else: trimmed), value}
+  end
 
-  defp git_ref(_), do: nil
+  defp git_version_and_ref({:tuple, [{:atom, kind}, value]})
+       when kind in ["ref", "branch"] and is_binary(value) do
+    {String.slice(value, 0, 12), value}
+  end
+
+  defp git_version_and_ref(_), do: {"0.0.0", nil}
 
   defp hash_table(extra, key) do
     extra

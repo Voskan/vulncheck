@@ -29,7 +29,7 @@ At the same time, **a naive static call graph is unsafe on the BEAM**: HTTP serv
 
 ## Design Highlights
 
-- **Zero Runtime Dependencies:** Built entirely on Elixir and Erlang/OTP standard libraries (`:beam_lib`, `:digraph`, `:ets`, `:httpc`, `:ssl`, `:public_key`, `:crypto`, `:zip`, `JSON`). Adding a security scanner never expands your supply-chain attack surface.
+- **Zero Runtime Dependencies:** Built entirely on Elixir and Erlang/OTP standard libraries (`:beam_lib`, `:persistent_term`, `:httpc`, `:ssl`, `:public_key`, `:crypto`, `:zip`, `JSON`), using an immutable in-memory call graph. Adding a security scanner never expands your supply-chain attack surface.
 - **Post-Macro `.beam` Analysis:** Inspects compiled `:abstract_code` chunks inside `.beam` artifacts—after `use Phoenix.Router`, `plug Plug.Parsers`, `Ecto.Query`, `Ash`, and `Oban.Worker` macros have already been expanded by the compiler—preserving exact `file:line` call-site locations.
 - **Dual-Feed Advisory Intelligence:** Combines the OSV.dev Hex feed with EEF CNA CVE 5.1 records (`cna.erlef.org` / MITRE CVE API) to recover exact `programRoutines` MFA targets, affected modules, and OTP runtime constraints, plus Hex.pm package retirement checks.
 - **Sound Three-Tier Verdicts:**
@@ -94,7 +94,7 @@ vulncheck --project-dir /path/to/service
 > Illustrative output for a Phoenix/Ash application. For measured precision, recall, and noise-reduction figures across six real-world BEAM projects, see [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 ```text
-VulnCheck 1.0.2 — BEAM Reachability Vulnerability Audit
+VulnCheck 1.0.3 — BEAM Reachability Vulnerability Audit
 Target: my_fintech_api (mix, Elixir 1.18.2 / OTP 27.2, env: prod)
 Lockfile: 74 prod packages (19 dev/test excluded) · Scan time: 142 ms (cached)
 
@@ -167,7 +167,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18.2"
-      - uses: Voskan/vulncheck@v1.0.2
+      - uses: Voskan/vulncheck@v1.0.3
         with:
           fail-on: potentially_reachable
           upload-sarif: true

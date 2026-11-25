@@ -110,7 +110,7 @@ defmodule VulnCheck.Entrypoints do
     configured =
       Enum.uniq(adapters.config_refs ++ Enum.flat_map(adapters.configured, &elem(&1, 1)))
 
-    synthetic = synthesize(graph, roots, configured)
+    synthetic = synthesize(graph, roots, configured, adapters.config_dynamic?)
 
     model = %EntrypointModel{
       roots: roots,
@@ -125,6 +125,7 @@ defmodule VulnCheck.Entrypoints do
       active_plug_parsers: synthetic.active_plug_parsers,
       boot_tree_known: otp.boot_tree_known,
       untracked_fun_sources: adapters.untracked_fun_sources,
+      config_atoms_constructed: adapters.config_dynamic_modules?,
       artifact_issues:
         for(
           {package, app} <- otp.missing_packages,
@@ -147,10 +148,15 @@ defmodule VulnCheck.Entrypoints do
   @refine_rounds 10
   @refined_modules ["Elixir.Plug.Parsers", "Elixir.Tesla"]
 
-  defp synthesize(graph, roots, configured) do
-    if needs_refinement?(graph),
-      do: grow(graph, roots, configured, MapSet.new(), nil, @refine_rounds),
-      else: Behaviours.synthesize(graph, configured_modules: configured)
+  defp synthesize(graph, roots, configured, config_dynamic?) do
+    if needs_refinement?(graph) do
+      grow(graph, roots, configured, config_dynamic?, MapSet.new(), nil, @refine_rounds)
+    else
+      Behaviours.synthesize(graph,
+        configured_modules: configured,
+        config_dynamic: config_dynamic?
+      )
+    end
   end
 
   defp needs_refinement?(%CallGraph{modules: modules} = graph) do
@@ -161,17 +167,26 @@ defmodule VulnCheck.Entrypoints do
       end)
   end
 
-  defp grow(graph, _roots, configured, _reachable, _previous, 0),
-    do: Behaviours.synthesize(graph, configured_modules: configured)
+  defp grow(graph, _roots, configured, config_dynamic?, _reachable, _previous, 0),
+    do:
+      Behaviours.synthesize(graph,
+        configured_modules: configured,
+        config_dynamic: config_dynamic?
+      )
 
-  defp grow(graph, roots, configured, reachable, previous, rounds) do
-    synthetic = Behaviours.synthesize(graph, reachable: reachable, configured_modules: configured)
+  defp grow(graph, roots, configured, config_dynamic?, reachable, previous, rounds) do
+    synthetic =
+      Behaviours.synthesize(graph,
+        reachable: reachable,
+        configured_modules: configured,
+        config_dynamic: config_dynamic?
+      )
 
     if previous != nil and synthetic.state == previous.state do
       synthetic
     else
       next = graph |> CallGraph.add_edges(synthetic.edges) |> CallGraph.reachable(roots)
-      grow(graph, roots, configured, next, synthetic, rounds - 1)
+      grow(graph, roots, configured, config_dynamic?, next, synthetic, rounds - 1)
     end
   end
 

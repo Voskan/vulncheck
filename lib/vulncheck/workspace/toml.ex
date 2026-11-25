@@ -53,7 +53,7 @@ defmodule VulnCheck.Workspace.Toml do
       true ->
         {keys, rest} = read_key_path(rest)
         rest = expect(skip_inline_ws(rest), "=")
-        {value, rest} = parse_value(skip_inline_ws(rest))
+        {value, rest} = parse_value(skip_inline_ws(rest), 0)
         doc = put_value(doc, path, keys, value)
         parse_lines(rest, doc, path)
     end
@@ -100,54 +100,153 @@ defmodule VulnCheck.Workspace.Toml do
     if key == "", do: fail("expected key"), else: {key, rest}
   end
 
-  defp parse_value(source) do
+  @max_depth 128
+
+  defp parse_value(_source, depth) when depth > @max_depth,
+    do: fail("maximum nesting depth exceeded")
+
+  defp parse_value(source, depth) do
     case source do
-      "\"\"\"" <> rest -> read_multiline(rest, "\"\"\"")
-      "'''" <> rest -> read_multiline(rest, "'''")
+      "\"\"\"" <> rest -> read_multiline_basic(strip_leading_newline(rest), [])
+      "'''" <> rest -> read_multiline_literal(strip_leading_newline(rest), [])
       "\"" <> rest -> read_basic_string(rest, [])
       "'" <> rest -> read_literal_string(rest)
-      "[" <> rest -> read_array(rest, [])
-      "{" <> rest -> read_inline_table(rest, %{})
+      "[" <> rest -> read_array(rest, [], depth + 1)
+      "{" <> rest -> read_inline_table(rest, %{}, depth + 1)
       _ -> read_scalar(source)
     end
   end
 
+  defp strip_leading_newline(<<"\r\n", rest::binary>>), do: rest
+  defp strip_leading_newline(<<"\n", rest::binary>>), do: rest
+  defp strip_leading_newline(rest), do: rest
+
   defp read_basic_string(<<"\"", rest::binary>>, acc),
     do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
 
-  defp read_basic_string(<<"\\", c, rest::binary>>, acc) do
-    char =
-      case c do
-        ?n -> "\n"
-        ?t -> "\t"
-        ?r -> "\r"
-        ?" -> "\""
-        ?\\ -> "\\"
-        other -> <<?\\, other>>
-      end
-
+  defp read_basic_string(<<"\\", rest::binary>>, acc) do
+    {char, rest} = decode_toml_escape(rest)
     read_basic_string(rest, [char | acc])
   end
 
-  defp read_basic_string(<<"\n", _::binary>>, _acc), do: fail("newline in string")
+  defp read_basic_string(<<c, _::binary>>, _acc) when c in [?\n, ?\r],
+    do: fail("newline in string")
+
   defp read_basic_string(<<c, rest::binary>>, acc), do: read_basic_string(rest, [<<c>> | acc])
   defp read_basic_string("", _acc), do: fail("unterminated string")
 
   defp read_literal_string(source) do
     case :binary.split(source, "'") do
-      [value, rest] -> {value, rest}
-      _ -> fail("unterminated literal string")
+      [value, rest] ->
+        if String.contains?(value, ["\n", "\r"]),
+          do: fail("newline in literal string"),
+          else: {value, rest}
+
+      _ ->
+        fail("unterminated literal string")
     end
   end
 
-  defp read_multiline(source, delimiter) do
-    case :binary.split(source, delimiter) do
-      [value, rest] -> {String.trim_leading(value, "\n"), rest}
-      _ -> fail("unterminated multi-line string")
+  defp read_multiline_basic(<<"\"\"\"\"\"\"", _::binary>>, _acc),
+    do: fail("too many closing quotes in multi-line string")
+
+  defp read_multiline_basic(<<"\"\"\"\"\"", rest::binary>>, acc),
+    do: {["\"\"" | acc] |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp read_multiline_basic(<<"\"\"\"\"", rest::binary>>, acc),
+    do: {["\"" | acc] |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp read_multiline_basic(<<"\"\"\"", rest::binary>>, acc),
+    do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp read_multiline_basic(<<"\\", rest::binary>>, acc) do
+    case trim_line_ending_backslash(rest) do
+      {:trimmed, rem} ->
+        read_multiline_basic(rem, acc)
+
+      :not_line_ending ->
+        {char, rem} = decode_toml_escape(rest)
+        read_multiline_basic(rem, [char | acc])
     end
   end
 
-  defp read_array(source, acc) do
+  defp read_multiline_basic(<<c, rest::binary>>, acc),
+    do: read_multiline_basic(rest, [<<c>> | acc])
+
+  defp read_multiline_basic("", _acc), do: fail("unterminated multi-line string")
+
+  defp read_multiline_literal(<<"''''''", _::binary>>, _acc),
+    do: fail("too many closing quotes in multi-line literal string")
+
+  defp read_multiline_literal(<<"'''''", rest::binary>>, acc),
+    do: {["''" | acc] |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp read_multiline_literal(<<"''''", rest::binary>>, acc),
+    do: {["'" | acc] |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp read_multiline_literal(<<"'''", rest::binary>>, acc),
+    do: {acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
+
+  defp read_multiline_literal(<<c, rest::binary>>, acc),
+    do: read_multiline_literal(rest, [<<c>> | acc])
+
+  defp read_multiline_literal("", _acc), do: fail("unterminated multi-line string")
+
+  defp trim_line_ending_backslash(rest) do
+    case skip_inline_ws(rest) do
+      <<"\r\n", rem::binary>> -> {:trimmed, skip_multiline_ws(rem)}
+      <<"\n", rem::binary>> -> {:trimmed, skip_multiline_ws(rem)}
+      _ -> :not_line_ending
+    end
+  end
+
+  defp skip_multiline_ws(<<c, rest::binary>>) when c in [?\s, ?\t, ?\n, ?\r],
+    do: skip_multiline_ws(rest)
+
+  defp skip_multiline_ws(rest), do: rest
+
+  defp decode_toml_escape(<<"b", rest::binary>>), do: {<<8>>, rest}
+  defp decode_toml_escape(<<"t", rest::binary>>), do: {"\t", rest}
+  defp decode_toml_escape(<<"n", rest::binary>>), do: {"\n", rest}
+  defp decode_toml_escape(<<"f", rest::binary>>), do: {<<12>>, rest}
+  defp decode_toml_escape(<<"r", rest::binary>>), do: {"\r", rest}
+  defp decode_toml_escape(<<"\"", rest::binary>>), do: {"\"", rest}
+  defp decode_toml_escape(<<"\\", rest::binary>>), do: {"\\", rest}
+
+  defp decode_toml_escape(<<"u", hex::binary-size(4), rest::binary>>),
+    do: {decode_unicode_hex!(hex), rest}
+
+  defp decode_toml_escape(<<"U", hex::binary-size(8), rest::binary>>),
+    do: {decode_unicode_hex!(hex), rest}
+
+  defp decode_toml_escape(<<c, _::binary>>) when c in [?u, ?U],
+    do: fail("invalid unicode escape")
+
+  defp decode_toml_escape(<<c, rest::binary>>), do: {<<?\\, c>>, rest}
+  defp decode_toml_escape(""), do: fail("unterminated escape sequence")
+
+  defp decode_unicode_hex!(hex) do
+    if hex_digits?(hex) do
+      case Integer.parse(hex, 16) do
+        {cp, ""} when cp in 0..0x10FFFF and cp not in 0xD800..0xDFFF -> <<cp::utf8>>
+        _ -> fail("invalid unicode escape")
+      end
+    else
+      fail("invalid unicode escape")
+    end
+  end
+
+  defp hex_digits?(<<c, rest::binary>>)
+       when c in ?0..?9 or c in ?a..?f or c in ?A..?F,
+       do: hex_digits?(rest)
+
+  defp hex_digits?(<<>>), do: true
+  defp hex_digits?(_), do: false
+
+  defp read_array(_source, _acc, depth) when depth > @max_depth,
+    do: fail("maximum nesting depth exceeded")
+
+  defp read_array(source, acc, depth) do
     rest = skip_ws_and_comments(source)
 
     case rest do
@@ -155,18 +254,21 @@ defmodule VulnCheck.Workspace.Toml do
         {Enum.reverse(acc), rest}
 
       _ ->
-        {value, rest} = parse_value(rest)
+        {value, rest} = parse_value(rest, depth)
         rest = skip_ws_and_comments(rest)
 
         case rest do
-          "," <> rest -> read_array(rest, [value | acc])
+          "," <> rest -> read_array(rest, [value | acc], depth)
           "]" <> rest -> {Enum.reverse([value | acc]), rest}
           _ -> fail("expected ',' or ']' in array")
         end
     end
   end
 
-  defp read_inline_table(source, acc) do
+  defp read_inline_table(_source, _acc, depth) when depth > @max_depth,
+    do: fail("maximum nesting depth exceeded")
+
+  defp read_inline_table(source, acc, depth) do
     rest = skip_inline_ws(source)
 
     case rest do
@@ -176,11 +278,11 @@ defmodule VulnCheck.Workspace.Toml do
       _ ->
         {keys, rest} = read_key_path(rest)
         rest = expect(skip_inline_ws(rest), "=")
-        {value, rest} = parse_value(skip_inline_ws(rest))
+        {value, rest} = parse_value(skip_inline_ws(rest), depth)
         acc = deep_put(acc, keys, value)
 
         case skip_inline_ws(rest) do
-          "," <> rest -> read_inline_table(rest, acc)
+          "," <> rest -> read_inline_table(rest, acc, depth)
           "}" <> rest -> {acc, rest}
           _ -> fail("expected ',' or '}' in inline table")
         end

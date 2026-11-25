@@ -71,7 +71,7 @@ median (with min–max spread) of 5 fresh-process runs after
 | Schedulers | 18 |
 | Elixir | 1.20.5 |
 | Erlang/OTP | 29 (ERTS 17.1.1) |
-| VulnCheck | 1.0.0 |
+| VulnCheck | 1.0.3 |
 
 10 measured iterations per stage after one warm-up run.
 

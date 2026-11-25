@@ -51,7 +51,7 @@
 | `min_severity` | atom | `:low` | `:low`, `:medium`, `:high` or `:critical`; findings below it never fail the run. Severity `none` (CVSS 0.0) counts as `low`, and `unknown` (no CVSS data) as `critical`. |
 | `fail_on_retired` | boolean | `true` | Retired Hex releases fail the run. |
 | `check_retired` | boolean | `true` | Query Hex.pm for retired releases at all. |
-| `show_unreachable` | boolean | `false` | Detail unreachable advisories in terminal and Markdown output. |
+| `show_unreachable` | boolean | `false` | Detail unreachable advisories in terminal, SARIF, GitHub, and GitLab output (`markdown` always folds unreachable advisories into `<details>`). |
 | `otp_version` | string \| integer \| `nil` | running OTP | OTP release the project is deployed on, for OTP-gated advisories. |
 | `offline` | boolean | `false` | Never use the network; use the cache or a bundle. |
 | `bundle` | string \| `nil` | `nil` | Advisory bundle imported before the scan. |
@@ -144,7 +144,7 @@ Security teams need auditable, time-bounded exceptions rather than permanent sil
 | `--no-color` | Disable ANSI colors (also `NO_COLOR=1`). |
 | `-q`, `--quiet` | Hide warnings. |
 
-`mix vulncheck.init` accepts `--project-dir` and `--force` (overwrite an existing file). `mix vulncheck.explain` accepts `--project-dir`, `--offline` and `--bundle`.
+`mix vulncheck.init` accepts `--project-dir` and `--force` (overwrite an existing file). `mix vulncheck.explain` accepts all standard scan flags (including `--project-dir`, `--config`, `--env`, `--offline`, `--bundle`, `--cache-dir`, `--otp-version`, `--diff`, and `--baseline`).
 
 ### Offline Feed Snapshots
 
@@ -201,7 +201,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18"
-      - uses: Voskan/vulncheck@v1.0.2
+      - uses: Voskan/vulncheck@v1.0.3
         with:
           fail-on: potentially_reachable
           upload-sarif: true
@@ -228,7 +228,7 @@ jobs:
         with:
           otp-version: "27.2"
           elixir-version: "1.18"
-      - uses: Voskan/vulncheck@v1.0.2
+      - uses: Voskan/vulncheck@v1.0.3
         with:
           fail-on: potentially_reachable
           diff: origin/${{ github.base_ref }}
@@ -270,7 +270,7 @@ The image runs the escript as an unprivileged user on an Erlang runtime with `gi
 ```yaml
 repos:
   - repo: https://github.com/Voskan/vulncheck
-    rev: v1.0.2
+    rev: v1.0.3
     hooks:
       - id: vulncheck
 ```

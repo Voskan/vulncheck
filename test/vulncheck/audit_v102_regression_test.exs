@@ -1272,7 +1272,7 @@ defmodule VulnCheck.AuditV102RegressionTest do
       assert extra_proj.deps_parsed == true
       extra_by_name = Map.new(extra_proj.deps, &{&1.name, &1})
       assert extra_by_name["base_pkg"].requirement == "2.0.0"
-      assert extra_by_name["lit_dev"].only == ["dev"]
+      assert extra_by_name["lit_dev"].only == :all
       assert extra_by_name["cond_test"].only == ["test"]
       assert "prod" in extra_by_name["cond_other"].only
       refute "prod" in extra_by_name["non_prod_a"].only
@@ -2544,7 +2544,8 @@ defmodule VulnCheck.AuditV102RegressionTest do
       c_proj = MixProject.analyze(c_ast, "mix.exs")
       assert c_proj.app == "combo"
       assert c_proj.version == "2.0.0"
-      assert c_proj.deps_parsed == true
+      # lit_only_dev(:prod) has no matching clause -> conservatively marks deps_parsed: false
+      assert c_proj.deps_parsed == false
 
       by_name = Map.new(c_proj.deps, &{&1.name, &1})
       assert by_name["bare_dev"].only == ["dev"]

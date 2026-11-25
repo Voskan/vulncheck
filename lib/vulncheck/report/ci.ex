@@ -5,8 +5,9 @@ defmodule VulnCheck.Report.GitHub do
   Prints workflow commands that GitHub turns into pull request annotations:
   `::error` for reachable findings, `::warning` for potentially reachable
   findings and retired releases (`::notice` for unreachable ones with
-  `--show-unreachable`). When `GITHUB_STEP_SUMMARY` is set, the Markdown
-  report is appended to the job summary as well.
+  `--show-unreachable`). `render/2` is pure and returns only the workflow
+  command text; the CLI calls `write_step_summary/2` separately to append
+  the Markdown report to `GITHUB_STEP_SUMMARY` when set.
   """
 
   @behaviour VulnCheck.Report.Formatter
@@ -17,8 +18,6 @@ defmodule VulnCheck.Report.GitHub do
 
   @impl true
   def render(%ScanReport{} = report, %Config{} = config) do
-    write_step_summary(report, config)
-
     commands =
       Enum.map(Formatter.reported(report.findings, config.show_unreachable), &command(&1, report))
 

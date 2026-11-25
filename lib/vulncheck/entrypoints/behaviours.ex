@@ -126,21 +126,32 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     resolved = Map.merge(parser_resolved, protocol_resolved)
 
     configured = Keyword.get(opts, :configured_modules, [])
+    configured_set = MapSet.new(configured)
+    config_dynamic? = Keyword.get(opts, :config_dynamic, false)
     named = named_modules(sorted, reachable, configured)
 
-    {controller_edges, controller_resolved_calls, controller_state} =
-      phoenix_controllers(sorted, exports, reachable)
+    router_dispatch = phoenix_router_dispatch(modules, exports, named)
 
     dispatch =
       parser_dispatch ++
         behaviour_dispatch(sorted, exports) ++
         tesla_stack(sorted, modules, exports, named, configured) ++
-        phoenix_router_dispatch(modules, exports, named)
+        router_dispatch
 
-    resolved_calls =
-      dispatch
-      |> MapSet.new(&elem(&1, 0))
-      |> MapSet.union(controller_resolved_calls)
+    preliminary_resolved_calls = MapSet.new(dispatch, &elem(&1, 0))
+
+    {controller_edges, controller_resolved_calls, controller_state} =
+      phoenix_controllers(
+        sorted,
+        exports,
+        reachable,
+        resolved,
+        preliminary_resolved_calls,
+        configured_set,
+        config_dynamic?
+      )
+
+    resolved_calls = MapSet.union(preliminary_resolved_calls, controller_resolved_calls)
 
     plug_parsers_loaded? = Map.has_key?(modules, "Elixir.Plug.Parsers")
 
@@ -348,6 +359,54 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     end
   end
 
+  @dynamic_module_builders MapSet.new([
+                             {"Elixir.Module", "concat", 1},
+                             {"Elixir.Module", "concat", 2},
+                             {"Elixir.Module", "safe_concat", 1},
+                             {"Elixir.Module", "safe_concat", 2},
+                             {"Elixir.String", "to_atom", 1},
+                             {"Elixir.String", "to_existing_atom", 1},
+                             {"Elixir.List", "to_atom", 1},
+                             {"Elixir.List", "to_existing_atom", 1},
+                             {"erlang", "binary_to_atom", 1},
+                             {"erlang", "binary_to_atom", 2},
+                             {"erlang", "binary_to_existing_atom", 1},
+                             {"erlang", "binary_to_existing_atom", 2},
+                             {"erlang", "list_to_atom", 1},
+                             {"erlang", "list_to_existing_atom", 1},
+                             {"erlang", "binary_to_term", 1},
+                             {"erlang", "binary_to_term", 2},
+                             {"Elixir.Plug.Crypto", "non_executable_binary_to_term", 1},
+                             {"Elixir.Plug.Crypto", "non_executable_binary_to_term", 2},
+                             {"Elixir.Code", "eval_string", 1},
+                             {"Elixir.Code", "eval_string", 2},
+                             {"Elixir.Code", "eval_string", 3},
+                             {"Elixir.Code", "eval_quoted", 1},
+                             {"Elixir.Code", "eval_quoted", 2},
+                             {"Elixir.Code", "eval_quoted", 3},
+                             {"file", "consult", 1},
+                             {"erl_eval", "exprs", 2},
+                             {"erl_eval", "exprs", 3},
+                             {"erl_eval", "exprs", 4},
+                             {"erl_eval", "expr", 2},
+                             {"erl_eval", "expr", 3},
+                             {"erl_eval", "expr", 4},
+                             {"erl_eval", "expr", 5}
+                           ])
+
+  @config_env_readers MapSet.new([
+                        {"Elixir.Application", "get_env", 2},
+                        {"Elixir.Application", "get_env", 3},
+                        {"Elixir.Application", "fetch_env", 2},
+                        {"Elixir.Application", "fetch_env!", 2},
+                        {"Elixir.Application", "get_all_env", 1},
+                        {"application", "get_env", 1},
+                        {"application", "get_env", 2},
+                        {"application", "get_env", 3},
+                        {"application", "get_all_env", 0},
+                        {"application", "get_all_env", 1}
+                      ])
+
   # `use Phoenix.Controller` implements `action/2` as
   # `apply(__MODULE__, action_name(conn), [conn, conn.params])`. When every
   # reachable router/plug site targeting `ctrl` passes a literal exported
@@ -355,16 +414,24 @@ defmodule VulnCheck.Entrypoints.Behaviours do
   # resolve `action/2`'s dynamic call. If no sites are known or any site is
   # dynamic, leave `action/2` unresolved so `dynamic_edges/4` falls back
   # soundly to `:dynamic_candidate` across all `/2` exports.
-  defp phoenix_controllers(sorted, exports, reachable) do
+  defp phoenix_controllers(
+         sorted,
+         exports,
+         reachable,
+         resolved_modules,
+         resolved_calls,
+         configured_set,
+         config_dynamic?
+       ) do
     in_scope? = fn caller -> reachable == :all or MapSet.member?(reachable, caller) end
 
-    controller_sites =
+    {controller_sites, plug_tuple_callers} =
       for %ModuleSummary{init_literals: literals} <- sorted,
           {caller, %MFA{module: ctrl, function: fun, arity: 2}, args, file, line} <- literals,
           fun in ["call", "__plug_tuple__"],
           in_scope?.(caller),
-          reduce: %{} do
-        acc ->
+          reduce: {%{}, MapSet.new()} do
+        {sites_acc, tuple_acc} ->
           opt =
             case {fun, args} do
               {"call", [_conn, opt]} -> opt
@@ -372,8 +439,48 @@ defmodule VulnCheck.Entrypoints.Behaviours do
               _ -> :dynamic
             end
 
-          Map.update(acc, ctrl, [{opt, file, line}], &[{opt, file, line} | &1])
+          tuple_acc =
+            if fun == "__plug_tuple__" and opt != :dynamic,
+              do: MapSet.put(tuple_acc, {caller, ctrl}),
+              else: tuple_acc
+
+          {Map.update(sites_acc, ctrl, [{opt, file, line}], &[{opt, file, line} | &1]), tuple_acc}
       end
+
+    has_unresolved_plug_dispatch? =
+      Enum.any?(sorted, fn %ModuleSummary{module: mod, dynamic_dispatches: dcalls} ->
+        not Map.has_key?(resolved_modules, mod) and
+          Enum.any?(dcalls, fn
+            %DynamicCall{caller: caller, known_module: nil, kind: :module_function} = dc ->
+              in_scope?.(caller) and
+                not MapSet.member?(resolved_calls, dc) and
+                dc.known_function in [nil, "call", "action"] and
+                DynamicCall.arity_compatible?(dc, 2)
+
+            _ ->
+              false
+          end)
+      end)
+
+    has_dynamic_atom_builder? =
+      has_unresolved_plug_dispatch? and
+        Enum.any?(sorted, fn %ModuleSummary{module: mod, package: pkg, edges: edges} ->
+          is_nil(pkg) and not Map.has_key?(resolved_modules, mod) and
+            Enum.any?(edges, fn %CallEdge{from: from, to: to} ->
+              in_scope?.(from) and
+                MapSet.member?(@dynamic_module_builders, {to.module, to.function, to.arity})
+            end)
+        end)
+
+    has_dynamic_config_reader? =
+      has_unresolved_plug_dispatch? and config_dynamic? and
+        Enum.any?(sorted, fn %ModuleSummary{module: mod, package: pkg, edges: edges} ->
+          is_nil(pkg) and not Map.has_key?(resolved_modules, mod) and
+            Enum.any?(edges, fn %CallEdge{from: from, to: to} ->
+              in_scope?.(from) and
+                MapSet.member?(@config_env_readers, {to.module, to.function, to.arity})
+            end)
+        end)
 
     Enum.reduce(sorted, {[], MapSet.new(), []}, fn
       %ModuleSummary{module: ctrl, behaviours: behaviours, dynamic_dispatches: calls},
@@ -410,7 +517,18 @@ defmodule VulnCheck.Entrypoints.Behaviours do
 
           resolved_calls_for_ctrl =
             with true <- all_static_actions?,
-                 false <- dynamically_entered?(ctrl, sorted, in_scope?, action_mfa),
+                 false <-
+                   dynamically_entered?(
+                     ctrl,
+                     sorted,
+                     in_scope?,
+                     action_mfa,
+                     plug_tuple_callers,
+                     has_unresolved_plug_dispatch?,
+                     has_dynamic_atom_builder?,
+                     has_dynamic_config_reader?,
+                     configured_set
+                   ),
                  [
                    %DynamicCall{
                      kind: :module_function,
@@ -444,29 +562,59 @@ defmodule VulnCheck.Entrypoints.Behaviours do
     end)
   end
 
-  defp dynamically_entered?(ctrl, sorted, in_scope?, action_mfa) do
-    Enum.any?(sorted, fn %ModuleSummary{edges: edges, mfa_refs: refs, dynamic_dispatches: dcalls} ->
-      Enum.any?(edges ++ refs, fn
-        %CallEdge{
-          from: from,
-          to: %MFA{module: ^ctrl, function: fun, arity: 2},
-          kind: :dynamic_apply
-        } ->
-          fun in ["call", "action"] and in_scope?.(from)
+  defp dynamically_entered?(
+         ctrl,
+         sorted,
+         in_scope?,
+         action_mfa,
+         plug_tuple_callers,
+         has_unresolved_plug_dispatch?,
+         has_dynamic_atom_builder?,
+         has_dynamic_config_reader?,
+         configured_set
+       ) do
+    has_dynamic_atom_builder? or
+      has_dynamic_config_reader? or
+      (has_unresolved_plug_dispatch? and MapSet.member?(configured_set, ctrl)) or
+      Enum.any?(sorted, fn %ModuleSummary{
+                             edges: edges,
+                             mfa_refs: refs,
+                             dynamic_dispatches: dcalls,
+                             module_refs: module_refs
+                           } ->
+        Enum.any?(edges ++ refs, fn
+          %CallEdge{
+            from: from,
+            to: %MFA{module: ^ctrl, function: "action", arity: 2}
+          } ->
+            from.module != ctrl and in_scope?.(from)
 
-        _ ->
-          false
-      end) or
-        Enum.any?(dcalls, fn
-          %DynamicCall{caller: caller, known_module: ^ctrl, kind: :module_function} = dc ->
-            caller != action_mfa and in_scope?.(caller) and
-              dc.known_function in [nil, "call", "action"] and
-              DynamicCall.arity_compatible?(dc, 2)
+          %CallEdge{
+            from: from,
+            to: %MFA{module: ^ctrl, function: "call", arity: 2},
+            kind: :dynamic_apply
+          } ->
+            in_scope?.(from)
 
           _ ->
             false
-        end)
-    end)
+        end) or
+          Enum.any?(dcalls, fn
+            %DynamicCall{caller: caller, known_module: ^ctrl, kind: :module_function} = dc ->
+              caller != action_mfa and in_scope?.(caller) and
+                dc.known_function in [nil, "call", "action"] and
+                DynamicCall.arity_compatible?(dc, 2)
+
+            _ ->
+              false
+          end) or
+          (has_unresolved_plug_dispatch? and
+             Enum.any?(module_refs, fn {caller, ref, _file, _line} ->
+               ref == ctrl and caller.module != ctrl and in_scope?.(caller) and
+                 caller.function not in ["__routes__", "__checks__", "__phoenix_verify_routes__"] and
+                 not MapSet.member?(plug_tuple_callers, {caller, ctrl})
+             end))
+      end)
   end
 
   defp matching(modules, exports, call, fun) do

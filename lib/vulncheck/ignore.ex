@@ -168,34 +168,43 @@ defmodule VulnCheck.Ignore do
   @spec new_suppressions(Config.t(), [Rule.t()]) :: [String.t()]
   def new_suppressions(%Config{} = config, rules) do
     root = Config.project_root(config)
-    relative = Path.relative_to(Config.ignore_path(config), root)
+    ignore_abs = Config.ignore_path(config)
+    relative = Path.relative_to(ignore_abs, root)
 
-    with {:ok, base} <- Git.default_base(root, config.diff),
-         {:ok, base_rules} <- base_rules(root, base, relative, config) do
-      known = Enum.group_by(base_rules, &{&1.id, &1.package}, & &1.expires)
+    cond do
+      rules != [] and
+          (Path.type(relative) == :absolute or relative == ".." or
+             String.starts_with?(relative, "../")) ->
+        ["cannot verify ignore file outside the git repository: #{ignore_abs}"]
 
-      Enum.flat_map(rules, fn %Rule{} = rule ->
-        case Map.fetch(known, {rule.id, rule.package}) do
-          :error ->
-            ["new suppression of #{rule.id} added since #{base}"]
+      true ->
+        with {:ok, base} <- Git.default_base(root, config.diff),
+             {:ok, base_rules} <- base_rules(root, base, relative, config) do
+          known = Enum.group_by(base_rules, &{String.upcase(&1.id), &1.package}, & &1.expires)
 
-          {:ok, expiries} ->
-            case Enum.uniq(expiries) do
-              [old] ->
-                if extended?(old, rule.expires),
-                  do: ["suppression of #{rule.id} extended since #{base}"],
-                  else: []
+          Enum.flat_map(rules, fn %Rule{} = rule ->
+            case Map.fetch(known, {String.upcase(rule.id), rule.package}) do
+              :error ->
+                ["new suppression of #{rule.id} added since #{base}"]
 
-              _ ->
-                ["conflicting base suppressions for #{rule.id} at #{base}"]
+              {:ok, expiries} ->
+                case Enum.uniq(expiries) do
+                  [old] ->
+                    if extended?(old, rule.expires),
+                      do: ["suppression of #{rule.id} extended since #{base}"],
+                      else: []
+
+                  _ ->
+                    ["conflicting base suppressions for #{rule.id} at #{base}"]
+                end
             end
+          end)
+        else
+          {:error, reason} ->
+            if rules == [],
+              do: [],
+              else: ["cannot verify suppressions against the base revision: #{inspect(reason)}"]
         end
-      end)
-    else
-      {:error, reason} ->
-        if rules == [],
-          do: [],
-          else: ["cannot verify suppressions against the base revision: #{inspect(reason)}"]
     end
   end
 
@@ -224,7 +233,14 @@ defmodule VulnCheck.Ignore do
   defp extended?(old, new), do: Date.compare(new, old) == :gt
 
   defp matches?(%Rule{id: id, package: package}, %Finding{} = finding) do
-    (package == nil or package == finding.package) and id in [finding.advisory_id | finding.aliases]
+    target = String.upcase(id)
+
+    identifiers =
+      [finding.advisory_id, Finding.cve_id(finding) | finding.aliases]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&String.upcase/1)
+
+    (package == nil or package == finding.package) and target in identifiers
   end
 
   defp literal(source, file) do

@@ -170,8 +170,13 @@ defmodule VulnCheck.Types.Finding do
   """
   @spec fingerprints(t()) :: [String.t()]
   def fingerprints(%__MODULE__{} = finding) do
+    ids =
+      [finding.advisory_id, cve_id(finding) | finding.aliases]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
     alternatives =
-      for id <- Enum.uniq([finding.advisory_id | finding.aliases]),
+      for id <- ids,
           do: fingerprint(id, finding.package, finding.verdict, finding.target_mfa)
 
     Enum.uniq([finding.fingerprint | alternatives])

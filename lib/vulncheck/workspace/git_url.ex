@@ -64,6 +64,57 @@ defmodule VulnCheck.Workspace.GitUrl do
     end
   end
 
+  @doc """
+  Extracts `{owner, repo}` (lowercased, `.git` stripped) ONLY when `url` refers
+  to `github.com` (or `www.github.com`). Returns `nil` for non-GitHub hosts,
+  spoofed hostnames such as `not-github.com`, or bare strings without a host.
+  """
+  @spec github_repo(String.t() | nil) :: {String.t(), String.t()} | nil
+  def github_repo(url) when is_binary(url) do
+    url = String.trim(url)
+
+    case parse_host_and_path(url) do
+      {host, path} when host in @github_hosts ->
+        case format_slug(host, path) do
+          {:ok, slug} ->
+            case String.split(slug, "/") do
+              [owner, repo] -> {owner, repo}
+              _ -> nil
+            end
+
+          :error ->
+            nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def github_repo(_), do: nil
+
+  defp parse_host_and_path(url) do
+    cond do
+      String.contains?(url, "://") ->
+        case URI.parse(url) do
+          %URI{scheme: scheme, host: host, path: path}
+          when scheme != "file" and is_binary(host) and host != "" and is_binary(path) ->
+            {String.downcase(host), path}
+
+          _ ->
+            nil
+        end
+
+      Regex.match?(~r/\A[^@\s]+@[^:\s]+:[^\s]+\z/, url) ->
+        [user_host, path] = String.split(url, ":", parts: 2)
+        [_user, host] = String.split(user_host, "@", parts: 2)
+        if host == "", do: nil, else: {String.downcase(host), path}
+
+      true ->
+        nil
+    end
+  end
+
   defp format_slug(host, path) do
     trimmed =
       path

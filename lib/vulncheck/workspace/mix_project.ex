@@ -64,7 +64,7 @@ defmodule VulnCheck.Workspace.MixProject do
   @spec analyze(Macro.t(), String.t()) :: t()
   def analyze(ast, file) do
     {functions, attrs} = collect_definitions(ast)
-    ctx = %{functions: functions, attrs: attrs, vars: %{}}
+    ctx = %{functions: functions, attrs: attrs, vars: %{}, env_vars: MapSet.new()}
     {project, project_ok?} = project_keyword(ctx)
 
     {deps, parsed?} =
@@ -92,10 +92,43 @@ defmodule VulnCheck.Workspace.MixProject do
       app: project |> kw_value("app") |> atom_value(),
       version: project |> kw_value("version") |> string_value(attrs),
       apps_path: project |> kw_value("apps_path") |> string_value(attrs),
-      deps: deps,
+      deps: merge_dep_scopes(deps),
       deps_parsed: parsed?
     }
   end
+
+  # Deduplicates dependencies declared across multiple branches/clauses by
+  # unioning their environment scopes (`:all` dominates any explicit list)
+  # and keeping `runtime: true` if any active declaration runs at runtime.
+  defp merge_dep_scopes(deps) do
+    {order, merged} =
+      Enum.reduce(deps, {[], %{}}, fn %Dep{name: name} = dep, {order, acc} ->
+        case Map.fetch(acc, name) do
+          :error ->
+            {[name | order], Map.put(acc, name, dep)}
+
+          {:ok, existing} ->
+            combined = %{
+              existing
+              | only: union_only(existing.only, dep.only),
+                runtime: existing.runtime or dep.runtime,
+                optional: existing.optional and dep.optional,
+                in_umbrella: existing.in_umbrella or dep.in_umbrella,
+                path: existing.path || dep.path,
+                git: existing.git || dep.git,
+                requirement: existing.requirement || dep.requirement
+            }
+
+            {order, Map.put(acc, name, combined)}
+        end
+      end)
+
+    order |> Enum.reverse() |> Enum.map(&Map.fetch!(merged, &1))
+  end
+
+  defp union_only(:all, _), do: :all
+  defp union_only(_, :all), do: :all
+  defp union_only(a, b) when is_list(a) and is_list(b), do: Enum.uniq(a ++ b)
 
   defp read(path) do
     case File.read(path) do
@@ -114,8 +147,23 @@ defmodule VulnCheck.Workspace.MixProject do
           case {parse_head(head), body_of(body)} do
             {{name, args, guard}, body_ast} when is_binary(name) and body_ast != nil ->
               key = {name, length(args)}
-              clause = {args, guard, body_ast}
-              {node, {Map.update(funcs, key, [clause], &[clause | &1]), attrs}}
+              {clean_args, defaults} = extract_defaults(args)
+              clause = {clean_args, guard, body_ast}
+              funcs = Map.update(funcs, key, [clause], &[clause | &1])
+              funcs = add_default_dispatchers(funcs, name, clean_args, defaults)
+              {node, {funcs, attrs}}
+
+            _ ->
+              {node, {funcs, attrs}}
+          end
+
+        {{:__lit_atom__, kind}, _meta, [head]} = node, {funcs, attrs}
+        when kind in ["def", "defp"] ->
+          case parse_head(head) do
+            {name, args, _guard} when is_binary(name) ->
+              {clean_args, defaults} = extract_defaults(args)
+              funcs = add_default_dispatchers(funcs, name, clean_args, defaults)
+              {node, {funcs, attrs}}
 
             _ ->
               {node, {funcs, attrs}}
@@ -131,6 +179,29 @@ defmodule VulnCheck.Workspace.MixProject do
     funcs = Map.new(funcs, fn {key, clauses} -> {key, Enum.reverse(clauses)} end)
     {funcs, attrs}
   end
+
+  defp extract_defaults(args) do
+    Enum.map_reduce(args, [], fn
+      {:\\, _meta, [arg, default]}, defaults -> {arg, defaults ++ [default]}
+      arg, defaults -> {arg, defaults}
+    end)
+  end
+
+  # Supports `defp deps(env \\ Mix.env())` invoked as `deps()`: registers a
+  # synthetic 0-arity clause delegating to the 1-arity definition with the
+  # default argument AST.
+  defp add_default_dispatchers(funcs, name, [_single], [default_ast]) do
+    key0 = {name, 0}
+
+    if Map.has_key?(funcs, key0) do
+      funcs
+    else
+      delegate = {{:__lit_atom__, name}, [], [default_ast]}
+      Map.put(funcs, key0, [{[], nil, delegate}])
+    end
+  end
+
+  defp add_default_dispatchers(funcs, _name, _args, _defaults), do: funcs
 
   defp parse_head({:when, _meta, [call, guard]}) do
     case parse_head(call) do
@@ -315,7 +386,7 @@ defmodule VulnCheck.Workspace.MixProject do
 
     condition =
       cond_ast
-      |> eval_env_condition(&mix_env_call?/1)
+      |> eval_env_condition(&mix_env_expr?(&1, ctx))
       |> then(fn c -> if op == "unless", do: invert_condition(c), else: c end)
 
     {do_deps, else_deps} =
@@ -331,7 +402,7 @@ defmodule VulnCheck.Workspace.MixProject do
        when is_list(branches) do
     case kw_value(keyword_entries(branches), "do") do
       clauses when is_list(clauses) ->
-        if mix_env_call?(subject),
+        if mix_env_expr?(subject, ctx),
           do: eval_env_case_clauses(clauses, ctx, visited),
           else: eval_unscoped_clauses(clauses, ctx, visited)
 
@@ -372,7 +443,7 @@ defmodule VulnCheck.Workspace.MixProject do
         next_visited = Map.put(visited, key, true)
 
         cond do
-          mix_env_call?(arg) ->
+          mix_env_expr?(arg, ctx) ->
             eval_env_fun_clauses(clauses, ctx, next_visited)
 
           match?({:__lit_atom__, _}, arg) ->
@@ -423,7 +494,16 @@ defmodule VulnCheck.Workspace.MixProject do
   defp eval_env_fun_clauses(clauses, ctx, visited) do
     {deps, ok?, _matched} =
       Enum.reduce(clauses, {[], true, []}, fn {args, guard, body}, {acc, ok?, matched} ->
-        {sub_deps, sub_ok?} = eval_deps(body, ctx, visited)
+        clause_ctx =
+          case args do
+            [{{:__lit_atom__, var}, _, c}] when is_atom(c) and var != "_" ->
+              %{ctx | env_vars: MapSet.put(ctx.env_vars, var)}
+
+            _ ->
+              ctx
+          end
+
+        {sub_deps, sub_ok?} = eval_deps(body, clause_ctx, visited)
         {narrowed, next_matched} = apply_clause_scope(sub_deps, args, guard, matched)
         {acc ++ narrowed, ok? and sub_ok?, next_matched}
       end)
@@ -431,6 +511,9 @@ defmodule VulnCheck.Workspace.MixProject do
     {deps, ok?}
   end
 
+  # Unconditional call with a literal atom argument such as `deps(:common)` or
+  # `deps(:prod)` runs in every environment that reaches the call site; do not
+  # narrow its result to `only: [env_name]`.
   defp eval_literal_env_fun_clauses(clauses, env_name, ctx, visited) do
     clause =
       Enum.find(clauses, fn {args, guard, _body} ->
@@ -443,11 +526,10 @@ defmodule VulnCheck.Workspace.MixProject do
 
     case clause do
       {_args, _guard, body} ->
-        {deps, ok?} = eval_deps(body, ctx, visited)
-        {narrow_deps(deps, {:include, [env_name]}), ok?}
+        eval_deps(body, ctx, visited)
 
       nil ->
-        {[], true}
+        {[], false}
     end
   end
 
@@ -489,7 +571,7 @@ defmodule VulnCheck.Workspace.MixProject do
         {:->, _, [[test], body]}, {acc, ok?, matched} ->
           {sub_deps, sub_ok?} = eval_deps(body, ctx, visited)
 
-          case eval_env_condition(test, &mix_env_call?/1) do
+          case eval_env_condition(test, &mix_env_expr?(&1, ctx)) do
             {:include, envs} ->
               {acc ++ narrow_deps(sub_deps, {:include, envs}), ok? and sub_ok?,
                Enum.uniq(matched ++ envs)}
@@ -608,6 +690,16 @@ defmodule VulnCheck.Workspace.MixProject do
   defp invert_condition({:include, envs}), do: {:exclude, envs}
   defp invert_condition({:exclude, envs}), do: {:include, envs}
   defp invert_condition(:unknown), do: :unknown
+
+  defp mix_env_expr?(node, ctx) do
+    case node do
+      {{:__lit_atom__, var}, _, c} when is_atom(c) ->
+        MapSet.member?(ctx.env_vars, var)
+
+      other ->
+        mix_env_call?(other)
+    end
+  end
 
   defp mix_env_call?(
          {{:., _, [{:__aliases__, _, [{:__lit_atom__, "Mix"}]}, {:__lit_atom__, "env"}]}, _, []}

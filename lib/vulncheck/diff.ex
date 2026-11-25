@@ -86,7 +86,7 @@ defmodule VulnCheck.Diff do
   @spec apply_baseline([Finding.t()], [map()], Workspace.t() | nil) :: {[Finding.t()], [String.t()]}
   def apply_baseline(findings, entries, workspace \\ nil) do
     known = Enum.group_by(entries, & &1.fingerprint)
-    previous = Map.new(entries, &{{&1.advisory_id, &1.package}, &1.verdict})
+    previous = Map.new(entries, &{{String.upcase(&1.advisory_id), &1.package}, &1.verdict})
 
     {kept, hidden} =
       Enum.split_with(findings, fn f ->
@@ -126,7 +126,13 @@ defmodule VulnCheck.Diff do
   end
 
   defp previous_verdict(previous, %Finding{} = f) do
-    Enum.find_value(Enum.uniq([f.advisory_id | f.aliases]), &previous[{&1, f.package}])
+    ids =
+      [f.advisory_id, Finding.cve_id(f) | f.aliases]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&String.upcase/1)
+      |> Enum.uniq()
+
+    Enum.find_value(ids, &previous[{&1, f.package}])
   end
 
   @doc "Scanner post-processing step for `--baseline`."
@@ -215,7 +221,7 @@ defmodule VulnCheck.Diff do
 
   defp identity(%Package{} = package) do
     {package.source, package.hex_name, package.version, package.git_url, package.git_ref,
-     package.checksum, package.inner_checksum, Enum.sort(package.deps)}
+     package.checksum, package.inner_checksum, Enum.sort(package.lock_deps || package.deps)}
   end
 
   defp parse_lock("mix.lock", content), do: MixLock.parse(content)

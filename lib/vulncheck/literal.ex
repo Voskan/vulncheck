@@ -4,8 +4,12 @@ defmodule VulnCheck.Literal do
   `mix.lock`, `mix.exs`, `config/*.exs`).
 
   Files are parsed with `Code.string_to_quoted/2` and a static atom encoder, so
-  **no atoms are created** and **no code is ever evaluated**. Literal values are
-  converted into a neutral term representation:
+  **no unbounded atoms are created** and **no code is ever evaluated**. Note
+  that `:elixir_tokenizer` itself maps single-letter ASCII sigils (`~a`..`~Z`)
+  to built-in `sigil_*` atoms (bounded to at most 52 fixed atoms); all other
+  identifiers, aliases, and multi-letter sigils go through
+  `static_atoms_encoder` with zero atom growth. Literal values are converted
+  into a neutral term representation:
 
     * atoms become `{:atom, "name"}` (except `nil`, `true` and `false`)
     * module aliases become `{:alias, "Elixir.Mod.Name"}`

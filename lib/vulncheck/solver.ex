@@ -122,6 +122,22 @@ defmodule VulnCheck.Solver do
                        {"erlang", "list_to_existing_atom", 1}
                      ])
 
+  # Functions that read application environment populated by `config/*.exs`.
+  @config_env_readers [
+    {"Elixir.Application", "get_env", 2},
+    {"Elixir.Application", "get_env", 3},
+    {"Elixir.Application", "fetch_env", 2},
+    {"Elixir.Application", "fetch_env!", 2},
+    {"Elixir.Application", "get_all_env", 1},
+    {"application", "get_env", 1},
+    {"application", "get_env", 2},
+    {"application", "get_env", 3},
+    {"application", "get_all_env", 0},
+    {"application", "get_all_env", 1},
+    {"application", "get_key", 1},
+    {"application", "get_key", 2}
+  ]
+
   @verdict_order %{reachable: 0, potentially_reachable: 1, retired: 2, unreachable: 3}
 
   defmodule Index do
@@ -388,14 +404,15 @@ defmodule VulnCheck.Solver do
           )
         end
 
-      package.scope == :build_only ->
+      issue = Map.get(index.artifact_issues, nil) || Map.get(index.artifact_issues, pkg) ->
+        potentially(:missing_beam_debug_info, "compiled evidence is incomplete: #{issue}", nil, [])
+
+      package.scope == :build_only and not package_reachable? and
+          not escape_toward?(index, advisory, package) ->
         unreachable(
           :non_prod_dependency,
           "#{pkg} is build-time only (runtime: false); it is not started in the production release"
         )
-
-      issue = Map.get(index.artifact_issues, nil) || Map.get(index.artifact_issues, pkg) ->
-        potentially(:missing_beam_debug_info, "compiled evidence is incomplete: #{issue}", nil, [])
 
       not package_reachable? and Map.has_key?(index.model.inactive_adapter_packages, pkg) and
           not escape_toward?(index, advisory, package) ->
@@ -687,7 +704,16 @@ defmodule VulnCheck.Solver do
   end
 
   defp module_builder_reachable?(graph, model, reachable) do
-    any_target_called?(graph, model, reachable, @module_builders)
+    (model.config_atoms_constructed and config_env_reader_reachable?(graph, reachable)) or
+      any_target_called?(graph, model, reachable, @module_builders)
+  end
+
+  defp config_env_reader_reachable?(graph, reachable) do
+    Enum.any?(@config_env_readers, fn {m, f, a} ->
+      graph
+      |> CallGraph.callers(%MFA{module: m, function: f, arity: a})
+      |> Enum.any?(fn %CallEdge{from: from} -> MapSet.member?(reachable, from) end)
+    end)
   end
 
   defp any_target_called?(graph, model, reachable, targets) do

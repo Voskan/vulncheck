@@ -733,7 +733,8 @@ defmodule VulnCheck.SolverTest do
 
       assert %Finding{verdict: :reachable, reason: :call_chain_proven} = called
 
-      # Negative: uncalled routine in a :build_only package stays unreachable
+      # Negative: uncalled routine in a :build_only package that has another
+      # directly called function stays unreachable (:function_not_called)
       uncalled =
         Solver.solve(
           ws,
@@ -748,7 +749,25 @@ defmodule VulnCheck.SolverTest do
         )
         |> hd()
 
-      assert %Finding{verdict: :unreachable, reason: :non_prod_dependency} = uncalled
+      assert %Finding{verdict: :unreachable, reason: :function_not_called} = uncalled
+
+      # Uncalled :build_only package with no reachable functions is :non_prod_dependency
+      unused_build_only =
+        Map.update!(ctx.ws.packages, "sol_unused", &%{&1 | scope: :build_only, runtime: false})
+
+      ws_unused = %{ctx.ws | packages: unused_build_only}
+
+      not_started =
+        Solver.solve(
+          ws_unused,
+          ctx.graph,
+          ctx.model,
+          [advisory("B-3", "sol_unused", affected_routines: [])],
+          %Config{}
+        )
+        |> hd()
+
+      assert %Finding{verdict: :unreachable, reason: :non_prod_dependency} = not_started
     end
   end
 end

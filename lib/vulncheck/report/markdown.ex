@@ -126,7 +126,7 @@ defmodule VulnCheck.Report.Markdown do
         [
           escape(Formatter.display_id(f)),
           cell_code(f.package),
-          f.installed_version,
+          escape(f.installed_version),
           Formatter.severity_label(f.severity),
           cell_code(Atom.to_string(f.reason)),
           inline(f.reason_detail)
@@ -150,9 +150,9 @@ defmodule VulnCheck.Report.Markdown do
       Enum.map(findings, fn f ->
         [
           escape(Formatter.display_id(f)),
-          code(f.package),
+          cell_code(f.package),
           inline(f.suppression_reason || ""),
-          f.suppression_expires || ""
+          escape(f.suppression_expires || "")
         ]
       end)
 

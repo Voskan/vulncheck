@@ -477,11 +477,13 @@ defmodule VulnCheck.Beam.ExtractorTest do
              msg =~ ":worker_exit, :timeout"
            end)
 
-    crashed =
-      Loader.load_dirs([{"pkg", ctx.ebin}],
-        cache: false,
-        loader: fn _ -> exit(:boom) end
-      )
+    {crashed, _log} =
+      ExUnit.CaptureLog.with_log(fn ->
+        Loader.load_dirs([{"pkg", ctx.ebin}],
+          cache: false,
+          loader: fn _ -> exit(:boom) end
+        )
+      end)
 
     assert crashed.modules == %{}
     assert crashed.stats.failed == crashed.stats.beams

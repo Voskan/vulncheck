@@ -28,7 +28,15 @@ defmodule VulnCheck.Report.SARIF do
   @spec document(ScanReport.t(), Config.t()) :: map()
   def document(%ScanReport{} = report, %Config{} = config) do
     findings = Formatter.reported(report.findings, config.show_unreachable)
-    rules = findings |> Enum.uniq_by(& &1.advisory_id) |> Enum.map(&rule/1)
+
+    grouped = Enum.group_by(findings, & &1.advisory_id)
+
+    rules =
+      findings
+      |> Enum.map(& &1.advisory_id)
+      |> Enum.uniq()
+      |> Enum.map(fn id -> rule(Map.fetch!(grouped, id)) end)
+
     index = rules |> Enum.with_index() |> Map.new(fn {rule, i} -> {rule["id"], i} end)
 
     %{
@@ -60,22 +68,34 @@ defmodule VulnCheck.Report.SARIF do
   defp env(%ScanReport{workspace: %{env: env}}), do: env
   defp env(_report), do: "prod"
 
-  defp rule(%Finding{} = f) do
+  defp rule([%Finding{} = f]), do: single_rule(f, [f])
+  defp rule([%Finding{} = f | _] = group), do: single_rule(f, group)
+
+  defp single_rule(%Finding{} = f, group) do
     title = Formatter.display_id(f)
-    summary = if f.summary == "", do: "#{title} in #{f.package}", else: f.summary
+    packages = group |> Enum.map(& &1.package) |> Enum.uniq()
+
+    summary =
+      cond do
+        f.summary != "" -> f.summary
+        length(packages) == 1 -> "#{title} in #{f.package}"
+        true -> "#{title} in #{Enum.join(packages, ", ")}"
+      end
+
+    cwes = group |> Enum.flat_map(& &1.cwes) |> Enum.uniq()
 
     %{
       "id" => f.advisory_id,
       "name" => rule_name(f.advisory_id),
       "shortDescription" => %{"text" => "#{title}: #{summary}"},
-      "fullDescription" => %{"text" => full_description(f, summary)},
+      "fullDescription" => %{"text" => full_description(f, packages, summary)},
       "helpUri" => Formatter.help_uri(f),
-      "help" => %{"text" => help_text(f), "markdown" => help_text(f)},
-      "defaultConfiguration" => %{"level" => level(f)},
+      "help" => %{"text" => help_text(group, f), "markdown" => help_text(group, f)},
+      "defaultConfiguration" => %{"level" => group_level(group)},
       "properties" => %{
-        "security-severity" => Formatter.security_severity(f),
-        "tags" => Enum.uniq(["security", "vulnerability", "dependency" | f.cwes]),
-        "precision" => precision(f)
+        "security-severity" => group_security_severity(group),
+        "tags" => Enum.uniq(["security", "vulnerability", "dependency" | cwes]),
+        "precision" => group_precision(group)
       }
     }
   end
@@ -84,16 +104,68 @@ defmodule VulnCheck.Report.SARIF do
     id |> String.split(~r/[^A-Za-z0-9]+/, trim: true) |> Enum.map_join(&String.capitalize/1)
   end
 
-  defp full_description(%Finding{} = f, summary) do
+  defp full_description(%Finding{} = f, [pkg], summary) do
     aliases = if f.aliases == [], do: "", else: " Aliases: #{Enum.join(f.aliases, ", ")}."
-    "#{summary} (package #{f.package}).#{aliases}"
+    "#{summary} (package #{pkg}).#{aliases}"
   end
 
-  defp help_text(%Finding{} = f) do
+  defp full_description(%Finding{} = f, packages, summary) do
+    aliases = if f.aliases == [], do: "", else: " Aliases: #{Enum.join(f.aliases, ", ")}."
+    "#{summary} (packages #{Enum.join(packages, ", ")}).#{aliases}"
+  end
+
+  defp help_text([%Finding{} = f], _primary) do
     case Formatter.fix_text(f) do
       nil -> "No fixed release is known yet. See #{Formatter.help_uri(f)}"
       fix -> "Upgrade #{f.package} to #{fix}. See #{Formatter.help_uri(f)}"
     end
+  end
+
+  defp help_text(group, primary) do
+    upgrades =
+      group
+      |> Enum.uniq_by(& &1.package)
+      |> Enum.flat_map(fn f ->
+        case Formatter.fix_text(f) do
+          nil -> []
+          fix -> ["#{f.package} to #{fix}"]
+        end
+      end)
+
+    case upgrades do
+      [] -> "No fixed release is known yet. See #{Formatter.help_uri(primary)}"
+      list -> "Upgrade #{Enum.join(list, ", ")}. See #{Formatter.help_uri(primary)}"
+    end
+  end
+
+  defp group_precision([%Finding{} = f]), do: precision(f)
+
+  defp group_precision(group) do
+    cond do
+      Enum.all?(group, &(&1.verdict == :reachable)) -> "very-high"
+      Enum.any?(group, &(&1.verdict in [:reachable, :retired])) -> "high"
+      true -> "medium"
+    end
+  end
+
+  defp group_level([%Finding{} = f]), do: level(f)
+
+  defp group_level(group) do
+    rank = %{"error" => 3, "warning" => 2, "note" => 1, "none" => 0}
+    group |> Enum.map(&level/1) |> Enum.max_by(&Map.fetch!(rank, &1))
+  end
+
+  defp group_security_severity([%Finding{} = f]), do: Formatter.security_severity(f)
+
+  defp group_security_severity(group) do
+    group
+    |> Enum.map(&Formatter.security_severity/1)
+    |> Enum.max_by(fn s ->
+      case Float.parse(s) do
+        {val, _} -> val
+        :error -> -1.0
+      end
+    end)
   end
 
   defp precision(%Finding{verdict: :reachable}), do: "very-high"
@@ -207,12 +279,16 @@ defmodule VulnCheck.Report.SARIF do
   defp kind(nil), do: "call"
   defp kind(kind), do: Atom.to_string(kind)
 
-  defp location(nil, _line, text), do: %{"message" => %{"text" => text}}
+  defp location(file, _line, text) when file in [nil, ""] do
+    if is_binary(text) and text != "", do: %{"message" => %{"text" => text}}, else: %{}
+  end
 
   defp location(file, line, text) do
+    start_line = if is_integer(line) and line >= 1, do: line, else: 1
+
     physical = %{
       "artifactLocation" => artifact(file),
-      "region" => %{"startLine" => line || 1}
+      "region" => %{"startLine" => start_line}
     }
 
     if text,

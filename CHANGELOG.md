@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-25
+
+### Fixed
+
+#### Soundness & Data Safety
+- Close `Phoenix.Controller` narrowing bypasses (`Behaviours`, `AbstractWalker`): direct external `Ctrl.action/2` calls, `&Ctrl.call/2` and `&Ctrl.action/2` function captures, dynamic atom/module builders in project code, controllers referenced via `config/*.exs` or dynamic `Application.get_env`, 4-tuple route spoofing outside `__match_route__`/`match`, mixed bare controller refs inside `__match_route__`/`match`, and unattributed controller module references in the presence of unresolved `mod.call/2` dispatch now preserve sound `:potentially_reachable` verdicts without breaking normal `Phoenix.Router` + `Bandit`/`Cowboy` precision. Salted the `.beam` summary cache key (`walker-v5`).
+- Preserve full dependency scopes in `MixProject` static `mix.exs` analysis when calling `defp deps(:common)` with literal env atoms (removing erroneous narrowing to `[env_name]`), merge duplicate dependencies across branches by unioning `only:` / `runtime:` scopes, and resolve default arguments on `defp deps(env \\ Mix.env())`.
+- Follow `import_config` directives (static paths and `"#{config_env()}.exs"` / `"#{Mix.env()}.exs"` templates, with cycle detection, symlink-safe realpath root containment, and optional `File.exists?` guard handling), detect nested dynamic adapter expressions (keyword lists, maps, structs, tuples, `Application.put_env` / `put_all_env`), and propagate `Code.eval_*` / dynamic atom and module constructors (`String.to_existing_atom`, `Module.concat`, `binary_to_term`, `apply`) from `config/*.exs` into `Adapters`, `Behaviours`, and `Solver`.
+- Check compiled artifact issues and dynamic escapes before dismissing `:build_only` (`runtime: false`) dependencies in `Solver`, preventing false negatives when a build-only package is uncompiled or targeted by a package-level CVE.
+- Isolate `vulncheck feeds sync|status|bundle|import|prune` from ambient scan-specific `.vulncheck.exs` keys (`output`, `offline`) so `feeds bundle` never overwrites the project's scan output file and `feeds sync` never fails due to `offline: true` in `.vulncheck.exs`; expand relative bundle paths in `feeds import` against `:cwd`.
+
+#### Configuration, Baselines, Suppressions & Parsers
+- Canonicalize relative file paths from `.vulncheck.exs` (`output`, `sarif`, `sbom`, `vex`, `bundle`, `cache_dir`, `baseline`) against the project root so `--project-dir` runs resolve paths consistently and overlapping output destinations are detected; accept `max_feed_age_seconds: nil` in `.vulncheck.exs`.
+- Stabilize `Diff.identity/1` across pre-compile and post-compile scans by hashing lockfile `deps` (`Package.lock_deps`) rather than `.app`-enriched dependency lists.
+- Match `.vulncheck.ignore` rules and baselines case-insensitively by advisory ID, alias, or CVE ID, normalize case in `Ignore.new_suppressions/2`, and report an explicit policy violation when `--forbid-new-suppressions` points to an ignore file outside the Git repository.
+- Fix `Semver` pessimistic `~>` operator upper bounds for 3+ version segments (`~> 25.3.2` now enforces `< 25.4` instead of `< 26`).
+- Extend `MFA.parse_routine/1` to parse Elixir/Erlang operators (`==/2`, `../2`, `..//3`), `MACRO-*` compiler-generated macro names, and single-quoted Erlang function names.
+- Harden `HTTP` redirect SSRF checks to reject IPv6 zone identifiers (`%`), IPv4 multicast/reserved (`224.0.0.0/4`, `240.0.0.0/4`), IPv4-compatible IPv6 (`::a.b.c.d`), deprecated IPv6 site-local (`fec0::/10`), and IPv6 multicast (`ff00::/8`).
+- Reuse `GitUrl.github_repo/1` in `CycloneDX` so non-GitHub hosts (e.g., `not-github.com`) never emit `pkg:github/` PURLs and `.GIT` suffixes are stripped case-insensitively.
+- Omit `physicalLocation` when `file` is empty and clamp `startLine >= 1` in `SARIF`; merge multi-package findings sharing an `advisory_id` into combined rule metadata (`help`, `fullDescription`, `cwes`, `level`, `precision`).
+- Preserve all detected adapters per family as a list in `vulncheck init` (`adapter_lines/2`), reject extra arguments after `--version`/`-v`/`version`, and parse `help?/1` via `OptionParser` so `--diff -h` / `--output -h` are not intercepted as help flags.
+- Preserve full tag versions (stripping leading `v`) instead of truncating to 12 characters for `{git, Url, {tag, Tag}}` entries in `RebarLock`.
+- Support leading `+`, underscores in based integers and floats, `\b`/`\d`/`\f`/`\v`/`\xHH`/`\x{HEX}`/octal escapes, and binary segment `:size`/`/type` specifiers in `ErlTerm`.
+- Add `@max_depth 128`, CRLF multiline handling, strict hex validation on `\b`/`\f`/`\uXXXX`/`\UXXXXXXXX` escapes, backslash line-ending trimming, embedded quotes before closing `"""`/`'''`, and literal-string newline rejection to `Toml`.
+- Escape pipes in Markdown `suppressed` and `unreachable` table cells, make `Report.GitHub.render/2` pure (moving `GITHUB_STEP_SUMMARY` writing with error warnings into `CLI.write_outputs/3`), document single-letter sigil atom bounds in `Literal`, sync documentation and `CI` OTP 28/29 matrix, and silence intentional crash logs in `ExtractorTest`.
+
 ## [1.0.2] - 2026-11-24
 
 ### Fixed
@@ -69,7 +95,8 @@ First stable release.
 - `mix vulncheck`, `mix vulncheck.init`, `mix vulncheck.explain` and `mix vulncheck.feeds`, a standalone escript, a composite GitHub Action (single-scan SARIF + `workflow_dispatch` release dry-run), pre-commit hooks (`vulncheck`), and a container image.
 - Reproducible benchmarks (including `umbrella` profile), validation harness (`docs/VALIDATION.md`), and atom-table guarantees: external data never creates atoms and warm scans never re-read unchanged `.beam` files.
 
-[Unreleased]: https://github.com/Voskan/vulncheck/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/Voskan/vulncheck/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/Voskan/vulncheck/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Voskan/vulncheck/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Voskan/vulncheck/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/Voskan/vulncheck/releases/tag/v1.0.0

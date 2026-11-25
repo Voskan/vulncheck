@@ -26,6 +26,7 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
       ],
       "installed_version": "3.34.2",
       "package": "ash",
+      "package_identity": "7d1a4c9f08e2...",
       "package_scope": "prod",
       "reason": "call_chain_proven",
       "reason_detail": "",
@@ -82,6 +83,7 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
       ],
       "installed_version": "0.10.0",
       "package": "hex_core",
+      "package_identity": "4b91e0c2a71d...",
       "package_scope": "prod",
       "reason": "otp_version_unaffected",
       "reason_detail": "requires OTP <= 25; running OTP 27.2",
@@ -119,11 +121,12 @@ All machine-readable outputs produced by `vulncheck` use deterministic key order
     "otp_release": "27.2",
     "prod_packages_count": 74,
     "project_name": "my_fintech_api",
-    "project_type": "mix"
+    "project_type": "mix",
+    "project_version": "0.4.0"
   },
   "tool": {
     "name": "vulncheck",
-    "version": "1.0.2"
+    "version": "1.0.3"
   },
   "warnings": []
 }

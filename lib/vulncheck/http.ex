@@ -66,15 +66,19 @@ defmodule VulnCheck.HTTP do
   """
   @spec validate_url(String.t()) :: :ok | {:error, term()}
   def validate_url(url) when is_binary(url) do
-    case URI.parse(url) do
-      %URI{scheme: "https", host: host} when is_binary(host) and host != "" ->
-        :ok
+    if ipv6_zone_id?(url) do
+      {:error, {:insecure_url, url}}
+    else
+      case URI.parse(url) do
+        %URI{scheme: "https", host: host} when is_binary(host) and host != "" ->
+          :ok
 
-      %URI{scheme: "http", host: host} ->
-        if loopback_host?(host), do: :ok, else: {:error, {:insecure_url, url}}
+        %URI{scheme: "http", host: host} ->
+          if loopback_host?(host), do: :ok, else: {:error, {:insecure_url, url}}
 
-      _ ->
-        {:error, {:invalid_url, url}}
+        _ ->
+          {:error, {:invalid_url, url}}
+      end
     end
   end
 
@@ -136,12 +140,16 @@ defmodule VulnCheck.HTTP do
         {:error, {:http_status, response.status}}
 
       location ->
-        target = url |> URI.merge(location) |> URI.to_string()
+        if ipv6_zone_id?(location) do
+          {:error, {:insecure_url, location}}
+        else
+          target = url |> URI.merge(location) |> URI.to_string()
 
-        with :ok <- validate_url(target),
-             :ok <- validate_redirect(url, target) do
-          retries = Keyword.get(opts, :retries, 2)
-          do_get(target, headers, opts, retries, 0, redirects_left - 1)
+          with :ok <- validate_url(target),
+               :ok <- validate_redirect(url, target) do
+            retries = Keyword.get(opts, :retries, 2)
+            do_get(target, headers, opts, retries, 0, redirects_left - 1)
+          end
         end
     end
   end
@@ -149,18 +157,50 @@ defmodule VulnCheck.HTTP do
   @doc false
   @spec validate_redirect(String.t(), String.t()) :: :ok | {:error, term()}
   def validate_redirect(source, target) do
-    source_uri = URI.parse(source)
-    target_uri = URI.parse(target)
+    if ipv6_zone_id?(target) do
+      {:error, {:insecure_url, target}}
+    else
+      source_uri = URI.parse(source)
+      target_uri = URI.parse(target)
 
-    cond do
-      source_uri.scheme == "https" and target_uri.scheme != "https" ->
-        {:error, {:insecure_url, target}}
+      cond do
+        source_uri.scheme == "https" and target_uri.scheme != "https" ->
+          {:error, {:insecure_url, target}}
 
-      not internal_host?(source_uri.host) and internal_host?(target_uri.host) ->
-        {:error, {:insecure_url, target}}
+        not internal_host?(source_uri.host) and internal_host?(target_uri.host) ->
+          {:error, {:insecure_url, target}}
 
-      true ->
-        :ok
+        true ->
+          :ok
+      end
+    end
+  end
+
+  defp ipv6_zone_id?(url) when is_binary(url) do
+    case extract_authority(url) do
+      nil -> false
+      authority -> Regex.match?(~r/\[[^\]]*%[^\]]*\]/, authority)
+    end
+  end
+
+  defp ipv6_zone_id?(_), do: false
+
+  defp extract_authority(url) when is_binary(url) do
+    rest =
+      case :binary.split(url, "://") do
+        [scheme, after_scheme] ->
+          if Regex.match?(~r/\A[A-Za-z][A-Za-z0-9+.-]*\z/, scheme), do: after_scheme, else: nil
+
+        [_no_scheme] ->
+          case url do
+            "//" <> after_slashes -> after_slashes
+            _ -> nil
+          end
+      end
+
+    case rest do
+      nil -> nil
+      bin -> bin |> String.split(["/", "?", "#"], parts: 2) |> hd()
     end
   end
 
@@ -193,14 +233,16 @@ defmodule VulnCheck.HTTP do
   end
 
   # Redirect targets from non-internal origins must not point to loopback,
-  # unspecified, link-local/cloud-metadata, CGNAT or private addresses.
+  # unspecified, link-local/cloud-metadata, CGNAT, multicast, broadcast or
+  # private addresses.
   defp internal_host?(host) do
     case normalize_host(host) do
       "localhost" ->
         true
 
       normalized when is_binary(normalized) and normalized != "" ->
-        String.ends_with?(normalized, ".localhost") or
+        String.contains?(normalized, "%") or
+          String.ends_with?(normalized, ".localhost") or
           case :inet.parse_address(String.to_charlist(normalized)) do
             {:ok, ip} -> restricted_ip?(ip)
             {:error, _} -> false
@@ -218,17 +260,19 @@ defmodule VulnCheck.HTTP do
   defp restricted_ip?({192, 168, _, _}), do: true
   defp restricted_ip?({100, b, _, _}) when b in 64..127, do: true
   defp restricted_ip?({169, 254, _, _}), do: true
+  defp restricted_ip?({a, _, _, _}) when a >= 224, do: true
   defp restricted_ip?({_, _, _, _}), do: false
 
   defp restricted_ip?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
   defp restricted_ip?({0, 0, 0, 0, 0, 0, 0, 0}), do: true
 
-  defp restricted_ip?({0, 0, 0, 0, 0, 0xFFFF, hi, lo}) do
+  defp restricted_ip?({0, 0, 0, 0, 0, prefix, hi, lo}) when prefix in [0, 0xFFFF] do
     restricted_ip?({hi >>> 8, hi &&& 0xFF, lo >>> 8, lo &&& 0xFF})
   end
 
   defp restricted_ip?({first, _, _, _, _, _, _, _})
-       when (first &&& 0xFFC0) == 0xFE80 or (first &&& 0xFE00) == 0xFC00,
+       when (first &&& 0xFFC0) == 0xFE80 or (first &&& 0xFFC0) == 0xFEC0 or
+              (first &&& 0xFE00) == 0xFC00 or first >>> 8 == 0xFF,
        do: true
 
   defp restricted_ip?({_, _, _, _, _, _, _, _}), do: false

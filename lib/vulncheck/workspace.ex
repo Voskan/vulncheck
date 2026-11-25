@@ -436,13 +436,15 @@ defmodule VulnCheck.Workspace do
 
   defp enrich_deps_from_app_files(packages) do
     Map.new(packages, fn {name, package} ->
+      lock_deps = package.lock_deps || package.deps
+
       case AppFile.read_ebin(package.ebin_dir, package.otp_app || name) do
         nil ->
-          {name, package}
+          {name, %{package | lock_deps: lock_deps}}
 
         app ->
           extra = Enum.filter(app_dependencies(app), &Map.has_key?(packages, &1))
-          {name, %{package | deps: Enum.uniq(package.deps ++ extra)}}
+          {name, %{package | lock_deps: lock_deps, deps: Enum.uniq(package.deps ++ extra)}}
       end
     end)
   end

@@ -74,6 +74,9 @@ jobs:
             coverage: true
           - otp: "28"
             elixir: "1.19"
+            experimental: false
+          - otp: "29"
+            elixir: "1.20"
             experimental: true
     env:
       MIX_ENV: test

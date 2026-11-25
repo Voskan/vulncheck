@@ -1,7 +1,7 @@
 defmodule VulnCheck.MixProject do
   use Mix.Project
 
-  @version "1.0.2"
+  @version "1.0.3"
   @source_url "https://github.com/Voskan/vulncheck"
 
   def project do
