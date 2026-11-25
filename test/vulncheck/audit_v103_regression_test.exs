@@ -183,13 +183,12 @@ defmodule VulnCheck.AuditV103RegressionTest do
       graph = CallGraph.build(loaded.modules)
       {model, graph} = Entrypoints.build(ws, graph, %Config{})
 
+      safe_mfa = mfa("Elixir.VulnDep", "safe_vuln", 0)
+      secret_mfa = mfa("Elixir.VulnDep", "secret_vuln", 0)
+
       advisories = [
-        advisory("ADV-SAFE", "vuln_dep",
-          affected_routines: [mfa("Elixir.VulnDep", "safe_vuln", 0)]
-        ),
-        advisory("ADV-SECRET", "vuln_dep",
-          affected_routines: [mfa("Elixir.VulnDep", "secret_vuln", 0)]
-        )
+        advisory("ADV-SAFE", "vuln_dep", affected_routines: [safe_mfa]),
+        advisory("ADV-SECRET", "vuln_dep", affected_routines: [secret_mfa])
       ]
 
       findings = Solver.solve(ws, graph, model, advisories, %Config{})
